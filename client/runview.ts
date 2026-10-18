@@ -5,6 +5,7 @@ import './runview.css';
 import { CLASSES, NODE_INFO, REST_HEAL, stealthBonus } from '../shared/rules.ts';
 import { SKILLS, TIER_LABEL, describeSkill, ownedSkill, skillTitle, statsAt, trainOptions, type SkillId } from '../shared/skills.ts';
 import type { ActMap, EventView, GameState, MapNode, Notice, PlayerEntity, RestPick, RestState, RunInfo, VoteState } from '../shared/types.ts';
+import { relicsHtml } from './inventory.ts';
 import { send } from './net.ts';
 import { isAuto, me, store } from './store.ts';
 import { $, esc } from './util.ts';
@@ -112,7 +113,7 @@ function votersByOption(s: GameState, vote: VoteState | null): Map<string, Voter
 
 const myVote = (vote: VoteState | null) => (vote && store.playerId ? vote.votes[store.playerId] : undefined);
 
-/** Anything with a countdown: a vote or a rest site. */
+/** Anything with a countdown: a vote, a rest site or a shop. */
 type Timed = { endsInMs: number | null };
 
 function remainingMs(t: Timed | null | undefined): number | null {
@@ -122,7 +123,7 @@ function remainingMs(t: Timed | null | undefined): number | null {
 
 const timerText = (ms: number) => `⏳ ${Math.ceil(ms / 1000)}s`;
 
-function timerHtml(t: Timed | null, tip = 'Time left to vote'): string {
+export function timerHtml(t: Timed | null, tip = 'Time left to vote'): string {
   const ms = remainingMs(t);
   if (ms === null) return '<span class="rv-pill rv-timer" data-countdown hidden></span>';
   return `<span class="rv-pill rv-timer${ms <= 5000 ? ' urgent' : ''}" data-countdown title="${esc(tip)}">${timerText(ms)}</span>`;
@@ -157,6 +158,7 @@ function updateCountdowns(selector: string, t: Timed | null | undefined) {
 function tick() {
   updateCountdowns('#map-view [data-countdown], #event-view [data-countdown], #approach-view [data-countdown]', store.state?.vote);
   updateCountdowns('#rest-view [data-countdown]', store.state?.rest);
+  updateCountdowns('#shop-view [data-countdown]', store.state?.shop);
   if (pendingScroll) scrollToFocus();
 }
 
@@ -329,6 +331,7 @@ function mapHtml(s: GameState, run: RunInfo, vote: VoteState | null, notice: Not
           ${statusHtml(vote, 'Vote for the next room')}${progressHtml(s, vote)}
           <span class="rv-stats">${timerHtml(vote)}<span class="rv-pill gold" title="Party gold">💰 ${run.gold}</span></span>
         </div>
+        ${run.relics.length ? `<div class="rv-relics" title="The party's relics">${relicsHtml(run.relics)}</div>` : ''}
       </header>
       ${notice ? noticeHtml(notice) : ''}
     </div>
@@ -578,7 +581,7 @@ function restChoice(attrs: string, mine: boolean, label: string, body: string): 
 }
 
 /** One trainable skill: tier II is a single button, tier III asks for a branch. */
-function trainHtml(m: PlayerEntity, opt: { skill: SkillId; tier: 2 | 3 }, mine: RestPick | undefined): string {
+export function trainHtml(m: PlayerEntity, opt: { skill: SkillId; tier: 2 | 3 }, mine: RestPick | undefined): string {
   const own = ownedSkill(m, opt.skill)!;
   const st = statsAt(opt.skill, own.tier, own.branch);
   const now = descHtml(`Now: ${describeSkill(opt.skill, own.tier, own.branch, m)}`, 'rv-choice-hint now');

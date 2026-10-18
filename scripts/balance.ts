@@ -10,7 +10,8 @@
 
 import { io } from 'socket.io-client';
 import { MAX_PLAYERS } from '../shared/rules.ts';
-import { skillTitle } from '../shared/skills.ts';
+import { RELICS } from '../shared/items.ts';
+import { itemInfo, skillTitle } from '../shared/skills.ts';
 import type { GameState, JoinResult, NodeType, PlayerEntity } from '../shared/types.ts';
 
 export const NODE_TYPES: NodeType[] = ['combat', 'elite', 'event', 'rest', 'treasure', 'shop', 'boss'];
@@ -34,6 +35,12 @@ const FIELD_RES: [string, RegExp][] = [
   ['gas', /breathes in the poison gas/], ['frozen', /freezes solid/], ['shock stuns', /stunned by the shock/], ['slips', /slips on the ice/],
   ['friendly fire', /Friendly fire!/], ['prop hits', /hits the (Oil Barrel|Brazier)/], ['death bursts', /bursts in a spray|collapses into a pool/],
   ['absorbed', /drinks in the (fire|cold|lightning|poison)/],
+];
+// Items (Phase 6): the shop, loot and relics, counted from their log lines.
+const ITEM_RES: [string, RegExp][] = [
+  ['bought', /^🛒 .* buys /], ['sold', /^🛒 .* sells /], ['lessons', /pays \d+ gold for a lesson/], ['forgot', /gold to forget/],
+  ['relics', /The party gains the /], ['equipped', / equips the /], ['given', /^🤝 /], ['elite gear', /\(killing blow\)|picks up the /],
+  ['drops', / finds a /], ['bag full', /Every bag is full/], ['phoenix', /Phoenix Feather flares/], ['weapon procs', /^\S+ The .* adds \d+ /],
 ];
 const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")
@@ -69,6 +76,11 @@ export interface RunResult {
   tactics: { sneakOk: number; sneakFail: number; charge: number; ambush: number; flanking: number; behind: number };
   field: Record<string, number>; // FIELD_RES counts
   combosByAct: Record<number, number>; // field reactions set off by a hero's skill, per act
+  items: Record<string, number>; // ITEM_RES counts
+  goldAtEnd: number;
+  relicsAtEnd: string[];
+  gearAtEnd: string[]; // "Pip: Flametongue, Chain Shirt"
+  shops: number;
   picks: number; // level-up picks taken
   rests: { long: number; train: number };
   toasts: string[];
@@ -97,6 +109,11 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     tactics: { sneakOk: 0, sneakFail: 0, charge: 0, ambush: 0, flanking: 0, behind: 0 },
     field: {},
     combosByAct: {},
+    items: {},
+    goldAtEnd: 0,
+    relicsAtEnd: [],
+    gearAtEnd: [],
+    shops: 0,
   };
   const socket = io(opts.url, { transports: ['websocket'], forceNew: true, reconnection: false });
   const box: { s: GameState | null } = { s: null };
@@ -157,6 +174,8 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       if (/→\d+ \([^)]*flanking/.test(l.text)) t.flanking++;
       if (/→\d+ \([^)]*from behind/.test(l.text)) t.behind++;
       for (const [name, re] of FIELD_RES) if (re.test(l.text)) r.field[name] = (r.field[name] ?? 0) + 1;
+      for (const [name, re] of ITEM_RES) if (re.test(l.text)) r.items[name] = (r.items[name] ?? 0) + 1;
+      if (/^🛒 A merchant spreads/.test(l.text)) r.shops++;
       // A reaction right after a hero's skill line is a combo the heroes set off (not a monster's firebomb).
       if (REACTION_RE.test(l.text) && heroActed && s.run) r.combosByAct[s.run.act] = (r.combosByAct[s.run.act] ?? 0) + 1;
       if (/ uses | attacks .*\(|'s .* \((DEX|STR|WIS) save|'s .*: \d+ hits? strike| hits the (Oil Barrel|Brazier)/.test(l.text)) {
@@ -270,6 +289,11 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
         skills: e.skills.map((o) => skillTitle(o)),
       }));
     r.log = s.log.slice(-20).map((l) => `[${l.kind}] ${l.text}`);
+    r.goldAtEnd = s.run?.gold ?? 0;
+    r.relicsAtEnd = (s.run?.relics ?? []).map((id) => RELICS[id]?.name ?? id);
+    r.gearAtEnd = s.entities
+      .filter((e): e is PlayerEntity => e.kind === 'player')
+      .map((e) => `${e.name}: ${[...Object.values(e.gear), ...e.bag].map((id) => (id ? itemInfo(id).name : '')).join(', ') || '-'}`);
   }
   return r;
 }
@@ -344,10 +368,16 @@ skills used (${uses.size} different):`);
   const field = new Map<string, number>();
   for (const r of results) for (const [k, v] of Object.entries(r.field)) field.set(k, (field.get(k) ?? 0) + v);
   console.log(`battlefield: ${FIELD_RES.map(([k]) => `${k} ${field.get(k) ?? 0}`).join(' · ')}`);
+  const items = new Map<string, number>();
+  for (const r of results) for (const [k, v] of Object.entries(r.items)) items.set(k, (items.get(k) ?? 0) + v);
+  console.log(`items: shops visited ${results.reduce((n, r) => n + r.shops, 0)} · ${ITEM_RES.map(([k]) => `${k} ${items.get(k) ?? 0}`).join(' · ')}`);
+  console.log(`gold left at the end: avg ${avg(results.map((r) => r.goldAtEnd)).toFixed(0)}`);
   const last = results.filter((r) => r.heroes.length).at(-1);
   if (last) {
     console.log(`builds at the end of run ${last.code}:`);
     for (const h of last.heroes) console.log(`  ${h.name} (${h.classId} ${h.level}): ${h.skills.join(', ')}`);
+    console.log(`  items: ${last.gearAtEnd.join(' | ')}`);
+    console.log(`  relics: ${last.relicsAtEnd.join(', ') || '-'}`);
   }
 
   console.log('\nper act:');

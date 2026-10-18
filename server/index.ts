@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import { CLASSES } from '../shared/rules.ts';
-import type { ClassId, JoinRequest, JoinResult, PickRequest, Pos, RestPick } from '../shared/types.ts';
+import type { ClassId, ItemRequest, JoinRequest, JoinResult, PickRequest, Pos, RestPick, ShopRequest } from '../shared/types.ts';
 import { Game } from './game.ts';
 import { archiveSave, hasSave, isSaveCode, listSaves, readSave, summarize } from './saves.ts';
 
@@ -125,6 +125,8 @@ io.on('connection', (socket) => {
   on('act', (g, pid, skill: unknown, target?: unknown) => g.handleSkill(pid, skill, target));
   on('pick', (g, pid, req: PickRequest) => g.handlePick(pid, req));
   on('rest', (g, pid, choice: RestPick) => g.handleRest(pid, choice));
+  on('shop', (g, pid, req: ShopRequest) => g.handleShop(pid, req));
+  on('item', (g, pid, req: ItemRequest) => g.handleItem(pid, req));
   on('endTurn', (g, pid) => g.handleEndTurn(pid));
   on('vote', (g, pid, option: string) => g.handleVote(pid, option));
   on('chat', (g, pid, text: string) => g.handleChat(pid, text));

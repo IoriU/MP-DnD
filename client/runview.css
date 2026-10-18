@@ -1,4 +1,4 @@
-/* Run screens over the canvas: the act map (#map-view), the event panel (#event-view) and the rest site (#rest-view). */
+/* Run screens over the canvas: the act map (#map-view), the event panel (#event-view), the rest site (#rest-view) and the shop (#shop-view). */
 
 /* ---------------------------------------------------------------- map screen */
 
@@ -198,7 +198,8 @@
 /* ---------------------------------------------------------------- event screen */
 
 #event-view,
-#rest-view {
+#rest-view,
+#shop-view {
   position: absolute;
   inset: 0;
   z-index: 7;
@@ -312,6 +313,55 @@
 .rv-picks li { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
 .rv-pick { margin-left: auto; text-align: right; }
 
+/* ---------------------------------------------------------------- shop (an event panel with a fixed header and footer) */
+
+.rv-event-panel.sh-panel {
+  width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  overflow: hidden;
+  text-align: left;
+}
+.sh-top { display: flex; align-items: center; gap: 12px; }
+.sh-glyph { flex: none; font-size: 36px; line-height: 1; }
+.sh-titles { flex: 1; min-width: 0; font-size: 12px; }
+.sh-titles h2 { margin: 0; font-size: 22px; }
+.sh-relics { padding-top: 2px; }
+.sh-scroll { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 12px; padding-right: 4px; }
+.sh-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-bottom: 6px; font: 600 15px var(--serif); color: var(--accent-2); }
+.sh-head .muted { font: 12px var(--sans); }
+.sh-bag { margin-left: auto; }
+.sh-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.sh-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.sh-row.sold { opacity: 0.5; }
+.sh-ic { font-size: 24px; line-height: 1; width: 30px; text-align: center; }
+.sh-main { min-width: 0; display: grid; gap: 1px; overflow-wrap: anywhere; }
+.sh-tag { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-left: 4px; }
+.sh-desc { font-size: 12px; color: var(--muted); white-space: pre-line; }
+.sh-note { font-size: 11px; color: var(--accent-2); }
+.sh-buy { display: grid; grid-template-columns: auto auto; justify-items: end; align-items: center; gap: 2px 8px; min-width: 112px; }
+.sh-price { color: var(--accent-2); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sh-left { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.sh-buy .btn { grid-column: 1 / -1; width: 100%; }
+.sh-why { grid-column: 1 / -1; font-size: 11px; color: #ff9b8c; text-align: right; }
+.sh-empty, .sh-hint { font-size: 12px; color: var(--muted); }
+.sh-svc { display: grid; gap: 6px; padding: 8px; background: #120d08; border: 1px solid var(--line); border-radius: 10px; }
+.sh-confirm { display: grid; gap: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.sh-confirm-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.sh-done { color: var(--good); font-weight: 600; }
+.sh-foot { margin-top: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+
 /* ---------------------------------------------------------------- approach card (Sneak or Charge) */
 
 /* A compact card across the top of the canvas. The room stays visible and hoverable around it. */
@@ -364,6 +414,11 @@
 
 /* ---------------------------------------------------------------- small screens & motion */
 
+/* The canvas is short on a phone, so the (long) shop takes the whole screen. */
+@media (max-width: 860px) {
+  #shop-view { position: fixed; z-index: 25; }
+}
+
 @media (max-width: 480px) {
   #approach-view { top: 6px; left: 6px; right: 6px; max-height: calc(100% - 12px); }
   .ap-card { gap: 6px; padding: 9px 10px; }
@@ -376,6 +431,15 @@
   .rv-body { padding: 8px 6px 24px; }
   .rv-map { border-radius: 12px; }
   .rv-event-panel { padding: 18px 14px; }
+  .rv-event-panel.sh-panel { padding: 12px; }
+  #shop-view { padding: 8px; }
+  .sh-titles .muted { display: none; }
+  .sh-glyph { font-size: 28px; }
+  .sh-titles h2 { font-size: 20px; }
+  .sh-row { grid-template-columns: auto 1fr; }
+  .sh-buy { grid-column: 1 / -1; grid-template-columns: auto auto 1fr; justify-items: start; }
+  .sh-buy .btn { grid-column: auto; width: auto; justify-self: end; }
+  .sh-why { grid-column: 1 / -1; text-align: left; }
   .rv-pick { margin-left: 0; text-align: left; flex-basis: 100%; }
   .rv-event-glyph { font-size: 42px; }
   .rv-event-title { font-size: 22px; }

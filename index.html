@@ -74,8 +74,10 @@
         <div id="map-view" hidden></div>
         <div id="event-view" hidden></div>
         <div id="rest-view" hidden></div>
+        <div id="shop-view" hidden></div>
         <div id="approach-view" hidden></div>
         <div id="levelup" hidden></div>
+        <div id="inventory" hidden></div>
       </div>
       <aside id="hud">
         <header class="hud-head">
@@ -85,6 +87,7 @@
           </div>
           <button id="leave-game" class="btn ghost small" type="button" title="Leave game">Leave</button>
         </header>
+        <section id="relics" hidden></section>
         <section id="initiative" hidden></section>
         <section id="party"></section>
         <section id="me-panel">
@@ -92,6 +95,7 @@
           <div id="ability-bar"></div>
           <div class="actions">
             <button id="end-turn" class="btn primary" type="button">End turn <kbd>Space</kbd></button>
+            <button id="bag-btn" class="btn" type="button" title="Your equipment, bag and potions">🎒 Bag <kbd>I</kbd></button>
             <button id="auto-btn" class="btn" type="button" title="Let the AI play your hero, e.g. while you're AFK">🤖 Auto <kbd>P</kbd></button>
           </div>
         </section>
@@ -103,7 +107,8 @@
           <summary>How to play</summary>
           <ul>
             <li><b>The map:</b> click a glowing room to vote. Majority wins; ties are rolled. Beat 3 acts, each ending in a boss 👑.</li>
-            <li><b>Rooms:</b> ⚔️ fight · 💀 elite (tough, lots of XP) · ❓ event · 🔥 rest · 💰 treasure.</li>
+            <li><b>Rooms:</b> ⚔️ fight · 💀 elite (tough, lots of XP, drops gear) · ❓ event · 🔥 rest · 💰 treasure (pick a relic) · 🛒 shop.</li>
+            <li><b>Gear, bag and relics 🎒:</b> every hero wears a weapon, armor and a trinket, and carries up to 8 more items (gear and consumables). Press <kbd>I</kbd> between fights to equip, give or drop things. Consumables show up on your hotbar and are used up. <b>Relics</b> (the icons at the top of this panel) help the whole party for the rest of the run. Gold is shared: spend it at 🛒 shops on gear, consumables, a relic, potions, lessons (upgrade a spell) or forgetting a skill, and sell spare gear for half.</li>
             <li><b>In a fight:</b> on your turn you get movement (blue tiles), one <b>A</b>ction and one <b>B</b>onus action. Click a tile to walk (or WASD, Q E Z C for diagonals). Some skills are <b>free</b>.</li>
             <li><b>Attack:</b> click a monster to use your basic attack (free, no limit). <b>Skills:</b> keys 1–9 and 0 (or click), then click a target. Area skills show what they hit when you hover a tile.</li>
             <li><b>Facing and back attacks:</b> every creature faces the way it last moved or attacked (the little arrow on its ring). Attack from the 3 tiles behind it and the roll has <b>advantage</b>. Monsters can do the same to you, so watch your back.</li>
@@ -120,7 +125,7 @@
             <li><b>Dice:</b> attacks roll d20 + bonus vs the target's AC. A natural 20 crits.</li>
             <li><b>At 0 HP</b> you fall and make death saves. Allies can heal you back up. Everyone gets back up after a won fight.</li>
             <li><b>Between rooms:</b> HP carries over. Drink potions, or heal friends by picking a heal and clicking their card.</li>
-            <li><b>Keys:</b> <kbd>Space</kbd> end turn · <kbd>Esc</kbd> cancel aiming · <kbd>P</kbd> auto-play · <kbd>Enter</kbd> chat.</li>
+            <li><b>Keys:</b> <kbd>Space</kbd> end turn · <kbd>Esc</kbd> cancel aiming · <kbd>I</kbd> bag · <kbd>L</kbd> level-up · <kbd>P</kbd> auto-play · <kbd>Enter</kbd> chat.</li>
           </ul>
         </details>
       </aside>

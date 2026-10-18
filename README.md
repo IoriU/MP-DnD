@@ -36,10 +36,11 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **The map:** each act is a branching map. Click a glowing room to vote for it. When everyone has voted (or 20 seconds after the first vote) the majority wins; ties are rolled.
 - **Rooms:**
   - ⚔️ **Combat:** a fight.
-  - 💀 **Elite:** a tough fight worth a lot of XP.
+  - 💀 **Elite:** a tough fight worth a lot of XP; whoever lands the killing blow takes its gear.
   - ❓ **Event:** a scene with choices the party votes on.
   - 🔥 **Rest:** each hero picks **Long Rest** (heal 30% and restore every slot) or **Train** (upgrade a cantrip or spell).
-  - 💰 **Treasure:** gold and a potion.
+  - 💰 **Treasure:** gold and a relic (the party votes on one of three).
+  - 🛒 **Shop:** spend the party's gold (see below).
   - 👑 **Boss:** ends the act. Beat all 3 acts to win.
 - **Fights:**
   - On your turn you get movement (the blue tiles), one **A**ction and one **B**onus action.
@@ -76,6 +77,14 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - Each act has its own terrain: oil and lamps in the Goblin Warrens, water and poison in the Crypt, lava in the Dragon's Lair. Some monsters resist elements (hover them), and some leave poison or fire behind when they die.
   - Clicking a tile walks around hazards if it can. If the only way goes through one, the game asks you to click again.
   - New combo skills: the Cleric's **Create Water** (soak them, then shock or freeze them) and the Wizard's **Grease** (then set it on fire).
+- **Items** (press **I** for your bag):
+  - Every hero has a **weapon**, **armor** and **trinket** slot, plus a bag with 8 spaces. A weapon changes your basic attacks whatever your class: a Flametongue adds fire (and lights oil), a Venom Edge poisons. Armor and trinkets add AC, HP, movement, resistances and more.
+  - **Consumables** go on your hotbar after the potion: Greater Potions, Ether (a slot back), oil and water flasks, fire, frost and lightning bombs, smoke pellets, stink bombs and scrolls. Each is used up.
+  - Between fights you can equip, swap, give items (and potions) to a teammate, or drop them.
+  - **Gold is shared** by the party. You find it in fights, treasure and events.
+- **Loot:** the hero who lands the killing blow on an elite takes its gear (another reason to steal kills). Regular fights sometimes drop a consumable, and an act boss leaves a powerful relic behind.
+- **Relics** help the whole party for the rest of the run: advantage on your first attack, +1 AC for everyone, potions that heal more, and so on. They come from 💰 treasure (the party votes on one of three), shops and bosses.
+- **🛒 Shops:** everyone browses at once and spends the shared gold. Buy gear, consumables, potions or a relic, sell what you don't need, pay for a lesson (upgrade a cantrip or spell) or forget a skill to make room. The party moves on when everyone clicks Done.
 - **Sneak or Charge:** before most fights the party sees the room and votes. Sneaking is a group Stealth check: if at least half of you pass, the monsters lose their first turn; if not, you lose yours. Some fights are ambushes. The Rogue's **Hide** makes monsters ignore them and gives their next attack advantage.
 - **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Each level-up offers 3 cards (new skills, upgrades, passives, boons); pick one whenever you like, nobody has to wait.
 - **At 0 HP** you fall unconscious and roll death saves on your turn. Healing (a potion, Healing Word or Second Wind) gets you back up. If the party wins the fight, everyone gets back up, even the dead.
@@ -98,7 +107,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 ```bash
 npm run dev        # server with auto-restart + Vite hot reload: open http://localhost:5173
 npm run typecheck  # TypeScript checks
-npm test           # unit tests (map and room generators, events, skills, XP, the battlefield, hero AI)
+npm test           # unit tests (map and room generators, events, skills, XP, the battlefield, items, hero AI)
 npm run smoke      # with a server running: a party of auto-played bots plays one run headlessly
 npm run balance    # many full bot runs in parallel: win rate, where parties die, kills, skills used
 npm run resume-check  # plays a few rooms, kills the server, restarts it and checks the party continues where it was
@@ -115,6 +124,7 @@ shared/rules.ts    classes, monsters, acts, dice, XP and balance numbers  ← st
 shared/skills.ts   every skill and passive (tiers I/II/III-A/III-B), statuses, targeting, descriptions
 shared/tactics.ts  facing, back attacks, flanking: every reason a roll has advantage
 shared/surfaces.ts the battlefield: ground, clouds, props, the combo engine, hazards, previews
+shared/items.ts    equipment, consumables, relics and prices
 shared/grid.ts     line of sight, pathfinding
 shared/types.ts    the game state sent from server to clients
 server/game.ts     the "Dungeon Master": the run, voting, rooms, turns, combat, monster AI

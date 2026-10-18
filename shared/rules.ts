@@ -1,6 +1,7 @@
 // Game rules: dice, classes, abilities and monsters. A simplified take on D&D 5e.
 // Tweak numbers here to rebalance the game; both server and client read from this file.
 
+import { gearBonus } from './items.ts';
 import type { Element, SkillId } from './skills.ts';
 import type { CloudId, GroundId } from './surfaces.ts';
 import type { BoonId, ClassId, NodeType } from './types.ts';
@@ -112,8 +113,9 @@ export const BREATH_DC = 13;
 
 export const STEALTH_DC_BASE = 12; // + the sharpest monster's WIS
 export const AMBUSH_CHANCE = 0.1; // a regular fight (past the first rows) turns out to be an ambush
-/** A hero's Stealth: DEX, and Rogues add their proficiency. */
-export const stealthBonus = (p: { classId: ClassId; level: number }) => CLASSES[p.classId].mods.dex + (p.classId === 'rogue' ? profBonus(p.level) : 0);
+/** A hero's Stealth: DEX, Rogues add their proficiency, plus equipment (Elven Cloak) and relics (Owl Totem). */
+export const stealthBonus = (p: { classId: ClassId; level: number } & Parameters<typeof gearBonus>[0]) =>
+  CLASSES[p.classId].mods.dex + (p.classId === 'rogue' ? profBonus(p.level) : 0) + gearBonus(p, 'stealth');
 /** Group Stealth DC to sneak up on these monsters (by MONSTERS key). */
 export const stealthDc = (types: string[]) => STEALTH_DC_BASE + Math.max(0, ...types.map((t) => MONSTERS[t]?.wis ?? 0));
 

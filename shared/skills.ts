@@ -5,6 +5,7 @@
 
 import { dist, hasLOS, type MapLike } from './grid.ts';
 import { CLASSES, MAX_CANTRIPS, MAX_SPELLS, TIER3_LEVEL, passiveSlots, profBonus, saveDc, sneakDice, statMod, type Dice, type Stat } from './rules.ts';
+import { ITEMS, describeStats, gearBonus, gearDef, isItemId, type ItemId, type Rarity, type Slot } from './items.ts';
 import type { CloudId, GroundId, PropMap } from './surfaces.ts';
 import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, Pos, TurnState } from './types.ts';
 
@@ -151,6 +152,7 @@ export interface SkillStats {
   dash?: number; // extra movement this turn
   refresh?: boolean; // get your action back
   resetCooldowns?: boolean; // every other cantrip is ready again
+  restoreSlots?: number; // slots back (Ether)
   // passives
   value?: number; // the tier's number, read by the server hook
   note?: string; // rules text the generated description can't express
@@ -191,6 +193,19 @@ const SKILL_DEFS = {
   dagger: { kind: 'basic', pool: 'wizard', base: { name: 'Dagger', icon: '🔪', cost: 'action', target: 'enemy', range: 4, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, note: 'Stab, or throw it up to 4 tiles.' } },
   mace: { kind: 'basic', pool: 'cleric', base: { name: 'Mace', icon: '🔨', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 6), mod: true } },
   potion: { kind: 'item', pool: 'common', base: { name: 'Potion', icon: '🧪', cost: 'bonus', target: 'ally', range: 1, heal: d(2, 4, 2), note: 'Drink it, or feed it to an ally next to you.' } },
+
+  // ---------------------------------------------- consumables (shared/items.ts): one use each, from the bag
+  greater_potion: { kind: 'item', pool: 'common', base: { name: 'Greater Potion', icon: '🧴', cost: 'bonus', target: 'ally', range: 1, heal: d(4, 4, 4), note: 'Drink it, or feed it to an ally next to you.' } },
+  ether: { kind: 'item', pool: 'common', base: { name: 'Ether', icon: '🔮', cost: 'bonus', target: 'self', range: 0, restoreSlots: 1 } },
+  oil_flask: { kind: 'item', pool: 'common', base: { name: 'Oil Flask', icon: '🫗', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { ground: 'oil' }, note: 'Throw it, then light it.' } },
+  water_flask: { kind: 'item', pool: 'common', base: { name: 'Water Flask', icon: '🫙', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { ground: 'water' }, note: 'Puts out fires and soaks whoever is there.' } },
+  fire_bomb: { kind: 'item', pool: 'common', base: { name: 'Fire Bomb', icon: '🧨', cost: 'action', target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'fire' } },
+  frost_bomb: { kind: 'item', pool: 'common', base: { name: 'Frost Bomb', icon: '☃️', cost: 'action', target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'cold' } },
+  thunderstone: { kind: 'item', pool: 'common', base: { name: 'Thunderstone', icon: '🌩️', cost: 'action', target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'lightning' } },
+  smoke_pellet: { kind: 'item', pool: 'common', base: { name: 'Smoke Pellet', icon: '💨', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { cloud: 'smoke' } } },
+  stink_bomb: { kind: 'item', pool: 'common', base: { name: 'Stink Bomb', icon: '🦨', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { cloud: 'gas' } } },
+  scroll_healing: { kind: 'item', pool: 'common', base: { name: 'Scroll of Mass Healing', icon: '📜', cost: 'action', target: 'allies', radius: 6, range: 0, heal: d(2, 4, 2) } },
+  scroll_blessing: { kind: 'item', pool: 'common', base: { name: 'Scroll of Blessing', icon: '📃', cost: 'action', target: 'allies', radius: 4, range: 0, status: [st('blessed', 3)] } },
 
   // ---------------------------------------------- Fighter
   shield_bash: {
@@ -493,9 +508,14 @@ export function skillTitle(o: Pick<OwnedSkill, 'id' | 'tier' | 'branch'>): strin
 /** Things every hero can do without learning them. */
 export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion'];
 
-/** The hero's copy of a skill. Shove and the potion are things everyone has. */
+/** Consumables in the bag, one hotbar entry per kind. */
+export const bagConsumables = (p: Pick<PlayerEntity, 'bag'>): SkillId[] =>
+  [...new Set(p.bag)].filter((id): id is ItemId & SkillId => isItemId(id) && ITEMS[id].kind === 'consumable' && isSkillId(id));
+
+/** The hero's copy of a skill. Shove and the potion are things everyone has; consumables come from the bag. */
 export function ownedSkill(p: PlayerEntity, id: SkillId): OwnedSkill | undefined {
   if (COMMON_ACTIONS.includes(id)) return { id, tier: 1, cd: 0 };
+  if (SKILLS[id].kind === 'item') return (p.bag as string[]).includes(id) ? { id, tier: 1, cd: 0 } : undefined;
   return p.skills.find((s) => s.id === id);
 }
 
@@ -512,10 +532,10 @@ export const hasBranch = (p: PlayerEntity, id: SkillId, branch: 'A' | 'B') => {
   return !!o && o.tier === 3 && o.branch === branch;
 };
 
-/** Usable skills in hotbar order: basic attacks, cantrips, spells, then Shove and the potion. Keys 1-9, 0 follow this order. */
+/** Usable skills in hotbar order: basic attacks, cantrips, spells, Shove and the potion, then the bag. Keys 1-9, 0 follow this order. */
 export function hotbar(p: PlayerEntity): SkillId[] {
   const of = (k: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === k).map((s) => s.id);
-  return [...of('basic'), ...of('cantrip'), ...of('spell'), ...COMMON_ACTIONS];
+  return [...of('basic'), ...of('cantrip'), ...of('spell'), ...COMMON_ACTIONS, ...bagConsumables(p)];
 }
 
 export const skillsOfKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind);
@@ -525,13 +545,18 @@ export const hasStatus = (e: Entity, id: StatusId) => e.statuses.some((x) => x.i
 // ---------------------------------------------------------------- numbers for a hero
 
 export const statFor = (p: Pick<PlayerEntity, 'classId'>, s: SkillStats): Stat => s.stat ?? CLASSES[p.classId].stat;
-/** Attack bonus with a skill: proficiency + its stat. */
-export const attackBonus = (p: Pick<PlayerEntity, 'classId' | 'level'>, s: SkillStats) => profBonus(p.level) + statMod(p.classId, statFor(p, s));
+type Hero = Pick<PlayerEntity, 'classId' | 'level'> & Partial<Pick<PlayerEntity, 'gear' | 'relics'>>;
+
+/** Attack bonus with a skill: proficiency + its stat, plus equipment (an Arcane Focus helps skills on your casting stat). */
+export const attackBonus = (p: Hero, s: SkillStats) =>
+  profBonus(p.level) + statMod(p.classId, statFor(p, s)) + gearBonus(p, 'hit') + (s.stat ? 0 : gearBonus(p, 'power'));
+/** Save DC of a hero's cantrips, spells and bombs: 8 + proficiency + casting stat, plus equipment. */
+export const heroDc = (p: Hero) => saveDc(p.classId, p.level) + gearBonus(p, 'power');
 /** Flat damage bonus with a skill (its stat modifier, if `mod`). */
 export const damageMod = (p: Pick<PlayerEntity, 'classId'>, s: SkillStats) => (s.mod ? statMod(p.classId, statFor(p, s)) : 0);
 /** Flat bonus on a heal. */
-export const healBonus = (p: Pick<PlayerEntity, 'classId' | 'level'>, s: SkillStats) =>
-  (s.heal?.bonus ?? 0) + (s.healMod ? statMod(p.classId, CLASSES[p.classId].stat) : 0) + (s.healLevel ? p.level : 0);
+export const healBonus = (p: Hero, s: SkillStats) =>
+  (s.heal?.bonus ?? 0) + (s.healMod ? statMod(p.classId, CLASSES[p.classId].stat) : 0) + (s.healLevel ? p.level : 0) + gearBonus(p, 'heal');
 /** Attacks (or darts) per target. */
 export const hitsOf = (p: Pick<PlayerEntity, 'level'>, s: SkillStats) => (s.hits ?? 1) + (s.extraAttack && p.level >= 5 ? 1 : 0);
 
@@ -573,7 +598,7 @@ const statusList = (list: StatusApply[]) =>
  * Rules text generated from the stats, so it always matches what the server does.
  * Pass the hero to show real numbers (damage bonus, DC, hits at their level).
  */
-export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'level'>): string {
+export function describe(s: SkillStats, hero?: Hero): string {
   const parts: string[] = [];
   const who = (() => {
     switch (s.target) {
@@ -601,7 +626,7 @@ export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'l
     const dmg = diceStr(s.dmg, hero ? damageMod(hero, s) : 0) + (s.mod && !hero ? ` + ${STAT_WORD[s.stat ?? 'str']}` : '') + ELEMENT_WORD[s.element ?? 'physical'];
     const times = hits > 1 ? `${hits}× ` : '';
     if (s.roll === 'save') {
-      const dc = hero ? ` (DC ${saveDc(hero.classId, hero.level)})` : '';
+      const dc = hero ? ` (DC ${heroDc(hero)})` : '';
       parts.push(`${who}: ${(s.save ?? 'dex').toUpperCase()} save${dc} or take ${times}${dmg}${s.half ? ', half on a save' : ''}`);
     } else if (s.roll === 'auto') {
       parts.push(`${who}: ${times}${dmg}, never misses`);
@@ -644,6 +669,7 @@ export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'l
   if (s.dash) parts.push(`+${s.dash} movement this turn`);
   if (s.refresh) parts.push('Get your action back');
   if (s.resetCooldowns) parts.push('Your other cantrips are ready again');
+  if (s.restoreSlots) parts.push(`Get ${s.restoreSlots} slot${s.restoreSlots > 1 ? 's' : ''} back (Spell slots, Grit or Cunning)`);
   if (s.note) parts.push(s.note);
   const cost = s.cooldown !== undefined ? `⏱ cooldown ${s.cooldown}` : s.slots !== undefined ? `🔮 ${s.slots} slot${s.slots > 1 ? 's' : ''}` : '';
   const action = s.cost === 'action' ? 'Action' : s.cost === 'bonus' ? 'Bonus action' : 'Free';
@@ -655,10 +681,20 @@ export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'l
 }
 
 /** Rules text for a skill at a tier: generated for active skills, handwritten for passives. */
-export function describeSkill(id: SkillId, tier: 1 | 2 | 3 = 1, branch?: 'A' | 'B', hero?: Pick<PlayerEntity, 'classId' | 'level'>): string {
+export function describeSkill(id: SkillId, tier: 1 | 2 | 3 = 1, branch?: 'A' | 'B', hero?: Hero): string {
   const s = statsAt(id, tier, branch);
   if (SKILLS[id].kind === 'passive') return `${s.note ?? ''}\nPassive · always on`;
-  return describe(s, hero);
+  const text = describe(s, hero);
+  return SKILLS[id].kind === 'item' && id !== 'potion' ? text.replace(/\n(.*)$/, '\n$1 · used up') : text;
+}
+
+/** Name, icon, rarity and rules text of any item: equipment from its stats, consumables from their skill. */
+export function itemInfo(id: ItemId): { name: string; icon: string; desc: string; rarity: Rarity; slot?: Slot } {
+  const def = ITEMS[id];
+  const g = gearDef(id);
+  if (g) return { name: g.name, icon: g.icon, desc: [describeStats(g.stats), g.note].filter(Boolean).join(' '), rarity: g.rarity, slot: g.slot };
+  const skill = id as SkillId;
+  return { name: SKILLS[skill].base.name, icon: SKILLS[skill].base.icon, desc: describeSkill(skill), rarity: def.rarity };
 }
 
 // ---------------------------------------------------------------- can I use it?
@@ -668,6 +704,7 @@ export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean
   const def = SKILLS[id];
   if (!def) return 'Unknown skill';
   if (def.kind === 'passive') return 'Passive: always on';
+  if (def.kind === 'item' && id !== 'potion' && !(p.bag as string[]).includes(id)) return 'None left';
   const own = ownedSkill(p, id);
   if (!own) return "You don't know that skill";
   const s = statsOf(own);
@@ -680,7 +717,7 @@ export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean
     if (s.cost === 'bonus' && turn.bonusUsed) return 'Bonus action already used this turn';
     if (own.cd > 0) return `Ready in ${own.cd} turn${own.cd > 1 ? 's' : ''}`;
     if (s.refresh && p.used.includes('turn:surge')) return 'Only once per turn';
-  } else if (!s.heal) {
+  } else if (!s.heal && !s.restoreSlots) {
     return 'Only in combat';
   } else if (def.kind === 'cantrip') {
     return 'Cantrips only work in combat';

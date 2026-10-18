@@ -1,10 +1,11 @@
 // Types shared by the server (rules + state) and the browser client (rendering).
 
 import type { SkillId, StatusId } from './skills.ts';
+import type { ItemId, RelicId, Slot } from './items.ts';
 import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
 
 export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric';
-export type Phase = 'lobby' | 'map' | 'combat' | 'event' | 'rest' | 'victory' | 'defeat';
+export type Phase = 'lobby' | 'map' | 'combat' | 'event' | 'rest' | 'shop' | 'victory' | 'defeat';
 export type NodeType = 'combat' | 'elite' | 'event' | 'rest' | 'treasure' | 'shop' | 'boss';
 
 export interface Pos {
@@ -68,6 +69,9 @@ export interface PlayerEntity extends EntityBase {
   bonusSlots: number;
   tempHp: number; // soaks damage first; gone after the fight
   potions: number;
+  gear: Partial<Record<Slot, ItemId>>; // what the hero wears (shared/items.ts)
+  bag: ItemId[]; // unequipped gear and consumables, up to BAG_SIZE
+  relics: RelicId[]; // a copy of the party's relics, so the hero sheet can apply them
   kills: number;
   steals: number; // killing blows on monsters someone else did most of the damage to
   slots: number;
@@ -141,7 +145,8 @@ export interface RunInfo {
   map: ActMap;
   currentId: string | null; // null = at the start of the act, before the first row
   visited: string[];
-  gold: number;
+  gold: number; // the party's purse: anyone can spend it at a shop or an event
+  relics: RelicId[]; // party-wide perks for the rest of the run
   seed: number;
 }
 
@@ -157,6 +162,38 @@ export interface RestState {
   picks: Record<string, RestPick>; // playerId -> choice so far
   endsInMs: number | null; // countdown after the first pick; anyone undecided takes a Long Rest
 }
+
+/** One thing for sale at a shop. */
+export interface ShopOffer {
+  kind: 'item' | 'relic' | 'potion';
+  id: string; // ItemId, RelicId, or 'potion'
+  price: number;
+  left: number; // how many are still for sale
+}
+
+/** A shop: everyone browses at once and spends the party's gold; the party moves on when everyone is done. */
+export interface ShopView {
+  offers: ShopOffer[];
+  forgetPrice: number; // forget a skill to make room
+  trainPrice: number; // upgrade a cantrip or spell
+  done: string[]; // playerIds who are done shopping
+  endsInMs: number | null; // countdown once the first person is done
+}
+
+/** Shop actions sent by the client. */
+export type ShopRequest =
+  | { kind: 'buy'; offer: number }
+  | { kind: 'sell'; item: ItemId }
+  | { kind: 'forget'; skill: SkillId }
+  | { kind: 'train'; skill: SkillId; branch?: 'A' | 'B' }
+  | { kind: 'done'; done: boolean };
+
+/** Inventory actions, any time outside a fight. */
+export type ItemRequest =
+  | { kind: 'equip'; item: ItemId } // from the bag; what was worn goes back to the bag
+  | { kind: 'unequip'; slot: Slot }
+  | { kind: 'give'; item: ItemId | 'potion'; to: string } // to another hero (entity id): from your bag, or a potion
+  | { kind: 'drop'; item: ItemId };
 
 export interface EventView {
   title: string;
@@ -199,6 +236,7 @@ export interface GameState {
   vote: VoteState | null;
   event: EventView | null;
   rest: RestState | null;
+  shop: ShopView | null;
   approach: { dc: number } | null; // the Sneak-or-Charge vote before a fight: the group Stealth DC
   notice: Notice | null; // result of the last rest/treasure/event, shown on the map
   roomKind: NodeType | null; // combat, elite or boss while a fight is on

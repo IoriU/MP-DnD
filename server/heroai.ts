@@ -60,7 +60,10 @@ import {
   type FieldLike,
   type FieldOp,
 } from '../shared/surfaces.ts';
-import type { Entity, MonsterEntity, NodeType, OfferCard, OwnedSkill, PickRequest, PlayerEntity, Pos, RestPick, TurnState } from '../shared/types.ts';
+import { RELICS, bagRoom, gearDef, isItemId, itemPrice, type ItemId, type RelicId } from '../shared/items.ts';
+import type {
+  Entity, ItemRequest, MonsterEntity, NodeType, OfferCard, OwnedSkill, PickRequest, PlayerEntity, Pos, RestPick, ShopRequest, ShopView, TurnState,
+} from '../shared/types.ts';
 
 export interface HeroView {
   map: FieldLike;
@@ -1136,7 +1139,7 @@ function costOf(sim: Sim, id: SkillId, s: SkillStats): number {
   const kind = SKILLS[id].kind;
   if (kind === 'spell') return slotCost(s) * sim.price;
   if (kind === 'cantrip') return (s.cooldown ?? 0) * 0.3; // they come back, so use them freely
-  if (kind === 'item') return POTION_PRICE;
+  if (kind === 'item') return id === 'potion' || !isItemId(id) ? POTION_PRICE : Math.max(3, itemPrice(id) / 6); // bombs and flasks are cheaper than potions
   return 0;
 }
 
@@ -1181,6 +1184,8 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
     early ||= r > 0; // before walking off: the next action may want this spot
   }
   if (s.resetCooldowns) score += 2 * me.skills.filter((o) => o.cd > 0 && SKILLS[o.id].kind === 'cantrip').length;
+  // Ether: a slot back is worth a slot, when there's a spell to spend it on.
+  if (s.restoreSlots && countKind(me, 'spell')) score += Math.min(s.restoreSlots, me.maxSlots - me.slots) * sim.price * (me.slots === 0 ? 1.5 : 1);
   if (s.dash) {
     const d = s.cost === 'action' ? 0.5 : dashValue(sim, s.dash);
     score += d;
@@ -1489,4 +1494,83 @@ export function autoRestPick(hero: PlayerEntity, _heroes: PlayerEntity[]): RestP
   const value = (o: { skill: SkillId; tier: number }) => o.tier + (SKILLS[o.skill].kind === 'cantrip' ? 0.5 : 0) + Math.random() * 0.4;
   const pick = options.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0].o;
   return pick.tier === 3 ? { kind: 'train', skill: pick.skill, branch: randomBranch() } : { kind: 'train', skill: pick.skill };
+}
+
+// ---------------------------------------------------------------- items (auto heroes manage their own kit)
+
+const CASTERS = new Set(['wizard', 'cleric']);
+
+/** Roughly what a piece of equipment is worth to this hero, in the same units as the AI's other scores. */
+export function gearScore(p: PlayerEntity, id: ItemId | undefined): number {
+  const g = id && isItemId(id) ? gearDef(id) : null;
+  if (!g) return 0;
+  const st = g.stats;
+  const caster = CASTERS.has(p.classId);
+  let v = (st.ac ?? 0) * 3 + (st.hp ?? 0) * 0.4 + (st.speed ?? 0) + (st.init ?? 0) * 0.3 + (st.saves ?? 0) * 1.5 + (st.slots ?? 0) * 2.5 + (st.stealth ?? 0) * 0.3;
+  v += (st.hit ?? 0) * (caster ? 1 : 2.5) + (st.dmg ?? 0) * (caster ? 0.5 : 1.5) + (st.power ?? 0) * (caster ? 3 : 0.3);
+  v += (st.heal ?? 0) * (p.classId === 'cleric' ? 2 : 0.3);
+  if (st.weapon) v += caster ? 1.5 : 4;
+  if (st.onHit?.length) v += caster ? 0.5 : 2;
+  if (st.resist) v += Object.keys(st.resist).length * 1.2;
+  if (st.alert) v += 1;
+  if (st.shove) v += 0.5;
+  if (st.lucky) v += 1;
+  return v;
+}
+
+/** Put on whatever in the bag beats what's worn. */
+export function autoEquip(p: PlayerEntity): ItemRequest | null {
+  let best: { item: ItemId; gain: number } | null = null;
+  for (const item of p.bag) {
+    const g = gearDef(item);
+    if (!g) continue;
+    const gain = gearScore(p, item) - gearScore(p, p.gear[g.slot]);
+    if (gain > 0.1 && (!best || gain > best.gain)) best = { item, gain };
+  }
+  return best ? { kind: 'equip', item: best.item } : null;
+}
+
+/** Hand a piece of gear in the bag to a teammate it suits better (and who has room). */
+export function autoGive(p: PlayerEntity, heroes: PlayerEntity[]): ItemRequest | null {
+  for (const item of p.bag) {
+    const g = gearDef(item);
+    if (!g) continue;
+    const mine = gearScore(p, item) - gearScore(p, p.gear[g.slot]);
+    const taker = heroes
+      .filter((h) => h !== p && !h.dead && bagRoom(h) > 0)
+      .map((h) => ({ h, gain: gearScore(h, item) - gearScore(h, h.gear[g.slot]) }))
+      .sort((a, b) => b.gain - a.gain)[0];
+    if (taker && taker.gain > Math.max(0.5, mine)) return { kind: 'give', item, to: taker.h.id };
+  }
+  return null;
+}
+
+/**
+ * One purchase at a shop for an auto hero (null = done). Gold is the party's, so the game asks each auto hero in turn
+ * and nobody empties the purse alone: an upgrade for the hero's own gear, a relic for everyone, a potion when short,
+ * a lesson when one is due, a couple of bombs.
+ */
+export function autoShopPick(p: PlayerEntity, shop: Pick<ShopView, 'offers' | 'trainPrice'>, gold: number, partySize: number, relics: RelicId[]): ShopRequest | null {
+  const budget = Math.max(gold / Math.max(1, partySize), gold * 0.4);
+  let best: { req: ShopRequest; value: number } | null = null;
+  const consider = (req: ShopRequest, value: number, price: number) => {
+    if (price > gold || value <= 0) return;
+    const v = value - price / 40; // cheaper is better
+    if (v > 0.5 && (!best || v > best.value)) best = { req, value: v };
+  };
+  shop.offers.forEach((o, i) => {
+    if (o.left <= 0) return;
+    if (o.kind === 'potion') consider({ kind: 'buy', offer: i }, p.potions < 2 ? 3.5 : 0.5, o.price);
+    else if (o.kind === 'relic') consider({ kind: 'buy', offer: i }, relics.includes(o.id as RelicId) || !(o.id in RELICS) ? 0 : 6, o.price);
+    else if (isItemId(o.id) && bagRoom(p) > 0 && o.price <= budget) {
+      const g = gearDef(o.id);
+      if (g) consider({ kind: 'buy', offer: i }, (gearScore(p, o.id) - gearScore(p, p.gear[g.slot])) * 1.3, o.price);
+      else consider({ kind: 'buy', offer: i }, p.bag.filter((x) => !gearDef(x)).length < 3 ? 2.5 : 0, o.price);
+    }
+  });
+  const train = trainOptions(p)[0];
+  if (train && shop.trainPrice <= budget) {
+    consider(train.tier === 3 ? { kind: 'train', skill: train.skill, branch: randomBranch() } : { kind: 'train', skill: train.skill }, 6.5, shop.trainPrice);
+  }
+  return (best as { req: ShopRequest; value: number } | null)?.req ?? null;
 }

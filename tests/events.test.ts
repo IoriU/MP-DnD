@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { EVENTS, getEvent, pickEvent } from '../server/events.ts';
 import type { CheckResult, EventChoiceDef, EventCtx, EventDef, EventEffect, EventOutcome, EventStat } from '../server/events.ts';
 import { makeRng } from '../server/rng.ts';
+import { isItemId, isRelicId } from '../shared/items.ts';
 import { MONSTERS } from '../shared/rules.ts';
 
 const SEEDS = 40;
@@ -153,6 +154,13 @@ test('every choice resolves to text and valid effects', () => {
           assert.ok(Number.isInteger(e.amount) && e.amount >= 2 && e.amount <= 4, `maxHp ${e.amount}`);
           break;
         case 'restoreSlots':
+          break;
+        case 'relic':
+          assert.ok(isRelicId(e.id), `unknown relic ${e.id}`);
+          break;
+        case 'item':
+          assert.ok(e.id === undefined || isItemId(e.id), `unknown item ${e.id}`);
+          assert.ok(e.rarity === undefined || ['common', 'uncommon', 'rare', 'legendary'].includes(e.rarity), `rarity ${e.rarity}`);
           break;
         case 'fight':
           assert.ok(Array.isArray(e.monsters) && e.monsters.length > 0, 'empty fight');

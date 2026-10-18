@@ -8,6 +8,7 @@
 // Durations count rounds and tick down at the start of every round. `turns: null` is permanent (room features).
 
 import { DIRS, canStep, dist, findPath, type MapLike } from './grid.ts';
+import { gearResist } from './items.ts';
 import { MONSTERS, type Dice, type Resist } from './rules.ts';
 import { hasBranch, hasStatus, type AimResult, type Element, type SkillStats, type StatusId } from './skills.ts';
 import type { Entity, Pos } from './types.ts';
@@ -415,9 +416,11 @@ export const emptyField = (): Pick<FieldLike, 'ground' | 'clouds' | 'props'> => 
 
 // ---------------------------------------------------------------- creatures and elements
 
-/** How a creature takes an element: monsters by kind, heroes from passives (Attunement). */
+/** How a creature takes an element: monsters by kind, heroes from equipment and passives (Attunement). */
 export function resistance(e: Entity, el: Element): Resist | null {
   if (e.kind === 'monster') return MONSTERS[e.type]?.resist?.[el] ?? null;
+  const worn = gearResist(e, el);
+  if (worn) return worn;
   if (el === 'fire' && hasBranch(e, 'elemental_affinity', 'B')) return 'resist';
   return null;
 }

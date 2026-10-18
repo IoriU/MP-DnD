@@ -112,7 +112,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 3 | Save & resume | 🟢 |
 | 4 | Positioning & surprise | 🟢 |
 | 5 | Elements & surfaces (DOS2-style) | 🟢 |
-| 6 | Items, relics, shop & treasure | ⚪ |
+| 6 | Items, relics, shop & treasure | 🟢 |
 | 7 | Elites, blessings & NPC allies | ⚪ |
 | 8 | Real art *(independent; can be done anytime)* | ⚪ |
 | 9 | Smarter enemy AI + difficulty | ⚪ |
@@ -433,17 +433,31 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 6: Items, relics, shop & treasure ⚪
+## Phase 6: Items, relics, shop & treasure 🟢
 
 **Tasks**
-- [ ] Inventory per hero; equipment slots: weapon, armor, trinket
-- [ ] Consumables: potions, scrolls, slot-restoring items (e.g. Ether), elemental throwables (oil flask, water flask, frost/fire bombs)
-- [ ] Relics: passive run modifiers (e.g. "the first attack each fight has advantage")
-- [ ] Give items to teammates
-- [ ] 🛒 Shop node: buy items/relics/potions, remove a skill, gold economy
-- [ ] 💰 Treasure node: an item or relic choice
-- [ ] Combat drops: gold + a chance of a consumable
-- [ ] Item content: ~20 equipment, ~10 consumables, ~15 relics to start
+- [x] Inventory per hero: weapon, armor and trinket slots plus an 8-space bag (`shared/items.ts`). A weapon changes your basic attacks whatever your class (extra elemental dice that react with the ground, poison on hit, +damage); armor and trinkets add AC, HP, movement, saves, initiative, resistances, slots, stealth, Shove, Lucky rerolls. Equip, swap and drop any time outside a fight (I opens the bag).
+- [x] Consumables: Greater Potion, Ether (a slot back), oil and water flasks, fire/frost/lightning bombs, smoke pellets, stink bombs, scrolls of mass healing and blessing. They are 'item' skills, so the hotbar, the aiming preview and the auto-play AI handle them like any skill; each is used up.
+- [x] Relics: 16 party-wide perks (Eagle Eye: first attack each fight has advantage; War Banner: +1 AC for everyone; Alchemist's Kit; elemental stones; Lodestone; Vampire Fang...) and 4 boss relics (Phoenix Feather, Loaded Dice, Crown of Command, Dragon Heart)
+- [x] Give items (and potions) to teammates between fights
+- [x] 🛒 Shop node: 3 pieces of gear (rarer each act), 3 consumables, a relic, potions; sell for half; services: a lesson (upgrade a cantrip or spell) and forgetting a skill. Gold is the party's purse. Everyone shops at once; auto heroes shop after the people, one purchase each per round.
+- [x] 💰 Treasure node: gold and a party vote on one of three relics (an event scene)
+- [x] Combat drops: gold, a 30% chance of a common consumable after regular fights, the elite's gear for **whoever lands the killing blow on it**, and a boss relic for each act boss
+- [x] Item content: 22 pieces of equipment, 11 consumables (plus the potion), 20 relics; one new event (*A Fallen Adventurer*) gives gear
+
+**Result (2026-10-18):** ✅ Every task above works in play and in bot runs.
+- **Bot runs** (14 runs of 4 heroes, 4 of 2, 2 solo): 0 stalls, 0 errors, 0 rejected bot actions.
+  - In the last 6 runs of 4 heroes the bots visited 10 shops, bought 28 things and 2 lessons, took 33 relics, equipped gear 43 times, handed gear to a teammate 12 times, claimed 30 elite drops, found 20 consumables, and threw every kind of consumable (17 frost bombs, 15 fire bombs, 8 stink bombs...).
+- **Tests:** 238 in total (28 new for items, the shop, relics, treasure, loot and save compatibility).
+- **Browser check:** the bag (equip, unequip, give, drop, read-only in fights), the relic row, the shop (buy, sell, lesson with the tier III branch picker, forget, done and the countdown), treasure relic choices, loot in the post-fight notice.
+
+**Notes**
+- Rules decided along the way:
+  - gold is one party purse, so a friend can buy something for someone else; potions and items can be handed over too;
+  - a shop closes 90 s after the first person is done, or 20 s after only people who dropped out are left (a reload doesn't close it);
+  - a full bag means a drop goes to whoever has room, and if nobody has, it's sold on the spot;
+  - auto heroes put on better gear and pass gear that suits a teammate better between rooms (this also fixed bots never drinking potions between rooms in bot-only games: the vote used to fire first).
+- **Balance, parked for Phase 13:** bots end the run with about 600 unspent gold, because shops are rare (about 1 node in 13) and gold keeps coming. Item prices, drop rates and relic strength are all first guesses.
 
 ---
 

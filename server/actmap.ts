@@ -4,7 +4,7 @@ import { ACT_ROWS, MAP_COLS } from '../shared/rules.ts';
 import type { ActMap, MapNode, NodeType } from '../shared/types.ts';
 import { makeRng, type Rng } from './rng.ts';
 
-export const SHOP_WEIGHT = 0; // shops come in a later phase
+export const SHOP_WEIGHT = 8;
 
 const PATHS = 6;
 const SIBLING_REROLLS = 20;

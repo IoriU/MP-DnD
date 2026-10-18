@@ -1,5 +1,6 @@
 // The sidebar: turn order, party, your skills, the dice log and chat.
 
+import { BAG_SIZE } from '../shared/items.ts';
 import { CLASSES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
   canHitProps, describeSkill, hasStatus, hitsArea, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
@@ -7,6 +8,7 @@ import {
 } from '../shared/skills.ts';
 import { COMBOS, PROPS } from '../shared/surfaces.ts';
 import type { GameState, LogLine, PlayerEntity, StatusInst } from '../shared/types.ts';
+import { gearIconsHtml, relicsHtml, toggleInventory } from './inventory.ts';
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { aimAt, blockReason, currentEntity, inApproach, isAuto, isMyTurn, me, mySkillStats, select, store, validTarget } from './store.ts';
@@ -80,6 +82,7 @@ function comboLegend(): string {
 export function initHud() {
   document.querySelector('.help ul')?.insertAdjacentHTML('beforeend', comboLegend());
   $('#auto-btn').addEventListener('click', toggleAuto);
+  $('#bag-btn').addEventListener('click', () => toggleInventory());
   $('#ability-bar').addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-skill]');
     if (b) useSkill(b.dataset.skill as SkillId);
@@ -122,6 +125,8 @@ function title(s: GameState): string {
       return `${s.event?.glyph ?? '❓'} ${s.event?.title ?? 'Event'}`;
     case 'rest':
       return '🔥 Rest site';
+    case 'shop':
+      return '🛒 The merchant';
     case 'combat': {
       if (inApproach(s)) return '🤫 Sneak or charge?';
       const label = s.roomKind === 'boss' ? '👑 Boss fight' : s.roomKind === 'elite' ? '💀 Elite fight' : '⚔️ Combat';
@@ -146,6 +151,11 @@ export function renderHud(s: GameState) {
   $('#hud-sub').textContent = run
     ? `Act ${run.act} of ${run.maxAct} · ${run.actName} · 💰 ${run.gold} · Room ${s.code}`
     : `Room ${s.code}`;
+
+  // The party's relics, always in view during a run
+  const relics = $('#relics');
+  relics.hidden = !run;
+  if (run) setHtml(relics, `<div class="section-label">🏺 Relics</div><div class="relics">${relicsHtml(run.relics) || '<span class="muted" title="Treasure rooms, shops and bosses give them">none yet</span>'}</div>`);
 
   // Turn order
   const init = $('#initiative');
@@ -183,13 +193,14 @@ export function renderHud(s: GameState) {
 
   // Skills and turn controls
   const panel = $('#me-panel');
-  const playing = s.phase === 'map' || s.phase === 'event' || s.phase === 'rest' || s.phase === 'combat';
+  const playing = s.phase === 'map' || s.phase === 'event' || s.phase === 'rest' || s.phase === 'shop' || s.phase === 'combat';
   panel.hidden = !m || !playing;
   if (m) {
     setHtml($('#ability-bar'), hotbarHtml(m));
 
     const eco = $('#economy');
     const myInfo = s.players.find((p) => p.id === store.playerId);
+    setHtml($('#bag-btn'), `🎒 Bag ${m.bag.length}/${BAG_SIZE} <kbd>I</kbd>`);
     const autoBtn = $('#auto-btn');
     autoBtn.classList.toggle('on', !!myInfo?.auto);
     autoBtn.innerHTML = `🤖 Auto: ${myInfo?.auto ? 'on' : 'off'} <kbd>P</kbd>`;
@@ -202,6 +213,8 @@ export function renderHud(s: GameState) {
       eco.innerHTML = myTurn
         ? `<span class="pill">👣 ${s.turn.movesLeft} moves</span><span class="pill ${s.turn.actionUsed ? 'used' : ''}">Action</span><span class="pill ${s.turn.bonusUsed ? 'used' : ''}">Bonus</span>`
         : `<span class="muted">Waiting for ${cur ? esc(cur.name) : '...'}${cur?.kind === 'monster' ? ' (monster turn)' : ''}</span>`;
+    } else if (s.phase === 'shop') {
+      eco.innerHTML = '<span class="muted">🛒 Shopping: press I for your bag (equip, give, drop). Potions and heals wait until you are back on the map.</span>';
     } else {
       const picks = m.levelUps > 0 ? ` <span class="pill lvl">⬆️ ${m.levelUps} level-up pick${m.levelUps > 1 ? 's' : ''} waiting</span>` : '';
       eco.innerHTML = `<span class="muted">Between rooms: drink a potion or use a heal (pick it, then click a friend's card). Slots come back at a Long Rest.</span>${picks}`;
@@ -244,7 +257,7 @@ function skillButton(m: PlayerEntity, id: SkillId, n: number): string {
   const meta = [
     `<span class="cost ${st.cost}">${COST_LABEL[st.cost]}</span>`,
     def.kind === 'spell' ? `<span class="slotcost">🔮${slotCost(st)}</span>` : '',
-    id === 'potion' ? `<span class="uses">×${m.potions}</span>` : '',
+    id === 'potion' ? `<span class="uses">×${m.potions}</span>` : def.kind === 'item' ? `<span class="uses" title="In your bag">×${m.bag.filter((b) => b === id).length}</span>` : '',
   ].join('');
   return `<button type="button" class="ability kind-${def.kind}${reason ? ' off' : ''}${store.selected === id ? ' selected' : ''}" data-skill="${id}" title="${esc(tip)}">
     <span class="ab-icon">${st.icon}${cd}</span>
@@ -319,7 +332,7 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
       <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${c.name} Lv ${p.level}</span>${autoTag(info)}${status}${ups}</div>
       <div class="hpbar"><div style="width:${hpPct}%;background:${hpColor}"></div>${p.tempHp > 0 ? `<i class="tmp" style="width:${tempPct}%"></i>` : ''}<span>${p.hp} / ${p.maxHp}${p.tempHp > 0 ? ` <em>+${p.tempHp} 🛡</em>` : ''}</span></div>
       <div class="xpbar${max ? ' max' : ''}" title="${max ? 'Max level' : `${p.xp} of ${need} XP to level ${p.level + 1}`}"><div style="width:${xpPct}%"></div><span>${max ? 'MAX' : `XP ${p.xp} / ${need}`}</span></div>
-      <div class="pc-stats"><span title="Armor class">🛡️ ${p.ac}</span><span title="Potions">🧪 ${p.potions}</span><span title="Kills">💀 ${p.kills}</span><span title="Kill steals: killing blows on monsters someone else did most of the damage to">🗡️ ${p.steals}</span>${
+      <div class="pc-stats">${gearIconsHtml(p) ? `<span class="pc-gear">${gearIconsHtml(p)}</span>` : ''}<span title="Armor class">🛡️ ${p.ac}</span><span title="Potions">🧪 ${p.potions}</span><span title="Kills">💀 ${p.kills}</span><span title="Kill steals: killing blows on monsters someone else did most of the damage to">🗡️ ${p.steals}</span>${
         p.maxSlots ? `<span class="pips" title="${esc(`${c.names.slots}: ${p.slots} of ${p.maxSlots}`)}"><b>${c.names.slots}</b>${pips}</span>` : ''
       }</div>
       ${p.statuses.length ? `<div class="pc-status">${p.statuses.map(statusChip).join('')}</div>` : ''}

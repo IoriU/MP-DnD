@@ -1,6 +1,7 @@
 // ❓ Event nodes: short text scenes with choices the party votes on.
 // Pure content: a choice's resolve() only reads its ctx and returns text plus effects; game.ts applies them.
 
+import type { ItemId, Rarity, RelicId } from '../shared/items.ts';
 import { ACTS } from '../shared/rules.ts';
 import type { Dice } from '../shared/rules.ts';
 import type { Rng } from './rng.ts';
@@ -14,6 +15,8 @@ export type EventEffect =
   | { kind: 'potions'; amount: number } // handed out one at a time to whoever has the fewest
   | { kind: 'maxHp'; amount: number } // permanent, every hero
   | { kind: 'restoreSlots' } // every hero's spell slots back to full
+  | { kind: 'relic'; id: RelicId } // a party relic (shared/items.ts)
+  | { kind: 'item'; id?: ItemId; gear?: boolean; rarity?: Rarity } // an item (a given one, or a random consumable or piece of gear) for the checker, or whoever has room
   | { kind: 'fight'; monsters: string[]; elite?: boolean }; // starts a battle after the outcome text (ids from MONSTERS)
 
 export interface CheckResult {
@@ -415,6 +418,39 @@ const TEMPLATES: EventTemplate[] = [
         },
       },
       leave('You decline. Grul goes back to arm-wrestling a stalagmite. He is winning.'),
+    ],
+  },
+  {
+    id: 'fallen',
+    title: 'A Fallen Adventurer',
+    glyph: '⚰️',
+    text: 'Someone got here first, and stayed. Their gear is still in decent shape. Their expression suggests they would like to keep it.',
+    choices: () => [
+      {
+        id: 'loot',
+        label: 'Take their gear',
+        hint: 'WIS check, DC 12',
+        resolve: (ctx) => {
+          const r = ctx.check('wis', 12);
+          if (r.ok) {
+            return { text: told(r, `${r.heroName} says a few kind words first. The gear comes away without a fuss.`), effects: [{ kind: 'item', gear: true, rarity: 'uncommon' }] };
+          }
+          return {
+            text: told(r, `${r.heroName} grabs it without asking. A cold hand grabs back, and only lets go of the worst of it.`),
+            effects: [{ kind: 'item', gear: true, rarity: 'common' }, { kind: 'damage', dice: dice(1, 8), who: 'checker' }],
+          };
+        },
+      },
+      {
+        id: 'bury',
+        label: 'Give them a proper burial',
+        hint: 'Heals the party a little',
+        resolve: () => ({
+          text: 'You bury them with their boots on. Something in the dark seems grateful: everyone feels lighter, and a potion turns up in the fresh dirt.',
+          effects: [{ kind: 'heal', pct: 0.2 }, { kind: 'potions', amount: 1 }],
+        }),
+      },
+      leave('You tip your hat and move on. It feels like being watched by someone very polite.'),
     ],
   },
 ];

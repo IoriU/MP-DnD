@@ -1,6 +1,7 @@
 // Hero progression: XP shares, level-ups, level-up offers (pick 1 of 3), and training at rest sites.
 // Pure functions on PlayerEntity, so they can be unit tested without a running game.
 
+import { gearBonus } from '../shared/items.ts';
 import { BOON_HP, CLASSES, LEVEL_CAP, MAX_BONUS_AC, XP_ASSIST, XP_KILL, XP_SHARED, maxHpFor, maxSlotsFor, xpToNext } from '../shared/rules.ts';
 import {
   COUNTED_KINDS,
@@ -27,14 +28,14 @@ export const startingSkills = (c: ClassId): OwnedSkill[] => CLASSES[c].start.map
  */
 export function recalcHero(p: PlayerEntity) {
   const c = CLASSES[p.classId];
-  const maxHp = Math.max(1, maxHpFor(p.classId, p.level) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0));
+  const maxHp = Math.max(1, maxHpFor(p.classId, p.level) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0) + gearBonus(p, 'hp'));
   const hpGain = maxHp - p.maxHp;
   p.maxHp = maxHp;
   if (hpGain > 0 && !p.downed && !p.dead) p.hp += hpGain;
   p.hp = Math.min(p.hp, p.maxHp);
-  p.ac = c.ac + p.bonusAc + (hasBranch(p, 'battle_hardened', 'B') ? 1 : 0);
-  p.speed = c.speed + (passiveOf(p, 'slippery')?.value ?? 0) + (hasBranch(p, 'alert', 'A') ? 1 : 0);
-  const maxSlots = maxSlotsFor(p.classId, p.level) + p.bonusSlots;
+  p.ac = c.ac + p.bonusAc + (hasBranch(p, 'battle_hardened', 'B') ? 1 : 0) + gearBonus(p, 'ac');
+  p.speed = Math.max(1, c.speed + (passiveOf(p, 'slippery')?.value ?? 0) + (hasBranch(p, 'alert', 'A') ? 1 : 0) + gearBonus(p, 'speed'));
+  const maxSlots = maxSlotsFor(p.classId, p.level) + p.bonusSlots + gearBonus(p, 'slots');
   const slotGain = maxSlots - p.maxSlots;
   p.maxSlots = maxSlots;
   p.slots = Math.max(0, Math.min(maxSlots, p.slots + Math.max(0, slotGain)));

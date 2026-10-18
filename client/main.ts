@@ -1,11 +1,13 @@
 import './style.css';
 import { hotbar } from '../shared/skills.ts';
 import { initHud, renderHud, toggleAuto, useSkill } from './hud.ts';
+import { initInventory, isInventoryOpen, renderInventory, toggleInventory } from './inventory.ts';
 import { initLevelUp, renderLevelUp, toggleLevelUp } from './levelup.ts';
 import { initLobby, renderRoom } from './lobby.ts';
 import { hasSession, send } from './net.ts';
 import { initRunView, renderRunView } from './runview.ts';
 import { ensureGame } from './scene.ts';
+import { initShop, renderShop } from './shop.ts';
 import { isMyTurn, me, select, store, subscribe } from './store.ts';
 import { $ } from './util.ts';
 
@@ -13,6 +15,8 @@ initLobby();
 initHud();
 initRunView();
 initLevelUp();
+initShop();
+initInventory();
 if (hasSession()) document.body.classList.add('resuming');
 
 subscribe(() => {
@@ -26,7 +30,9 @@ subscribe(() => {
     ensureGame();
     renderHud(s);
     renderRunView(s);
+    renderShop(s);
     renderLevelUp(s);
+    renderInventory(s);
   }
 });
 
@@ -49,10 +55,12 @@ window.addEventListener('keydown', (ev) => {
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return; // leave browser shortcuts alone
   // Space and Enter activate a focused vote button instead of ending the turn or opening chat.
-  if ((ev.key === ' ' || ev.key === 'Enter') && active?.closest('#approach-view, #event-view, #rest-view, #map-view')) return;
+  if ((ev.key === ' ' || ev.key === 'Enter') && active?.closest('#approach-view, #event-view, #rest-view, #shop-view, #map-view, #inventory')) return;
   const s = store.state;
-  if (!s || (s.phase !== 'map' && s.phase !== 'event' && s.phase !== 'rest' && s.phase !== 'combat')) return;
+  if (!s || (s.phase !== 'map' && s.phase !== 'event' && s.phase !== 'rest' && s.phase !== 'shop' && s.phase !== 'combat')) return;
   const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+  // The bag is a modal: only I and Esc work while it is open.
+  if (isInventoryOpen() && key !== 'i' && key !== 'Escape') return;
 
   const dir = DIRS[key];
   if (dir && s.phase === 'combat') {
@@ -74,7 +82,11 @@ window.addEventListener('keydown', (ev) => {
       if (isMyTurn()) send('endTurn');
       break;
     case 'Escape':
-      select(null);
+      if (isInventoryOpen()) toggleInventory(false);
+      else select(null);
+      break;
+    case 'i':
+      toggleInventory();
       break;
     case 'p':
       toggleAuto();

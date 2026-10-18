@@ -18,7 +18,6 @@ import {
   MAX_ACT,
   MAX_PLAYERS,
   MONSTERS,
-  NODE_INFO,
   PLAYER_COLORS,
   REST_HEAL,
   REST_MS,
@@ -33,7 +32,6 @@ import {
   rollDice,
   rollDie,
   roomGold,
-  saveDc,
   scaledHp,
   sneakDice,
   statMod,
@@ -52,8 +50,10 @@ import {
   hasBranch,
   hasStatus,
   healBonus,
+  heroDc,
   hitsOf,
   isSkillId,
+  itemInfo,
   nextTier,
   ownedSkill,
   passiveOf,
@@ -68,9 +68,36 @@ import {
   type SkillStats,
   type StatusApply,
 } from '../shared/skills.ts';
+import {
+  CONSUMABLE_IDS,
+  FORGET_PRICE,
+  ITEMS,
+  GEAR_IDS,
+  POTION_PRICE,
+  RELICS,
+  RELIC_IDS,
+  RELIC_PRICE,
+  bagRoom,
+  gearAlert,
+  gearBonus,
+  gearDef,
+  isItemId,
+  isRelicId,
+  itemPrice,
+  sellPrice,
+  trainPrice,
+  weaponExtras,
+  type ItemId,
+  type Rarity,
+  type RelicId,
+} from '../shared/items.ts';
 import type {
   ClassId,
   Entity,
+  ItemRequest,
+  ShopOffer,
+  ShopRequest,
+  ShopView,
   Fx,
   GameState,
   LogKind,
@@ -115,10 +142,10 @@ import {
   type PropMap,
 } from '../shared/surfaces.ts';
 import { generateActMap } from './actmap.ts';
-import { getEvent, pickEvent, type CheckResult, type EventDef, type EventEffect, type EventStat } from './events.ts';
-import { autoApproachChoice, autoEventChoice, autoLevelPick, autoPathChoice, autoRestPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
+import { getEvent, pickEvent, type CheckResult, type EventChoiceDef, type EventDef, type EventEffect, type EventStat } from './events.ts';
+import { autoApproachChoice, autoEquip, autoEventChoice, autoGive, autoLevelPick, autoPathChoice, autoRestPick, autoShopPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
 import { applyLevelUps, applyPick, killShares, makeOffer, recalcHero, startingSkills, upgrade, validRestPick } from './progression.ts';
-import { pick, randInt, rng } from './rng.ts';
+import { pick, randInt, rng, shuffle } from './rng.ts';
 import { generateRoom } from './room.ts';
 import { SAVE_VERSION, archiveSave, writeSave, type SaveFile, type SavePoint } from './saves.ts';
 
@@ -134,6 +161,11 @@ const LOG_LIMIT = 80;
 const MAX_ROOM_MONSTERS = 6;
 const POST_FIGHT_HEAL = 0.2; // short rest after every won fight, so damage doesn't snowball into a wipe
 const AUTO_DELAY_MS = 700; // pause before auto heroes vote, pick or use potions between rooms
+const SHOP_MS = 90_000; // the shop closes this long after the first person is done shopping
+const AWAY_MS = 20_000; // ...or this long after everyone left is someone who dropped out (a reload shouldn't close it)
+const DROP_CHANCE = 0.3; // a regular fight leaves a consumable behind
+const ELITE_GEAR: Record<number, Rarity[]> = { 1: ['uncommon'], 2: ['uncommon', 'rare'], 3: ['rare'] }; // the elite's killer takes its gear
+const SHOP_GEAR: Record<number, Rarity[]> = { 1: ['common', 'common', 'uncommon'], 2: ['common', 'uncommon', 'uncommon', 'rare'], 3: ['uncommon', 'rare', 'rare'] };
 
 const ELEMENT_COLOR: Record<Element, string> = {
   physical: '#ffe9a8', fire: '#ff8a3d', cold: '#8fd8ff', lightning: '#fff36b', poison: '#8fdc5a', radiant: '#ffe27a', force: '#c58bff',
@@ -210,6 +242,12 @@ export class Game {
   private savePoint: SavePoint = { kind: 'map' }; // where a restart would pick the run back up
   private createdAt = Date.now();
   private deferredBursts: { ops: FieldOp[]; by?: Entity }[] | null = null; // death bursts held until the killing skill is done
+  private shop: Omit<ShopView, 'endsInMs'> | null = null; // the open shop, if any
+  private shopDeadline: number | null = null;
+  private shopTimer: ReturnType<typeof setTimeout> | null = null;
+  private shopReceipts: string[] = []; // what was bought, for the notice when the party moves on
+  private eliteKiller: string | null = null; // the hero who landed the killing blow on this fight's elite (they take its gear)
+  private phoenixUsed = false; // Phoenix Feather: once per fight
 
   constructor(io: Server, code: string) {
     this.io = io;
@@ -313,6 +351,7 @@ export class Game {
   private onHumansChanged() {
     this.scheduleAutoPicks();
     if (this.restPicks) this.scheduleAutoRest();
+    if (this.shop) this.maybeCloseShop();
     if (!this.vote) return;
     this.maybeResolveVote();
     this.scheduleAutoVotes();
@@ -388,7 +427,7 @@ export class Game {
     this.notice = null;
     this.entities = this.players.map((p) => this.makePlayer(p, 1));
     const seed = randInt(1, 2 ** 31 - 2);
-    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, seed };
+    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], seed };
     this.addLog('system', '🍺 The party finishes their drinks and leaves the tavern...');
     this.addLog('system', `🗺️ Act 1: ${ACTS[0].name}. Vote on your path. The ${MONSTERS[ACTS[0].boss].name} waits at the top of the map.`);
     this.notice = {
@@ -425,6 +464,10 @@ export class Game {
     if (this.voteTimer) clearTimeout(this.voteTimer);
     if (this.autoVoteTimer) clearTimeout(this.autoVoteTimer);
     if (this.restTimer) clearTimeout(this.restTimer);
+    if (this.shopTimer) clearTimeout(this.shopTimer);
+    this.shopTimer = null;
+    this.shop = null;
+    this.shopDeadline = null;
     this.voteTimer = null;
     this.autoVoteTimer = null;
     this.restTimer = null;
@@ -440,7 +483,8 @@ export class Game {
       id: this.newId(), kind: 'player', playerId: info.id, classId: info.classId, name: info.name, glyph: c.glyph, color: info.color,
       x: 0, y: 0, level, xp: 0, skills: startingSkills(info.classId), levelUps: 0, offer: null,
       hp: 0, maxHp: 0, ac: c.ac, speed: c.speed, bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0,
-      potions: 2, kills: 0, steals: 0, slots: 0, maxSlots: 0, downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [], statuses: [],
+      potions: 2, gear: {}, bag: [], relics: [...(this.run?.relics ?? [])],
+      kills: 0, steals: 0, slots: 0, maxSlots: 0, downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [], statuses: [],
       facing: { x: 1, y: 0 },
     };
     recalcHero(p); // fills HP and slots for the level
@@ -469,6 +513,10 @@ export class Game {
       y: 0,
       facing: { x: 1, y: 0 },
       skills: (saved.skills ?? base.skills).filter((s) => isSkillId(s.id)).map((s) => ({ ...s, cd: 0 })),
+      // Items that no longer exist are dropped; relics follow the run's list.
+      gear: Object.fromEntries(Object.entries(saved.gear ?? {}).filter(([slot, id]) => isItemId(id) && gearDef(id)?.slot === slot)),
+      bag: (saved.bag ?? []).filter(isItemId),
+      relics: [],
       statuses: [],
       tempHp: 0,
       used: [],
@@ -491,7 +539,11 @@ export class Game {
       const saved = save.heroes.find((h) => h.playerId === info.id);
       return saved ? this.restoreHero(saved, info) : this.newcomer(info, level);
     });
-    this.run = save.run;
+    this.run = { ...save.run, relics: (save.run.relics ?? []).filter(isRelicId) };
+    for (const h of this.heroes()) {
+      h.relics = [...this.run.relics];
+      recalcHero(h);
+    }
     this.seenEvents = [...save.seenEvents];
     this.notice = save.notice;
     this.addLog('system', '📜 The party picks up right where they left off.');
@@ -595,6 +647,7 @@ export class Game {
     this.autoVoteTimer = setTimeout(() => {
       this.autoVoteTimer = null;
       if (this.vote !== vote || this.humans().length) return;
+      if (vote.kind === 'path') this.autoUpkeep(); // before the party moves on (its own timer would fire too late)
       const heroes = this.heroes();
       for (const p of this.players) {
         if (this.vote !== vote) return; // the vote resolved along the way
@@ -611,16 +664,21 @@ export class Game {
     }, AUTO_DELAY_MS / SPEED);
   }
 
-  /** Between rooms, auto heroes drink potions and patch each other up. */
+  /** Between rooms, auto heroes sort out their gear, drink potions and patch each other up. */
   private scheduleUpkeep() {
-    setTimeout(() => {
-      if (this.phase !== 'map') return;
-      for (const hero of this.heroes()) {
-        if (!this.isAuto(hero.playerId)) continue;
-        const intent = upkeepIntent(hero, this.heroes());
-        if (intent?.kind === 'act') this.handleSkill(hero.playerId, intent.skill, intent.target);
-      }
-    }, AUTO_DELAY_MS / SPEED);
+    setTimeout(() => this.autoUpkeep(), AUTO_DELAY_MS / SPEED);
+  }
+
+  private autoUpkeep() {
+    if (this.phase !== 'map') return;
+    for (const hero of this.heroes()) {
+      if (!this.isAuto(hero.playerId)) continue;
+      this.autoManage(hero);
+      const gift = autoGive(hero, this.heroes());
+      if (gift) this.itemAction(hero, gift);
+      const intent = upkeepIntent(hero, this.heroes());
+      if (intent?.kind === 'act') this.handleSkill(hero.playerId, intent.skill, intent.target);
+    }
   }
 
   handleVote(playerId: string, option: string) {
@@ -689,14 +747,12 @@ export class Game {
         break;
       case 'treasure':
         this.treasure();
-        this.toMap();
         break;
       case 'event':
         this.startEvent(eventId);
         break;
       case 'shop':
-        this.notice = { glyph: NODE_INFO.shop.icon, title: 'Shop', text: 'The merchant hasn’t set up shop yet. (Coming in a later update.)' };
-        this.toMap();
+        this.startShop();
         break;
     }
   }
@@ -736,13 +792,81 @@ export class Game {
     return { name, monsters };
   }
 
+  /** Gold, and the party votes on one of three relics. The gold comes with the choice, so a restart can't pay out twice. */
   private treasure() {
     const run = this.run!;
-    const gold = randInt(25, 40) * run.act;
-    run.gold += gold;
-    const lucky = this.giveSharedPotions(1)[0];
-    this.addLog('loot', `💰 Treasure! ${gold} gold${lucky ? `, and a potion for ${lucky}` : ''}.`);
-    this.notice = { glyph: '💰', title: 'Treasure', text: `You find ${gold} gold${lucky ? ` and a healing potion (${lucky} takes it)` : ''}.` };
+    const gold = this.goldFound(randInt(25, 40) * run.act);
+    const choices = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity !== 'boss' && !run.relics.includes(id))).slice(0, 3);
+    const take = (id: RelicId | null): EventChoiceDef => ({
+      id: id ?? 'gold',
+      label: id ? `${RELICS[id].icon} ${RELICS[id].name}` : 'Just the gold',
+      hint: id ? RELICS[id].desc : undefined,
+      resolve: () => ({
+        text: id ? `The party pockets ${gold} gold and takes the ${RELICS[id].name}.` : `The party pockets ${gold} gold.`,
+        effects: [{ kind: 'gold', amount: gold }, ...(id ? [{ kind: 'relic' as const, id }] : [])],
+      }),
+    });
+    this.startEvent(undefined, {
+      id: 'treasure',
+      title: 'Treasure',
+      glyph: '💰',
+      text: `A chest with ${gold} gold in it${choices.length ? ', and something stranger. Choose one relic to take: it helps the whole party for the rest of the run.' : '.'}`,
+      choices: choices.length ? choices.map(take) : [take(null)],
+    });
+  }
+
+  /** Gold the party finds (the Golden Idol adds a quarter). */
+  private goldFound(amount: number): number {
+    return this.hasRelic('golden_idol') ? Math.round(amount * 1.25) : amount;
+  }
+
+  private hasRelic(id: RelicId): boolean {
+    return !!this.run?.relics?.includes(id);
+  }
+
+  /** A relic for the whole party: every hero's sheet picks it up. */
+  private grantRelic(id: RelicId) {
+    const run = this.run;
+    if (!run || run.relics.includes(id)) return;
+    run.relics.push(id);
+    for (const h of this.heroes()) {
+      h.relics = [...run.relics];
+      recalcHero(h);
+    }
+    this.addLog('loot', `${RELICS[id].icon} The party gains the ${RELICS[id].name}: ${RELICS[id].desc}`);
+  }
+
+  /**
+   * Puts an item in a hero's bag: theirs if there's room, else whoever has the most room; if every bag is full it's sold
+   * on the spot. Returns who got it (or null if it became gold). Auto heroes put on gear that beats theirs.
+   */
+  private giveItem(to: PlayerEntity | undefined, id: ItemId): PlayerEntity | null {
+    const room = this.heroes().filter((h) => bagRoom(h) > 0).sort((a, b) => bagRoom(b) - bagRoom(a));
+    const p = to && bagRoom(to) > 0 ? to : room[0];
+    if (!p) {
+      this.run!.gold += sellPrice(id);
+      this.addLog('loot', `Every bag is full: the ${itemInfo(id).name} is sold for ${sellPrice(id)} gold.`);
+      return null;
+    }
+    p.bag.push(id);
+    if (this.isAuto(p.playerId)) this.autoManage(p);
+    return p;
+  }
+
+  /** Auto heroes put on the best gear in their bag. */
+  private autoManage(p: PlayerEntity) {
+    for (let i = 0; i < 3; i++) {
+      const req = autoEquip(p);
+      if (!req || this.itemAction(p, req)) break;
+    }
+  }
+
+  /** A random item of one of these rarities (gear or consumable). */
+  private randomItem(kind: 'gear' | 'consumable', rarities: Rarity[]): ItemId {
+    const ids = kind === 'gear' ? GEAR_IDS : CONSUMABLE_IDS;
+    const want = pick(rarities);
+    const pool = ids.filter((id) => ITEMS[id].rarity === want);
+    return pick(pool.length ? pool : ids);
   }
 
   /** Hands out potions one at a time to whoever has the fewest. Returns who got them. */
@@ -766,6 +890,9 @@ export class Game {
     run.map = generateActMap(run.act, run.seed, ROWS);
     run.currentId = null;
     run.visited = [];
+    // The act boss leaves a relic behind.
+    const boss = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity === 'boss' && !run.relics.includes(id)))[0];
+    if (boss) this.grantRelic(boss);
     for (const p of this.heroes()) {
       p.hp = p.maxHp;
       p.slots = p.maxSlots;
@@ -774,7 +901,7 @@ export class Game {
     this.notice = {
       glyph: def.glyph,
       title: `Act ${run.act}: ${def.name}`,
-      text: `Everyone is fully healed and every slot is restored. The ${MONSTERS[def.boss].name} waits at the top of the map.`,
+      text: `Everyone is fully healed and every slot is restored.${boss ? ` The boss dropped the ${RELICS[boss].icon} ${RELICS[boss].name}: ${RELICS[boss].desc}` : ''} The ${MONSTERS[def.boss].name} waits at the top of the map.`,
     };
     this.toMap();
   }
@@ -901,10 +1028,10 @@ export class Game {
   // ------------------------------------------------------------ events
 
   /** Opens an event: a fresh one, or the same one again when a save is resumed mid-event. */
-  private startEvent(eventId?: string) {
+  private startEvent(eventId?: string, scene?: EventDef) {
     const run = this.run!;
-    const def = (eventId && getEvent(eventId, run.act)) || pickEvent(run.act, this.seenEvents, rng);
-    if (!this.seenEvents.includes(def.id)) this.seenEvents.push(def.id);
+    const def = scene ?? ((eventId && getEvent(eventId, run.act)) || pickEvent(run.act, this.seenEvents, rng));
+    if (!scene && !this.seenEvents.includes(def.id)) this.seenEvents.push(def.id);
     if (this.savePoint.kind === 'node') this.savePoint.eventId = def.id;
     this.event = def;
     this.phase = 'event';
@@ -979,6 +1106,15 @@ export class Game {
       case 'potions':
         this.giveSharedPotions(effect.amount);
         break;
+      case 'relic':
+        if (isRelicId(effect.id)) this.grantRelic(effect.id);
+        break;
+      case 'item': {
+        const id = effect.id && isItemId(effect.id) ? effect.id : this.randomItem(effect.gear ? 'gear' : 'consumable', [effect.rarity ?? 'common']);
+        const got = this.giveItem(this.heroes().find((h) => h.id === this.lastChecker), id);
+        if (got) this.addLog('loot', `${itemInfo(id).icon} ${got.name} takes the ${itemInfo(id).name}.`);
+        break;
+      }
       case 'maxHp':
         for (const p of heroes) {
           p.bonusHp += effect.amount;
@@ -1172,7 +1308,7 @@ export class Game {
 
   private initBonus(e: Entity): number {
     if (e.kind === 'monster') return MONSTERS[e.type].dex;
-    return CLASSES[e.classId].mods.dex + (passiveOf(e, 'alert')?.value ?? 0);
+    return CLASSES[e.classId].mods.dex + (passiveOf(e, 'alert')?.value ?? 0) + gearBonus(e, 'init');
   }
 
   /** Fresh start for every fight: cooldowns ready, no leftover statuses, once-per-fight effects back. */
@@ -1181,10 +1317,12 @@ export class Game {
     p.statuses = p.statuses.filter((s) => s.id === 'surprised'); // an ambush or a failed sneak still counts
     p.used = [];
     p.tempHp = passiveOf(p, 'arcane_ward')?.value ?? 0;
-    if (hasBranch(p, 'slippery', 'B') || hasBranch(p, 'alert', 'B')) p.statuses.push({ id: 'focused', turns: 99 });
+    if (hasBranch(p, 'slippery', 'B') || hasBranch(p, 'alert', 'B') || this.hasRelic('eagle_eye')) p.statuses.push({ id: 'focused', turns: 99 });
   }
 
   private startCombat() {
+    this.phoenixUsed = false;
+    this.eliteKiller = null;
     for (const p of this.heroes()) this.prepareForFight(p);
     const fighters: Entity[] = [...this.heroes().filter((p) => !p.dead), ...this.monsters()];
     const init: Record<string, number> = {};
@@ -1378,6 +1516,7 @@ export class Game {
   private endCombat() {
     const kind = this.roomKind ?? 'combat';
     const run = this.run!;
+    const breather = POST_FIGHT_HEAL + (this.hasRelic('rations') ? 0.1 : 0);
     this.dispose();
     // Everyone gets back up, then the party catches its breath (a short rest).
     for (const p of this.heroes()) {
@@ -1390,20 +1529,43 @@ export class Game {
       p.tempHp = 0;
       p.used = [];
       for (const s of p.skills) s.cd = 0;
-      p.hp = Math.min(p.maxHp, Math.max(1, p.hp) + Math.ceil(p.maxHp * POST_FIGHT_HEAL));
+      p.hp = Math.min(p.maxHp, Math.max(1, p.hp) + Math.ceil(p.maxHp * breather));
     }
-    this.addLog('heal', `🫁 The party catches its breath: everyone heals ${POST_FIGHT_HEAL * 100}% of their max HP.`);
-    const gold = roomGold(run.act, kind);
+    this.addLog('heal', `🫁 The party catches its breath: everyone heals ${Math.round(breather * 100)}% of their max HP.`);
+    const gold = this.goldFound(roomGold(run.act, kind));
     run.gold += gold;
     this.addLog('loot', `✅ Room cleared! The party loots ${gold} gold.`);
+    const loot = kind === 'boss' ? null : this.fightLoot(kind);
     const leveled = this.checkLevelUps();
     if (kind === 'boss') return this.finishAct();
     this.notice = {
       glyph: kind === 'elite' ? '💀' : '✅',
       title: kind === 'elite' ? 'Elite defeated!' : 'Room cleared',
-      text: `+${gold} gold.${leveled.length ? ` ⬆️ Level up: ${leveled.join(', ')}!` : ''}`,
+      text: `+${gold} gold.${loot ? ` ${loot}` : ''}${leveled.length ? ` ⬆️ Level up: ${leveled.join(', ')}!` : ''}`,
     };
     this.toMap();
+  }
+
+  /** What a won fight leaves behind: the elite's gear goes to whoever killed it; regular fights sometimes drop a consumable. */
+  private fightLoot(kind: NodeType): string | null {
+    const act = this.run?.act ?? 1;
+    if (kind === 'elite') {
+      const id = this.randomItem('gear', ELITE_GEAR[act] ?? ['rare']);
+      const killer = this.heroes().find((h) => h.id === this.eliteKiller);
+      const got = this.giveItem(killer, id);
+      const info = itemInfo(id);
+      if (!got) return null;
+      const text = `${info.icon} ${got.name} ${killer === got ? 'claims' : 'picks up'} the ${info.name}${killer === got ? ' (killing blow)' : ''}.`;
+      this.addLog('loot', text);
+      return text;
+    }
+    if (!rng.chance(DROP_CHANCE)) return null;
+    const id = this.randomItem('consumable', ['common']);
+    const got = this.giveItem(undefined, id);
+    if (!got) return null;
+    const text = `${itemInfo(id).icon} ${got.name} finds a ${itemInfo(id).name}.`;
+    this.addLog('loot', text);
+    return text;
   }
 
   private endRun(victory: boolean) {
@@ -1572,15 +1734,15 @@ export class Game {
   private heroSave(p: PlayerEntity, stat: 'dex' | 'str' | 'wis'): { total: number; text: string } {
     let d20 = rollDie(20);
     if (d20 === 1 && this.useLucky(p, true)) d20 = rollDie(20);
-    const bonus = statMod(p.classId, stat) + (passiveOf(p, 'steady')?.value ?? 0) + (hasStatus(p, 'blessed') ? 2 : 0);
+    const bonus = statMod(p.classId, stat) + (passiveOf(p, 'steady')?.value ?? 0) + (hasStatus(p, 'blessed') ? 2 : 0) + gearBonus(p, 'saves');
     return { total: d20 + bonus, text: `🎲${d20}${fmtMod(bonus)}=${d20 + bonus}` };
   }
 
-  /** Spends a Lucky reroll if the hero has one left. `save`: Fortune also covers saves. */
+  /** Spends a Lucky reroll if the hero has one left (Lucky Charms count for attacks). `save`: Fortune also covers saves. */
   private useLucky(p: PlayerEntity, save = false): boolean {
     const lucky = passiveOf(p, 'lucky');
-    if (!lucky || (save && !hasBranch(p, 'lucky', 'A'))) return false;
-    if (p.used.filter((u) => u === 'fight:lucky').length >= lucky.value) return false;
+    const allowed = save ? (hasBranch(p, 'lucky', 'A') ? (lucky?.value ?? 0) : 0) : (lucky?.value ?? 0) + gearBonus(p, 'lucky');
+    if (p.used.filter((u) => u === 'fight:lucky').length >= allowed) return false;
     p.used.push('fight:lucky');
     this.addLog('info', `🍀 ${p.name} gets lucky and rerolls the natural 1!`);
     return true;
@@ -1592,7 +1754,7 @@ export class Game {
   handleSkill(playerId: string, skillId: unknown, aim: unknown): boolean {
     const p = this.hero(playerId);
     if (!p || !isSkillId(skillId)) return false;
-    if (this.phase !== 'map' && this.phase !== 'event' && this.phase !== 'rest' && this.phase !== 'combat') return false;
+    if (!['map', 'event', 'rest', 'shop', 'combat'].includes(this.phase)) return false;
     const inCombat = this.phase === 'combat';
     const reason = skillBlockReason(p, skillId, inCombat, this.turn, this.current()?.id === p.id);
     if (reason) {
@@ -1618,6 +1780,7 @@ export class Game {
     if (kind === 'spell') p.slots -= slotCost(s);
     if (kind === 'cantrip') own.cd = (s.cooldown ?? 0) + 1; // ticks down at the start of each of your turns
     if (skillId === 'potion') p.potions--;
+    else if (kind === 'item') p.bag.splice(p.bag.indexOf(skillId as ItemId), 1); // used up
     this.useSkill(p, own, s, res);
     if (inCombat) this.checkEnd();
     else this.checkpoint(); // a potion or heal between rooms
@@ -1683,7 +1846,8 @@ export class Game {
     // Friends: heals, temporary HP, cleansing and buffs.
     for (const fr of res.friends) {
       if (s.heal) {
-        const amount = rollDice({ n: s.heal.n, d: s.heal.d }) + healBonus(p, s);
+        const drink = SKILLS[own.id].kind === 'item' && this.hasRelic('alchemist_kit') ? 1.5 : 1; // Alchemist's Kit
+        const amount = Math.round((rollDice({ n: s.heal.n, d: s.heal.d }) + healBonus(p, s)) * drink);
         const healed = this.healBy(p, fr, amount, s.overheal);
         const line =
           s.target === 'self'
@@ -1715,6 +1879,11 @@ export class Game {
       }
     }
     if (s.resetCooldowns) for (const o of p.skills) if (o !== own) o.cd = 0;
+    if (s.restoreSlots) {
+      const back = Math.min(s.restoreSlots, p.maxSlots - p.slots);
+      p.slots += back;
+      this.addLog('heal', `${s.icon} ${p.name} drinks the ${name}: ${back ? `+${back} ${CLASSES[p.classId].names.slots}` : 'nothing to restore'}.`);
+    }
 
     // The battlefield: the element reacts with the tiles it reached, then the skill's surface appears.
     if (inCombat) {
@@ -1732,7 +1901,7 @@ export class Game {
   private weaponHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string, basic: boolean): boolean {
     if (dist(p, f) > 1) this.shot(p, f, color);
     return this.attackRoll(p, f, {
-      bonus: attackBonus(p, s), dmg: s.dmg ?? { n: 1, d: 4 }, extra: damageMod(p, s), verb: 'attacks', weapon: name,
+      bonus: attackBonus(p, s), dmg: s.dmg ?? { n: 1, d: 4 }, extra: damageMod(p, s) + (basic ? this.weaponDamage(p) : 0), verb: 'attacks', weapon: name,
       element: s.element ?? 'physical', adv: s.adv, sneak: s.sneak, execute: s.execute, critFull: s.critFull, basic,
     });
   }
@@ -1750,7 +1919,7 @@ export class Game {
     } else {
       ({ total, text: rolled } = this.heroSave(f, save));
     }
-    const dc = saveDc(p.classId, p.level);
+    const dc = heroDc(p);
     const saved = total >= dc;
     this.shot(p, f, color);
     let dmg = s.dmg ? rollDice(s.dmg) + damageMod(p, s) + this.bonusDamage(p, f, s.element ?? 'physical') : 0;
@@ -1782,7 +1951,7 @@ export class Game {
     const def = MONSTERS[f.type];
     const mine = rollDie(20);
     const theirs = rollDie(20);
-    const bonus = attackBonus(p, s);
+    const bonus = attackBonus(p, s) + gearBonus(p, 'shove');
     const resist = Math.max(def.str, def.dex);
     const margin = mine + bonus - (theirs + resist);
     const roll = `🎲${mine}${fmtMod(bonus)}=${mine + bonus} vs 🎲${theirs}${fmtMod(resist)}=${theirs + resist}`;
@@ -1792,7 +1961,8 @@ export class Game {
       return false;
     }
     this.addLog('hit', `${p.name} ${name.toLowerCase()}s ${f.name} (${roll})!`);
-    this.push(f, p, (s.push ?? 1) + (margin >= 5 ? 1 : 0));
+    const further = (gearBonus(p, 'shove') > 0 ? 1 : 0) + (this.hasRelic('lodestone') ? 1 : 0); // Ogre Gauntlets, Lodestone
+    this.push(f, p, (s.push ?? 1) + (margin >= 5 ? 1 : 0) + further);
     return true;
   }
 
@@ -1801,9 +1971,29 @@ export class Game {
     const basic = p.skills.find((o) => SKILLS[o.id].kind === 'basic' && statsOf(o).range <= 1) ?? p.skills.find((o) => SKILLS[o.id].kind === 'basic');
     const s = basic ? statsOf(basic) : statsAt('longsword');
     return this.attackRoll(p, t, {
-      bonus: attackBonus(p, s), dmg: s.dmg ?? { n: 1, d: 6 }, extra: damageMod(p, s), verb: 'strikes', weapon: label,
+      bonus: attackBonus(p, s), dmg: s.dmg ?? { n: 1, d: 6 }, extra: damageMod(p, s) + this.weaponDamage(p), verb: 'strikes', weapon: label,
       element: s.element ?? 'physical', sneak: s.sneak, basic: true,
     });
+  }
+
+  /** Flat damage that basic weapon attacks get from equipment and the Whetstone. */
+  private weaponDamage(p: PlayerEntity): number {
+    return gearBonus(p, 'dmg') + (this.hasRelic('whetstone') ? 1 : 0);
+  }
+
+  /** A magic weapon's extra: elemental dice (which react with the ground like any element) and on-hit statuses. */
+  private weaponExtras(p: PlayerEntity, t: Entity, crit: boolean) {
+    const { weapon, onHit } = weaponExtras(p);
+    const name = p.gear.weapon ? itemInfo(p.gear.weapon).name : 'weapon';
+    if (weapon && this.entities.includes(t)) {
+      const dmg = rollDice(weapon.dice, crit);
+      this.addLog('hit', `${itemInfo(p.gear.weapon!).icon} The ${name} adds ${dmg} ${weapon.element}.`);
+      const at = t.y * this.width + t.x;
+      this.damage(t, dmg, p, weapon.element);
+      const el = fieldElement(weapon.element);
+      if (el) this.runField([{ kind: 'touch', tiles: [at], element: el }], p);
+    }
+    for (const st of onHit) if (this.entities.includes(t)) this.applyStatus(t, st, p);
   }
 
   /** Steps next to the target, on its far side if there's room (behind it). */
@@ -1881,7 +2071,7 @@ export class Game {
       return;
     }
     if (a.id === 'wet') t.statuses = t.statuses.filter((x) => x.id !== 'burning');
-    if (t.kind === 'player' && a.id === 'surprised' && passiveOf(t, 'alert')) {
+    if (t.kind === 'player' && a.id === 'surprised' && (passiveOf(t, 'alert') || gearAlert(t))) {
       this.addLog('info', `⏰ ${t.name} is too alert to be caught off guard.`);
       return;
     }
@@ -1916,6 +2106,9 @@ export class Game {
     let extra = 0;
     if (t.hp < t.maxHp / 2) extra += passiveOf(a, 'opportunist')?.value ?? 0;
     if (element === 'fire') extra += passiveOf(a, 'elemental_affinity')?.value ?? 0;
+    const relic: Partial<Record<Element, RelicId>> = { fire: 'ember_stone', cold: 'frost_shard', lightning: 'storm_rod' };
+    const r = relic[element];
+    if (r && this.hasRelic(r)) extra += 2;
     return extra;
   }
 
@@ -1943,7 +2136,7 @@ export class Game {
     }
     const bonus = o.bonus + (hasStatus(a, 'blessed') ? 2 : 0) - (hasStatus(a, 'dazed') ? 2 : 0);
     const ac = this.acOf(t);
-    const critRange = hero && hasBranch(hero, 'lucky', 'B') ? 19 : 20;
+    const critRange = hero && (hasBranch(hero, 'lucky', 'B') || this.hasRelic('loaded_dice')) ? 19 : 20;
     const crit = d20 >= critRange || (!!o.critFull && t.hp >= t.maxHp);
     const hit = crit || (d20 !== 1 && d20 + bonus >= ac);
     if (dist(a, t) > 1 && a.kind === 'monster') this.shot(a, t, ELEMENT_COLOR[o.element]);
@@ -1994,6 +2187,7 @@ export class Game {
     total = Math.max(1, total);
     this.addLog(crit ? 'crit' : 'hit', `${what}: ${roll}, ${crit ? 'CRITICAL HIT' : 'hit'} for ${total}${elementWord(o.element)}${notes.length ? ` (incl. ${notes.join(', ')})` : ''}`);
     this.damage(t, total, a, o.element);
+    if (hero && o.basic) this.weaponExtras(hero, t, crit);
     if (hero && this.entities.includes(t)) this.afterHit(hero, t, o.element, !!o.basic);
     if (dist(a, t) <= 1 && this.entities.includes(t) && canReact(t)) this.face(t, a); // you turn toward whoever hit you
     return true;
@@ -2043,6 +2237,13 @@ export class Game {
         t.tempHp -= soaked;
         amount -= soaked;
         if (soaked) this.float(t, `🛡${soaked}`, '#8fd8ff');
+      }
+      if (amount >= t.hp && this.standing(t) && this.phase === 'combat' && this.hasRelic('phoenix_feather') && !this.phoenixUsed) {
+        this.phoenixUsed = true;
+        t.hp = Math.ceil(t.maxHp / 2);
+        this.addLog('crit', `🪶 The Phoenix Feather flares: ${t.name} rises from the blow with ${t.hp} HP!`);
+        this.float(t, '🪶 REBORN', '#ffb04d');
+        return;
       }
       if (amount >= t.hp && t.hp > 1 && this.standing(t) && hasBranch(t, 'battle_hardened', 'A') && !t.used.includes('fight:unbreakable')) {
         t.used.push('fight:unbreakable');
@@ -2193,6 +2394,7 @@ export class Game {
     this.entities = this.entities.filter((e) => e !== t);
     this.removeFromOrder(t.id);
     const killer = by?.kind === 'player' ? by : null;
+    if (killer && t.elite) this.eliteKiller = killer.id;
     if (killer) {
       killer.kills++;
       const total = Object.values(t.dmgBy).reduce((s, n) => s + n, 0);
@@ -2232,6 +2434,10 @@ export class Game {
   }
 
   private onKill(p: PlayerEntity) {
+    if (this.hasRelic('vampire_fang')) {
+      const healed = this.healBy(null, p, 3);
+      if (healed) this.addLog('heal', `🦷 The Vampire Fang feeds ${p.name}: +${healed} HP.`);
+    }
     const thirst = passiveOf(p, 'bloodthirsty');
     if (thirst) {
       const healed = this.healBy(null, p, thirst.value);
@@ -2271,6 +2477,7 @@ export class Game {
     if (t.downed && t.hp > 0) {
       t.downed = false;
       t.saves = { ok: 0, fail: 0 };
+      if (this.hasRelic('smelling_salts')) t.hp = Math.min(t.maxHp, t.hp + 5);
       this.addLog('heal', `${t.name} is back on their feet!`);
     }
     if (healer && healer !== t) {
@@ -2290,7 +2497,7 @@ export class Game {
   private deathSave(p: PlayerEntity) {
     let r = rollDie(20);
     if (r === 1 && this.useLucky(p, true)) r = rollDie(20);
-    const bonus = passiveOf(p, 'steady')?.value ?? 0;
+    const bonus = (passiveOf(p, 'steady')?.value ?? 0) + gearBonus(p, 'saves');
     const total = r + bonus;
     const shown = `🎲${r}${bonus ? fmtMod(bonus) : ''}`;
     const getUp = (text: string) => {
@@ -2322,6 +2529,219 @@ export class Game {
       this.removeFromOrder(p.id);
       this.advanceTurn();
     }
+  }
+
+  // ------------------------------------------------------------ shops
+
+  /** A merchant: everyone browses at once and spends the party's gold. Auto heroes shop once the people are done. */
+  private startShop() {
+    const run = this.run!;
+    this.phase = 'shop';
+    this.shop = { offers: this.stockShop(run.act), forgetPrice: FORGET_PRICE, trainPrice: trainPrice(run.act), done: [] };
+    this.shopDeadline = null;
+    this.shopReceipts = [];
+    this.addLog('system', `🛒 A merchant spreads out their wares. The party has ${run.gold} gold.`);
+    this.maybeCloseShop();
+    this.broadcast();
+  }
+
+  private stockShop(act: number): ShopOffer[] {
+    const run = this.run!;
+    const gear = new Set<ItemId>();
+    for (let i = 0; gear.size < 3 && i < 30; i++) gear.add(this.randomItem('gear', SHOP_GEAR[act] ?? ['rare']));
+    const consumables = shuffle([...CONSUMABLE_IDS]).slice(0, 3);
+    const relic = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity !== 'boss' && !run.relics.includes(id)))[0];
+    return [
+      ...[...gear].map((id): ShopOffer => ({ kind: 'item', id, price: itemPrice(id), left: 1 })),
+      ...consumables.map((id): ShopOffer => ({ kind: 'item', id, price: itemPrice(id), left: 2 })),
+      ...(relic ? [{ kind: 'relic', id: relic, price: RELIC_PRICE, left: 1 } as ShopOffer] : []),
+      { kind: 'potion', id: 'potion', price: POTION_PRICE, left: 3 },
+    ];
+  }
+
+  handleShop(playerId: string, req: ShopRequest) {
+    const p = this.hero(playerId);
+    if (this.phase !== 'shop' || !this.shop || !p || !req || typeof req !== 'object') return;
+    const err = this.shopAction(p, req);
+    if (err) this.whisper(playerId, err);
+    this.maybeCloseShop();
+    this.broadcast();
+  }
+
+  /** One shop action for a hero. Returns why it failed, or null. */
+  private shopAction(p: PlayerEntity, req: ShopRequest): string | null {
+    const shop = this.shop!;
+    const run = this.run!;
+    switch (req.kind) {
+      case 'buy': {
+        const o = shop.offers[Number(req.offer)];
+        if (!o || o.left <= 0) return 'Sold out.';
+        if (o.price > run.gold) return `Not enough gold: it costs ${o.price}.`;
+        if (o.kind === 'item') {
+          if (!isItemId(o.id)) return 'Not for sale.';
+          if (bagRoom(p) <= 0) return 'Your bag is full. Sell or give something first.';
+          p.bag.push(o.id);
+        } else if (o.kind === 'relic') {
+          if (!isRelicId(o.id) || run.relics.includes(o.id)) return 'The party already has it.';
+        } else p.potions++;
+        o.left--;
+        run.gold -= o.price;
+        const what = o.kind === 'item' && isItemId(o.id) ? `${itemInfo(o.id).icon} ${itemInfo(o.id).name}` : o.kind === 'relic' && isRelicId(o.id) ? `${RELICS[o.id].icon} ${RELICS[o.id].name}` : '🧪 a potion';
+        this.addLog('loot', `🛒 ${p.name} buys ${what} for ${o.price} gold.`);
+        this.shopReceipts.push(`${p.name}: ${what}`);
+        if (o.kind === 'relic' && isRelicId(o.id)) this.grantRelic(o.id);
+        if (this.isAuto(p.playerId)) this.autoManage(p);
+        return null;
+      }
+      case 'sell': {
+        const i = isItemId(req.item) ? p.bag.indexOf(req.item) : -1;
+        if (i < 0) return "That's not in your bag.";
+        p.bag.splice(i, 1);
+        run.gold += sellPrice(req.item);
+        this.addLog('loot', `🛒 ${p.name} sells the ${itemInfo(req.item).name} for ${sellPrice(req.item)} gold.`);
+        return null;
+      }
+      case 'forget': {
+        const o = isSkillId(req.skill) ? p.skills.find((x) => x.id === req.skill) : undefined;
+        if (!o || SKILLS[o.id].kind === 'basic') return "You can't forget that.";
+        if (shop.forgetPrice > run.gold) return `Not enough gold: it costs ${shop.forgetPrice}.`;
+        p.skills = p.skills.filter((x) => x !== o);
+        run.gold -= shop.forgetPrice;
+        recalcHero(p);
+        this.addLog('level', `🛒 ${p.name} pays ${shop.forgetPrice} gold to forget ${skillTitle(o)}.`);
+        return null;
+      }
+      case 'train': {
+        const choice: RestPick = { kind: 'train', skill: req.skill, ...(req.branch === 'A' || req.branch === 'B' ? { branch: req.branch } : {}) };
+        const bad = isSkillId(req.skill) ? validRestPick(p, choice) : 'Unknown skill';
+        if (bad) return bad;
+        if (shop.trainPrice > run.gold) return `Not enough gold: it costs ${shop.trainPrice}.`;
+        const tier = nextTier(p, req.skill);
+        const res = tier ? upgrade(p, req.skill, tier, req.branch) : null;
+        if (!res?.ok) return res?.error ?? "That skill can't be trained right now.";
+        run.gold -= shop.trainPrice;
+        this.addLog('level', `🛒 ${p.name} pays ${shop.trainPrice} gold for a lesson and ${res.text}.`);
+        this.shopReceipts.push(`${p.name}: 📚 a lesson`);
+        return null;
+      }
+      case 'done': {
+        shop.done = shop.done.filter((id) => id !== p.playerId);
+        if (req.done !== false) shop.done.push(p.playerId);
+        return null;
+      }
+    }
+    return 'Unknown action';
+  }
+
+  /**
+   * Once every person is done shopping (or nobody is at the keyboard), the auto heroes shop and the party moves on.
+   * Someone done starts a countdown for the rest; someone who dropped out (a reload) gets a short grace to come back.
+   */
+  private maybeCloseShop() {
+    const shop = this.shop;
+    if (this.phase !== 'shop' || !shop) return;
+    const notDone = (h: PlayerEntity) => !shop.done.includes(h.playerId);
+    const people = this.heroes().filter((h) => !this.isAuto(h.playerId));
+    const away = this.heroes().filter((h) => {
+      const info = this.players.find((x) => x.id === h.playerId);
+      return !!info && !info.bot && !info.auto && !info.connected;
+    });
+    let wait: number | null = null;
+    if (!people.some(notDone) && !away.some(notDone)) wait = AUTO_DELAY_MS / SPEED;
+    else if (!people.some(notDone)) wait = AWAY_MS;
+    else if (people.some((h) => !notDone(h))) wait = SHOP_MS;
+    const deadline = wait === null ? null : Date.now() + wait;
+    if (this.shopTimer && deadline !== null && this.shopDeadline !== null && this.shopDeadline <= deadline) return; // keep the sooner countdown
+    if (this.shopTimer) clearTimeout(this.shopTimer);
+    this.shopTimer = wait === null ? null : setTimeout(() => this.closeShop(), wait);
+    this.shopDeadline = wait !== null && wait >= AWAY_MS ? deadline : null;
+  }
+
+  private closeShop() {
+    const shop = this.shop;
+    const run = this.run;
+    if (this.phase !== 'shop' || !shop || !run) return;
+    // Auto heroes take turns, one purchase each, so nobody empties the party's purse alone.
+    const autos = this.heroes().filter((h) => this.isAuto(h.playerId) && !h.dead);
+    for (let round = 0; round < 6; round++) {
+      let bought = false;
+      for (const h of autos) {
+        const req = autoShopPick(h, shop, run.gold, this.heroes().length, run.relics);
+        if (!req) continue;
+        const err = this.shopAction(h, req);
+        if (err) console.warn(`[auto shop ${h.name}] rejected: ${err}`);
+        else bought = true;
+      }
+      if (!bought) break;
+    }
+    const bought = this.shopReceipts.length ? `Bought: ${this.shopReceipts.join(', ')}. ` : 'Nobody bought anything. ';
+    this.notice = { glyph: '🛒', title: 'Shop', text: `${bought}The party moves on with ${run.gold} gold.` };
+    this.toMap();
+  }
+
+  // ------------------------------------------------------------ inventory (any time outside a fight)
+
+  handleItem(playerId: string, req: ItemRequest) {
+    const p = this.hero(playerId);
+    if (!p || !req || typeof req !== 'object') return;
+    const err = this.itemAction(p, req);
+    if (err) this.whisper(playerId, err);
+    else this.checkpoint();
+    this.broadcast();
+  }
+
+  /** Equip, unequip, give or drop. Returns why it failed, or null. */
+  private itemAction(p: PlayerEntity, req: ItemRequest): string | null {
+    if (!['map', 'event', 'rest', 'shop'].includes(this.phase)) return 'Not during a fight.';
+    switch (req.kind) {
+      case 'equip': {
+        const g = isItemId(req.item) ? gearDef(req.item) : null;
+        const i = g ? p.bag.indexOf(req.item) : -1;
+        if (!g || i < 0) return "That's not gear in your bag.";
+        const old = p.gear[g.slot];
+        p.bag.splice(i, 1);
+        p.gear[g.slot] = req.item;
+        if (old) p.bag.push(old);
+        recalcHero(p);
+        this.addLog('info', `${g.icon} ${p.name} equips the ${g.name}.`);
+        return null;
+      }
+      case 'unequip': {
+        const id = p.gear[req.slot];
+        if (!id) return 'Nothing to take off.';
+        if (bagRoom(p) <= 0) return 'Your bag is full.';
+        delete p.gear[req.slot];
+        p.bag.push(id);
+        recalcHero(p);
+        return null;
+      }
+      case 'give': {
+        const to = this.heroes().find((h) => h.id === req.to);
+        if (!to || to === p || to.dead) return 'Give it to whom?';
+        if (req.item === 'potion') {
+          if (p.potions <= 0) return 'No potions left.';
+          p.potions--;
+          to.potions++;
+          this.addLog('info', `🧪 ${p.name} gives ${to.name} a potion.`);
+          return null;
+        }
+        const i = isItemId(req.item) ? p.bag.indexOf(req.item) : -1;
+        if (i < 0) return "That's not in your bag.";
+        if (bagRoom(to) <= 0) return `${to.name}'s bag is full.`;
+        p.bag.splice(i, 1);
+        to.bag.push(req.item);
+        this.addLog('info', `🤝 ${p.name} gives ${to.name} the ${itemInfo(req.item).name}.`);
+        if (this.isAuto(to.playerId)) this.autoManage(to);
+        return null;
+      }
+      case 'drop': {
+        const i = isItemId(req.item) ? p.bag.indexOf(req.item) : -1;
+        if (i < 0) return "That's not in your bag.";
+        p.bag.splice(i, 1);
+        return null;
+      }
+    }
+    return 'Unknown action';
   }
 
   // ------------------------------------------------------------ chat
@@ -2427,6 +2847,7 @@ export class Game {
         picks: this.restPicks,
         endsInMs: this.restDeadline === null ? null : Math.max(0, this.restDeadline - Date.now()),
       },
+      shop: this.shop && { ...this.shop, endsInMs: this.shopDeadline === null ? null : Math.max(0, this.shopDeadline - Date.now()) },
       approach: this.approachDc === null ? null : { dc: this.approachDc },
       notice: this.notice,
       roomKind: this.roomKind,
