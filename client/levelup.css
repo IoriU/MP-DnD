@@ -1,0 +1,150 @@
+/* The level-up panel (#levelup): a floating card stack in the bottom-right corner of the canvas. */
+
+#levelup {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 9;
+  width: min(310px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  pointer-events: none; /* only the panel and the tab take clicks; the map stays usable around them */
+}
+#levelup > * { pointer-events: auto; }
+#levelup.collapsed { width: auto; }
+#levelup.busy { opacity: 0.6; }
+#levelup.busy > * { pointer-events: none; }
+
+.lu-tab {
+  font: 700 14px var(--sans);
+  color: #1a1208;
+  background: var(--accent);
+  border: 2px solid var(--accent-2);
+  border-radius: 99px;
+  padding: 8px 16px;
+  cursor: pointer;
+  box-shadow: 0 6px 20px #000a;
+  animation: lu-pulse 1.8s ease-in-out infinite;
+}
+.lu-tab:hover { background: var(--accent-2); }
+@keyframes lu-pulse {
+  0%, 100% { box-shadow: 0 6px 20px #000a, 0 0 0 0 #e8b04a88; }
+  50% { box-shadow: 0 6px 20px #000a, 0 0 0 7px #e8b04a00; }
+}
+
+.lu-panel {
+  width: 100%;
+  min-height: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #16120ff4;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px #000c;
+}
+.lu-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  font: 600 15px var(--serif);
+  color: var(--accent-2);
+}
+.lu-top .muted { font: 12px var(--sans); }
+.lu-min {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.lu-min:hover { color: var(--text); border-color: var(--accent); }
+.lu-cards {
+  display: grid;
+  gap: 8px;
+  padding: 0 8px 8px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A card. --k is the accent of its kind. */
+.lu-card {
+  --k: var(--accent);
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--k);
+  border-radius: 8px;
+}
+button.lu-card { cursor: pointer; }
+button.lu-card:hover,
+.lu-branch:hover { border-color: var(--k); background: #2a2018; }
+button.lu-card:focus-visible,
+.lu-branch:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+.lu-card.k-cantrip { --k: #4fb3ff; }
+.lu-card.k-spell { --k: #b58cff; }
+.lu-card.k-passive { --k: #7ddc6f; }
+.lu-card.k-boon { --k: var(--accent); }
+.lu-card.forget { --k: var(--bad); }
+
+.lu-head2 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lu-icon { flex: none; font-size: 20px; }
+.lu-title { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+.lu-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  color: #120d06;
+  background: var(--k);
+}
+.lu-desc { font-size: 12px; color: var(--text); white-space: pre-line; overflow-wrap: anywhere; }
+.lu-now .lu-desc { color: var(--muted); }
+.lu-tier { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.lu-tier.up { color: var(--k); }
+.lu-go { justify-self: end; font-size: 11px; font-weight: 700; color: var(--k); }
+
+.lu-branch {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: #120d08;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.lu-bhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
+
+.lu-forget { padding: 2px 2px 4px; font-size: 13px; color: var(--accent-2); }
+
+@media (max-width: 860px) {
+  #levelup { right: 8px; bottom: 8px; width: calc(100% - 16px); max-height: calc(100% - 16px); }
+  .lu-cards { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lu-tab { animation: none; }
+}

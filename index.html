@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dungeon Delvers</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>" />
+  </head>
+  <body>
+    <!-- Home: pick a name and class, then create or join a room -->
+    <main id="screen-home" class="screen lobby">
+      <div class="panel">
+        <h1>Dungeon Delvers</h1>
+        <p class="tagline">A co-op dungeon crawl with dice, spells and questionable decisions. For 1–6 friends.</p>
+        <label class="field">
+          <span class="label">Your name</span>
+          <input id="name" maxlength="16" autocomplete="nickname" placeholder="e.g. Aria" />
+        </label>
+        <div class="field">
+          <span class="label">Class</span>
+          <div id="home-classes" class="class-grid"></div>
+        </div>
+        <div class="actions">
+          <button id="create-btn" class="btn primary" type="button">Create a room</button>
+          <span class="muted">or</span>
+          <form id="join-form" class="join">
+            <input id="code" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false" />
+            <button id="join-btn" class="btn">Join room</button>
+          </form>
+        </div>
+        <p class="resume-note muted">Reconnecting to your game…</p>
+      </div>
+    </main>
+
+    <!-- Lobby: waiting for the host to start -->
+    <main id="screen-room" class="screen lobby" hidden>
+      <div class="panel">
+        <h2>🍺 The tavern</h2>
+        <div class="room-code"><span class="label">Room code</span><strong id="room-code"></strong></div>
+        <div class="invite">
+          <input id="invite-link" readonly />
+          <button id="copy-link" class="btn" type="button">Copy invite link</button>
+        </div>
+        <h3>Party</h3>
+        <ul id="room-players" class="room-players"></ul>
+        <h3>Your class</h3>
+        <div id="room-classes" class="class-grid"></div>
+        <div class="actions">
+          <button id="start-btn" class="btn primary" type="button">Start the adventure</button>
+          <button id="add-bot" class="btn" type="button" title="Fill a seat with a computer-controlled hero">🤖 Add bot</button>
+          <span id="wait-host" class="muted">Waiting for the host to start…</span>
+          <button id="leave-room" class="btn ghost" type="button">Leave</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Game -->
+    <main id="screen-game" class="screen game" hidden>
+      <div id="canvas-wrap">
+        <div id="tooltip" hidden></div>
+        <div id="target-hint" hidden></div>
+        <div id="map-view" hidden></div>
+        <div id="event-view" hidden></div>
+        <div id="rest-view" hidden></div>
+        <div id="levelup" hidden></div>
+      </div>
+      <aside id="hud">
+        <header class="hud-head">
+          <div>
+            <div id="hud-title"></div>
+            <div id="hud-sub" class="muted"></div>
+          </div>
+          <button id="leave-game" class="btn ghost small" type="button" title="Leave game">Leave</button>
+        </header>
+        <section id="initiative" hidden></section>
+        <section id="party"></section>
+        <section id="me-panel">
+          <div id="economy"></div>
+          <div id="ability-bar"></div>
+          <div class="actions">
+            <button id="end-turn" class="btn primary" type="button">End turn <kbd>Space</kbd></button>
+            <button id="auto-btn" class="btn" type="button" title="Let the AI play your hero, e.g. while you're AFK">🤖 Auto <kbd>P</kbd></button>
+          </div>
+        </section>
+        <section id="log"></section>
+        <form id="chat-form">
+          <input id="chat-input" maxlength="200" placeholder="Chat… (Enter)" autocomplete="off" />
+        </form>
+        <details class="help">
+          <summary>How to play</summary>
+          <ul>
+            <li><b>The map:</b> click a glowing room to vote. Majority wins; ties are rolled. Beat 3 acts, each ending in a boss 👑.</li>
+            <li><b>Rooms:</b> ⚔️ fight · 💀 elite (tough, lots of XP) · ❓ event · 🔥 rest · 💰 treasure.</li>
+            <li><b>In a fight:</b> on your turn you get movement (blue tiles), one <b>A</b>ction and one <b>B</b>onus action. Click a tile to walk (or WASD, Q E Z C for diagonals). Some skills are <b>free</b>.</li>
+            <li><b>Attack:</b> click a monster to use your basic attack (free, no limit). <b>Skills:</b> keys 1–9 (or click), then click a target. Area skills show what they hit when you hover a tile.</li>
+            <li><b>⏱ Cantrips</b> (top row) have a cooldown in your turns and are ready again at the start of every fight.</li>
+            <li><b>🔮 Spells</b> (second row) are strong but cost slots (the pips). Only a Long Rest restores them, so save them for the tough fights.</li>
+            <li><b>🔁 Passives</b> are always on. Hover an icon to read it.</li>
+            <li><b>XP:</b> everyone shares each kill, the killing blow earns extra and so does every assist; healing and buffing allies earn XP too. Land a killing blow on a monster someone else mostly beat down and it's a <b>🗡️ kill steal</b>.</li>
+            <li><b>Level up ⬆️:</b> every level gives you 1 pick out of 3 cards (a new skill, an upgrade or a boon). Use the panel in the corner of the map (<kbd>L</kbd> opens and closes it), any time, even mid-fight. Nobody waits for anybody. Your hotbar holds 3 cantrips and 3 spells, and passive slots are limited, so a new one means forgetting an old one.</li>
+            <li><b>Rest sites 🔥:</b> everyone picks <b>Long Rest</b> (heal 30% of max HP and restore all slots) or <b>Train</b> (upgrade a cantrip or spell by a tier). Undecided heroes take a Long Rest when the timer ends.</li>
+            <li><b>Dice:</b> attacks roll d20 + bonus vs the target's AC. A natural 20 crits.</li>
+            <li><b>At 0 HP</b> you fall and make death saves. Allies can heal you back up. Everyone gets back up after a won fight.</li>
+            <li><b>Between rooms:</b> HP carries over. Drink potions, or heal friends by picking a heal and clicking their card.</li>
+            <li><b>Keys:</b> <kbd>Space</kbd> end turn · <kbd>Esc</kbd> cancel aiming · <kbd>P</kbd> auto-play · <kbd>Enter</kbd> chat.</li>
+          </ul>
+        </details>
+      </aside>
+      <div id="end-overlay" hidden>
+        <div class="panel">
+          <h2 id="end-title"></h2>
+          <p id="end-text"></p>
+          <ul id="end-stats" class="room-players"></ul>
+          <button id="restart-btn" class="btn primary" type="button">Back to the tavern</button>
+        </div>
+      </div>
+    </main>
+
+    <div id="toast" role="status"></div>
+    <script type="module" src="/client/main.ts"></script>
+  </body>
+</html>
