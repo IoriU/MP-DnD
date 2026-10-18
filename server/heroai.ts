@@ -4,16 +4,24 @@
 // every usable skill is tried on every sensible aim, checked with skillBlockReason + resolveAim, and given a utility score.
 // Positioning comes from the same scoring: hit chances use shared/tactics.ts from the tile being considered, so tiles
 // that flank a monster or reach its back score higher and the movement planner walks there on purpose.
+// The battlefield (shared/surfaces.ts) is priced the same way: standing in or walking through hazards costs HP, skills
+// are previewed on a copy of the field (explosions, electrified water, fire spreading over oil), area skills count the
+// friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
-import { canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
-import { MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, stealthBonus } from '../shared/rules.ts';
+import { DIRS, canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
+import { MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
 import { attackAdvantage, canReact, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
+  CLEANSED,
   SKILLS,
+  SKIP_TURN,
+  SLOWED,
   attackBonus,
   avgDice,
+  canHitProps,
   countKind,
   damageMod,
+  hasBranch,
   hasStatus,
   healBonus,
   hitsOf,
@@ -29,16 +37,33 @@ import {
   trainOptions,
   type AimCtx,
   type AimResult,
+  type Element,
   type SkillId,
   type SkillKind,
   type SkillStats,
   type StatusApply,
   type StatusId,
 } from '../shared/skills.ts';
+import {
+  EXPLOSION,
+  FIELD_STATUS_TURNS,
+  HAZARD_DICE,
+  aimFieldOps,
+  damageFactor,
+  fieldElement,
+  hazardAt,
+  immuneToStatus,
+  planWalk,
+  previewField,
+  tilePos,
+  tilesAround,
+  type FieldLike,
+  type FieldOp,
+} from '../shared/surfaces.ts';
 import type { Entity, MonsterEntity, NodeType, OfferCard, OwnedSkill, PickRequest, PlayerEntity, Pos, RestPick, TurnState } from '../shared/types.ts';
 
 export interface HeroView {
-  map: MapLike;
+  map: FieldLike;
   hero: PlayerEntity;
   heroes: PlayerEntity[];
   monsters: MonsterEntity[];
@@ -58,7 +83,8 @@ const STEP_COST = 0.05; // per tile walked
 const POTION_PRICE = 6; // potions are scarce: drink when it really helps
 const REVIVE = 25; // getting a downed friend back up beats almost anything
 const FLANK_GIFT = 0.3; // standing across a monster from a friend gives them advantage on it too
-const CLEANSED: StatusId[] = ['burning', 'poisoned', 'dazed', 'blinded'];
+const DOWN_PRICE = 25; // a friend (or you) going down: about what getting them back up is worth
+const SETUP_ODDS_CAP = 0.7; // oil or water waits for a spark: someone has to bring it before it's gone (or the monsters walk off)
 
 const standing = (p: PlayerEntity) => !p.dead && !p.downed;
 const hpPct = (p: PlayerEntity) => p.hp / p.maxHp;
@@ -67,15 +93,20 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
 const d20 = (bonus: number, target: number) => clamp((21 + bonus - target) / 20, 0.05, 0.95);
 /** Extra AC from Shielded (game.ts counts a Shielded without a power as +2). */
 const shieldOf = (e: Entity) => e.statuses.reduce((s, x) => s + (x.id === 'shielded' ? (x.power ?? 2) : 0), 0);
+/** Armor class right now, like game.ts: Shielded adds, Shocked takes 2 off, Spell Shield adds 2 while the ward holds. */
+const acOf = (e: Entity) =>
+  e.ac + shieldOf(e) - (hasStatus(e, 'shocked') ? 2 : 0) + (e.kind === 'player' && e.tempHp > 0 && hasBranch(e, 'arcane_ward', 'A') ? 2 : 0);
 /** A copy with a pretend status (replacing any it has), or without one. */
 const withStatus = <T extends Entity>(e: T, id: StatusId, power?: number): T => ({
   ...e,
   statuses: [...e.statuses.filter((x) => x.id !== id), power ? { id, turns: 1, power } : { id, turns: 1 }],
 });
 const without = <T extends Entity>(e: T, id: StatusId): T => (hasStatus(e, id) ? { ...e, statuses: e.statuses.filter((x) => x.id !== id) } : e);
-/** Loses its next turn: stunned, or caught by surprise. */
-const skipsTurn = (e: Entity) => hasStatus(e, 'stunned') || hasStatus(e, 'surprised');
+/** Loses its next turn: stunned, frozen solid, or caught by surprise. */
+const skipsTurn = (e: Entity) => SKIP_TURN.some((id) => hasStatus(e, id));
 const isOffensive = (s: SkillStats) => s.target === 'enemy' || s.target === 'area' || s.target === 'around';
+/** Grease, Create Water: no damage, they only leave something on the ground (and may have no foe in them). */
+const isSetup = (s: SkillStats) => !!s.surface && s.surface.at !== 'self' && !s.dmg;
 
 // ---------------------------------------------------------------- numbers about monsters
 
@@ -92,7 +123,9 @@ function threat(m: MonsterEntity): number {
 }
 
 const isMelee = (m: MonsterEntity) => (MONSTERS[m.type]?.range ?? 1) <= 1;
-const reachOf = (m: MonsterEntity) => m.speed + (MONSTERS[m.type]?.range ?? 1);
+/** Moves next turn: dazed and chilled monsters get half (game.ts beginTurn). */
+const movesOf = (m: MonsterEntity) => (SLOWED.some((id) => hasStatus(m, id)) ? Math.floor(m.speed / 2) : m.speed);
+const reachOf = (m: MonsterEntity) => movesOf(m) + (MONSTERS[m.type]?.range ?? 1);
 /** What taking a monster out of the fight is worth (on top of the damage itself). */
 const killValue = (m: MonsterEntity) => 3 + 1.5 * threat(m) + (m.boss || m.elite ? 3 : 0);
 const tauntedBy = (m: MonsterEntity) => m.statuses.find((x) => x.id === 'taunted')?.by;
@@ -114,6 +147,69 @@ interface Sim {
   root: boolean; // the real situation: also weighs setups, dashes and refreshes
   actionLater: boolean; // this turn's action is still coming (and an attack would give a hidden hero away)
   memo: Map<string, number>;
+  fx: FieldCache; // the battlefield, and what its tiles cost this hero
+  odds: Record<'fire' | 'cold' | 'lightning', number>; // chance the party brings each element to a setup (oil, water) in time
+}
+
+/** A skill's effect on the battlefield, worked out once on a copy. */
+interface Preview {
+  field: FieldLike; // the battlefield afterwards
+  blasts: Set<number>; // tiles caught in an explosion
+  changed: Set<number>; // tiles where something new appeared (whoever stands there is affected)
+  sparks: Partial<Record<'fire' | 'lightning', Preview>>; // what a later spark (oil) or shock (water) would set off
+}
+
+/** The battlefield as one hero sees it, computed once per decision (variants share it). */
+interface FieldCache {
+  field: FieldLike;
+  empty: boolean; // no surfaces, clouds or props at all: nothing to preview
+  walk: Float64Array | null; // harm of stepping onto each tile (null: nothing hurts anywhere)
+  stand: Float64Array | null; // harm of ending the turn there, plus risks (see riskAt)
+  fiery: boolean; // a monster throws fire (a firebomb on oil sets it all ablaze)
+  frosty: boolean; // a monster's attacks are cold or lightning (a Wet hero freezes or gets stunned)
+  propAims: Pos[]; // oil barrels and braziers with a monster near enough to care
+  previews: Map<string, Preview | null>;
+}
+
+/** Not a hazard yet, but asking for one: oil when monsters throw fire, water or steam when their attacks freeze or shock. */
+function riskAt(fx: Pick<FieldCache, 'fiery' | 'frosty'>, f: FieldLike, i: number): number {
+  const g = f.ground[i]?.id;
+  return (g === 'oil' && fx.fiery ? 2 : 0) + ((g === 'water' || f.clouds[i]?.id === 'steam') && fx.frosty ? 1.5 : 0);
+}
+
+function fieldCache(field: FieldLike, me: PlayerEntity, monsters: MonsterEntity[]): FieldCache {
+  const tiles = new Set([...Object.keys(field.ground), ...Object.keys(field.clouds)].map(Number));
+  const props = Object.keys(field.props).map(Number);
+  const n = field.width * field.height;
+  const kinds = monsters.map((m) => MONSTERS[m.type]);
+  const fiery = kinds.some((d) => d?.element === 'fire' || !!d?.breath);
+  const frosty = kinds.some((d) => d?.element === 'cold' || d?.element === 'lightning');
+  let walk: Float64Array | null = null;
+  let stand: Float64Array | null = null;
+  for (const i of tiles) {
+    const harm = hazardAt(field, i, me);
+    const risk = riskAt({ fiery, frosty }, field, i);
+    if (harm > 0) (walk ??= new Float64Array(n))[i] = harm;
+    if (harm + risk > 0) (stand ??= new Float64Array(n))[i] = harm + risk;
+  }
+  const propAims = props.map((i) => tilePos(field, i)).filter((p) => monsters.some((m) => dist(m, p) <= 2));
+  return { field, empty: !tiles.size && !props.length, walk, stand, fiery, frosty, propAims, previews: new Map() };
+}
+
+/** Which elements the standing party could bring to oil or water before it's gone (you a bit more surely than a friend). */
+function partyOdds(v: HeroView): Sim['odds'] {
+  const odds = { fire: 0, cold: 0, lightning: 0 };
+  for (const h of v.heroes) {
+    if (!standing(h)) continue;
+    for (const el of ['fire', 'cold', 'lightning'] as const) {
+      const has = h.skills.some((o) => {
+        const s = statsOf(o);
+        return SKILLS[o.id].kind !== 'passive' && s.element === el && !!s.dmg && isOffensive(s);
+      });
+      if (has) odds[el] = Math.min(SETUP_ODDS_CAP, odds[el] + (h.id === v.hero.id ? 0.35 : 0.3));
+    }
+  }
+  return odds;
 }
 
 /** Heroes with a ranged attack they can always fall back on (a basic attack or cantrip reaching 4+ tiles) keep out of melee. */
@@ -132,26 +228,28 @@ function slotPrice(v: HeroView): number {
   return 15 - clamp(v.hero.slots - 1, 0, 4);
 }
 
-/** Every open tile on or next to a monster: candidate centers for area skills. */
+/**
+ * Candidate centers for area skills: every open tile on or next to a monster, and friends standing in fire, poison or
+ * oil (Create Water puts it out or washes it away).
+ */
 function areaSpots(v: HeroView): Pos[] {
   const seen = new Set<number>();
   const out: Pos[] = [];
-  for (const m of v.monsters) {
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const x = m.x + dx;
-        const y = m.y + dy;
-        const idx = y * v.map.width + x;
-        if (x < 0 || y < 0 || x >= v.map.width || y >= v.map.height || v.map.tiles[idx] === '#' || seen.has(idx)) continue;
-        seen.add(idx);
-        out.push({ x, y });
-      }
-    }
+  const add = (x: number, y: number) => {
+    const idx = y * v.map.width + x;
+    if (x < 0 || y < 0 || x >= v.map.width || y >= v.map.height || v.map.tiles[idx] === '#' || seen.has(idx)) return;
+    seen.add(idx);
+    out.push({ x, y });
+  };
+  for (const m of v.monsters) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) add(m.x + dx, m.y + dy);
+  for (const h of v.heroes) {
+    const g = v.map.ground[h.y * v.map.width + h.x]?.id;
+    if (standing(h) && (g === 'fire' || g === 'poison' || g === 'oil')) add(h.x, h.y);
   }
   return out;
 }
 
-const aimCtx = (map: MapLike, heroes: PlayerEntity[], monsters: MonsterEntity[]): AimCtx => ({ map, entities: [...heroes, ...monsters], inCombat: true });
+const aimCtx = (map: FieldLike, heroes: PlayerEntity[], monsters: MonsterEntity[]): AimCtx => ({ map, entities: [...heroes, ...monsters], inCombat: true });
 const usable = (me: PlayerEntity, turn: TurnState) => hotbar(me).filter((id) => skillBlockReason(me, id, true, turn, true) === null);
 
 function rootSim(v: HeroView): Sim {
@@ -169,6 +267,8 @@ function rootSim(v: HeroView): Sim {
     root: true,
     actionLater: !v.turn.actionUsed,
     memo: new Map(),
+    fx: fieldCache(v.map, v.hero, v.monsters),
+    odds: partyOdds(v),
   };
 }
 
@@ -179,10 +279,16 @@ function variant(sim: Sim, me: PlayerEntity, monsters = sim.monsters, turn = sim
   const moved = me.x !== sim.me.x || me.y !== sim.me.y;
   if (moved) monsters = monsters.map((m) => (turnsToFace(m, me, me) ? { ...m, facing: dirTo(m, me) } : m));
   const actionLater = turn === sim.turn ? sim.actionLater : !turn.actionUsed;
-  return { ...sim, me, heroes, monsters, turn, ctx: aimCtx(sim.v.map, heroes, monsters), root: false, actionLater };
+  return { ...sim, me, heroes, monsters, turn, ctx: aimCtx(sim.fx.field, heroes, monsters), root: false, actionLater };
 }
 
 const standAt = (sim: Sim, pos: Pos) => variant(sim, { ...sim.me, x: pos.x, y: pos.y });
+
+/** The same fight on a changed battlefield (after a Quick Grease, say). */
+function onField(sim: Sim, field: FieldLike): Sim {
+  const v = variant(sim, sim.me);
+  return { ...v, fx: fieldCache(field, sim.me, sim.monsters), ctx: aimCtx(field, v.heroes, v.monsters) };
+}
 
 function memo(sim: Sim, key: string, f: () => number): number {
   let v = sim.memo.get(key);
@@ -235,7 +341,7 @@ function successOdds(ps: number[]): number[] {
 const allyNextTo = (sim: Sim, m: MonsterEntity) => sim.heroes.some((a) => a.id !== sim.me.id && standing(a) && dist(a, m) <= 1);
 
 /** Flat damage from passives and buffs (the server applies these; the AI just counts them). */
-function passiveDamage(me: PlayerEntity, id: SkillId, s: SkillStats, m: MonsterEntity): number {
+function passiveDamage(me: PlayerEntity, id: SkillId, s: SkillStats, m: Entity): number {
   let b = 0;
   if (s.element === 'fire') b += passiveOf(me, 'elemental_affinity')?.value ?? 0;
   if (m.hp < m.maxHp / 2) b += passiveOf(me, 'opportunist')?.value ?? 0;
@@ -260,7 +366,13 @@ function shoveOdds(me: PlayerEntity, s: SkillStats, m: MonsterEntity): { win: nu
   return { win: beat(diff), far: beat(diff + 5) };
 }
 
-/** Expected damage, kill chance and landing chance of a damaging skill against one monster. */
+/** Damage multiplier of a skill's element on a creature: resistances, Wet against fire; 1 for plain weapons. */
+const factorOf = (e: Entity, el: Element | undefined) => (el && el !== 'physical' ? damageFactor(e, el) : 1);
+
+/**
+ * Expected damage, kill chance and landing chance of a damaging skill against one monster. Resistances scale the damage:
+ * nothing against an immune monster, negative (it heals) against one that drinks the element in.
+ */
 function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: boolean): Strike {
   const me = sim.me;
   if (!s.roll) return { dmg: 0, kill: 0, land: 1 }; // no roll: its effects always apply
@@ -274,7 +386,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   let ambush = 0; // Shadow Strike: extra d6s on the attack from hiding
   if (s.roll === 'attack') {
     const bonus = attackBonus(me, s) + (hasStatus(me, 'blessed') ? 2 : 0) - (hasStatus(me, 'dazed') ? 2 : 0);
-    const base = d20(bonus, m.ac + shieldOf(m));
+    const base = d20(bonus, acOf(m));
     // Focus and hiding go into the first attack roll of the skill; flanking, the back arc and marks stay.
     const spent = without(without(me, 'focused'), 'hidden');
     const first = netAdvantage(attackAdvantage(main ? me : spent, m, sim.ctx.entities, !!s.adv));
@@ -313,6 +425,8 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   const half = s.roll === 'save' && !!s.half;
   let dmg = sneak * 3.5 * pSneak + ambush * 3.5 * (ps[0] ?? 0);
   for (let i = 0; i < hits; i++) dmg += ps[i] * per + crits[i] * roll + (half ? ((1 - ps[i]) * per) / 2 : 0);
+  const factor = factorOf(m, s.element);
+  if (factor <= 0) return { dmg: factor * dmg, kill: 0, land }; // immune, or it heals
   // Kill chance: over how many hits land (they can have different odds), with the bonus dice if any did.
   const extraDice = land > 0 ? (sneak * pSneak + ambush * (ps[0] ?? 0)) / land : 0; // given at least one hit
   let kill = 0;
@@ -324,15 +438,15 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
       mean += ((hits - k) * per) / 2;
       variance += ((hits - k) * rollVar) / 4;
     }
-    kill += pk * atLeast(mean, variance, m.hp);
+    kill += pk * atLeast(mean, variance, m.hp / factor);
   });
-  return { dmg, kill, land };
+  return { dmg: dmg * factor, kill, land };
 }
 
 /** Statuses on a monster: worth more on dangerous ones, nothing for turns it already has them (or skips anyway). */
 function foeStatusValue(sim: Sim, m: MonsterEntity, list: StatusApply[]): number {
   const t = threat(m);
-  const skip = skipsTurn(m) ? 1 : 0; // stunned or surprised: its next turn is lost already
+  const skip = skipsTurn(m) ? 1 : 0; // stunned, frozen or surprised: its next turn is lost already
   let v = 0;
   for (const st of list) {
     const turns = Math.min(st.turns, 2);
@@ -341,40 +455,94 @@ function foeStatusValue(sim: Sim, m: MonsterEntity, list: StatusApply[]): number
     const acting = Math.max(0, turns - Math.max(have, skip)); // turns it would actually act under it
     switch (st.id) {
       case 'stunned':
+      case 'frozen':
         v += 1.3 * t * acting; // it skips its turn
         break;
       case 'dazed':
         v += 0.35 * t * acting;
         break;
+      case 'chilled': {
+        // Half movement: only slows down a melee monster that still has to walk to someone.
+        const walking = isMelee(m) && !sim.heroes.some((h) => standing(h) && dist(h, m) <= 1);
+        v += (walking ? 0.25 : 0.05) * t * acting;
+        break;
+      }
       case 'blinded':
         v += 0.4 * t * acting;
         break;
       case 'marked':
         v += 1.2 * fresh * sim.heroes.filter(standing).length; // the whole party gets advantage
         break;
+      case 'shocked':
+        v += 0.5 * fresh * sim.heroes.filter(standing).length; // -2 AC: everyone hits it a bit more often
+        break;
       case 'burning':
+        // Ticks even on a lost turn. A Wet monster just dries off; fire-proof ones don't care.
+        if (!immuneToStatus(m, 'burning') && !hasStatus(m, 'wet')) v += Math.min(2.5 * (st.power ?? 1) * fresh * Math.max(0, damageFactor(m, 'fire')), m.hp);
+        break;
       case 'poisoned':
-        v += Math.min(2.5 * (st.power ?? 1) * fresh, m.hp); // ticks even on a lost turn
+        if (!immuneToStatus(m, 'poisoned')) v += Math.min(2.5 * (st.power ?? 1) * fresh * Math.max(0, damageFactor(m, 'poison')), m.hp);
         break;
     }
   }
   return v;
 }
 
+/** Wet (from the status, or standing in water or steam): lightning stuns it, cold freezes it, fire does half. */
+const isWet = (f: FieldLike, e: Entity) => {
+  const i = e.y * f.width + e.x;
+  return hasStatus(e, 'wet') || f.ground[i]?.id === 'water' || f.clouds[i]?.id === 'steam';
+};
+
+/**
+ * What an element does to a monster it hurts and doesn't kill (game.ts elementHit): cold chills, or freezes a Wet or
+ * Chilled one; lightning shocks, or stuns a Wet or Shocked one; fire thaws (giving a frozen monster its turn back).
+ */
+function elementValue(sim: Sim, m: MonsterEntity, el: Element): number {
+  const wet = isWet(sim.fx.field, m);
+  switch (el) {
+    case 'cold':
+      if (hasStatus(m, 'frozen')) return 0;
+      return foeStatusValue(sim, m, [wet || hasStatus(m, 'chilled') ? { id: 'frozen', turns: 1 } : { id: 'chilled', turns: FIELD_STATUS_TURNS }]);
+    case 'lightning':
+      if (hasStatus(m, 'stunned')) return 0;
+      return foeStatusValue(sim, m, [wet || hasStatus(m, 'shocked') ? { id: 'stunned', turns: 1 } : { id: 'shocked', turns: FIELD_STATUS_TURNS }]);
+    case 'fire': {
+      const thawed = m.statuses.filter((x) => x.id === 'frozen' || x.id === 'chilled');
+      if (!thawed.length) return 0;
+      const bare = { ...m, statuses: m.statuses.filter((x) => !thawed.includes(x)) };
+      return -foeStatusValue(sim, bare, thawed.map((x) => ({ id: x.id, turns: x.turns })));
+    }
+    default:
+      return 0;
+  }
+}
+
 const occupiedIn = (sim: Sim, x: number, y: number, exceptId: string) =>
   sim.ctx.entities.some((e) => e.x === x && e.y === y && e.id !== exceptId && !(e.kind === 'player' && e.dead));
 
-/** Where a knockback leaves a monster, like game.ts: straight away from `from`, stopped by walls and creatures. */
-function pushedTo(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): Pos {
+/** The tiles a knockback drags a monster through, like game.ts: straight away from `from`, stopped by walls and creatures. */
+function pushPath(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): Pos[] {
   const dx = Math.sign(m.x - from.x);
   const dy = Math.sign(m.y - from.y);
+  const path: Pos[] = [];
+  if (!dx && !dy) return path;
   let at: Pos = { x: m.x, y: m.y };
-  if (!dx && !dy) return at;
   for (let i = 0; i < tiles; i++) {
-    if (!canStep(sim.v.map, at, dx, dy) || occupiedIn(sim, at.x + dx, at.y + dy, m.id)) break;
+    if (!canStep(sim.fx.field, at, dx, dy) || occupiedIn(sim, at.x + dx, at.y + dy, m.id)) break;
     at = { x: at.x + dx, y: at.y + dy };
+    path.push(at);
   }
-  return at;
+  return path;
+}
+
+/** What a knockback is worth: where it ends up, and every hazard it's shoved through (fire, poison, electrified water). */
+function pushValue(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): number {
+  const path = pushPath(sim, m, from, tiles);
+  const to = path[path.length - 1] ?? m;
+  let harm = 0;
+  if (sim.fx.walk) for (const p of path) harm += hazardAt(sim.fx.field, p.y * sim.fx.field.width + p.x, m);
+  return pushGain(sim, m, to) + 0.8 * Math.min(harm, m.hp);
 }
 
 /** Who's worse off with a monster on them: the downed, the badly hurt, the lightly armored, and heroes who fight from range. */
@@ -427,21 +595,35 @@ function pushGain(sim: Sim, m: MonsterEntity, to: Pos): number {
 function shoveValue(sim: Sim, s: SkillStats, m: MonsterEntity): number {
   const { win, far } = shoveOdds(sim.me, s, m);
   const tiles = s.push ?? 1;
-  return (win - far) * pushGain(sim, m, pushedTo(sim, m, sim.me, tiles)) + far * pushGain(sim, m, pushedTo(sim, m, sim.me, tiles + 1));
+  return (win - far) * pushValue(sim, m, sim.me, tiles) + far * pushValue(sim, m, sim.me, tiles + 1);
 }
 
-/** One foe's share of a skill's value. `from`: where a knockback pushes it away from. */
-function foeValue(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: boolean, from: Pos): number {
+/**
+ * One foe's share of a skill's value. `from`: where a knockback pushes it away from. `own`: the skill's effect on the
+ * battlefield (`stunned`: the monsters it stuns anyway, by electrified water, so its own lightning doesn't count twice).
+ */
+function foeValue(
+  sim: Sim, id: SkillId, s: SkillStats, res: AimResult, m: MonsterEntity, main: boolean, from: Pos, own: Preview | null, stunned: Set<string>,
+): number {
   if (s.roll === 'contest') return shoveValue(sim, s, m);
   const hit = strike(sim, id, s, m, main);
-  let v = Math.min(hit.dmg, m.hp) + hit.kill * killValue(m);
+  // Damage up to its HP; healing (a Magma Imp drinking fire) up to what it's missing.
+  let v = (hit.dmg >= 0 ? Math.min(hit.dmg, m.hp) : Math.max(hit.dmg, m.hp - m.maxHp)) + hit.kill * killValue(m);
   if (hit.dmg > 0) {
     if (m.boss || m.elite) v += 1.5;
     if (main) v -= m.hp * 0.02; // tie-break toward the wounded
   }
   const lives = hit.land * (1 - hit.kill);
   if (s.onHit) v += lives * foeStatusValue(sim, m, s.onHit);
-  if (s.push) v += lives * pushGain(sim, m, pushedTo(sim, m, from, s.push));
+  if (s.push) v += lives * pushValue(sim, m, from, s.push);
+  // The element's own status: only when it actually takes damage (a save for half still counts), and not when the skill
+  // freezes or stuns it anyway (Deep Freeze) or the electrified water does.
+  const skips = (s.onHit ?? []).some((x) => SKIP_TURN.includes(x.id)) || (s.element === 'lightning' && stunned.has(m.id));
+  if (s.dmg && s.element && hit.dmg > 0 && !skips) {
+    const hurt = (s.roll === 'save' && s.half ? 1 : hit.land) * (1 - hit.kill);
+    v += hurt * elementValue(sim, m, s.element);
+  }
+  if (hit.kill > 0 && MONSTERS[m.type]?.death) v += hit.kill * deathValue(sim, id, s, res, m, own);
   return v;
 }
 
@@ -627,6 +809,329 @@ function setupGain(sim: Sim, s: SkillStats, res: AimResult): number {
   return Math.max(0, after - Math.max(0, before));
 }
 
+// ---------------------------------------------------------------- the battlefield
+
+/**
+ * What expected damage costs a friend (or you): a bit more than the same damage on a monster, dearer the lower it
+ * leaves them (priced at the middle of the drop), and going down costs about a revive.
+ */
+function heroLoss(h: PlayerEntity, dmg: number, down: number): number {
+  if (dmg <= 0) return down * DOWN_PRICE;
+  const mid = clamp((h.hp + h.tempHp - dmg / 2) / h.maxHp, 0, 1);
+  return dmg * (1.2 + 1.2 * (1 - mid)) + down * DOWN_PRICE;
+}
+
+/** Standing in or stepping into hazards (hazardAt's expected harm, with stuns and falls priced in). */
+function harmCost(h: PlayerEntity, harm: number, down = 0): number {
+  if (harm <= 0) return 0;
+  const left = h.hp + h.tempHp;
+  return heroLoss(h, harm, Math.max(down, harm >= left ? 0.6 : 2 * harm >= left ? 0.15 : 0));
+}
+
+const tileOf = (f: FieldLike, p: Pos) => p.y * f.width + p.x;
+/** Ending the turn on this tile: what it does at the start of your next turn, and the risks around it. */
+const standCost = (p: Sim) => harmCost(p.me, p.fx.stand?.[tileOf(p.fx.field, p.me)] ?? 0);
+
+/**
+ * The least harm of walking to each tile within `moves` steps: every hazard stepped into hurts (leaving the one you
+ * stand on doesn't). game.ts walks around hazards when that still gets there (planWalk), so a safe detour is free.
+ * Null when nothing on the battlefield hurts this hero.
+ */
+function walkHarm(sim: Sim, moves: number, blocked: (x: number, y: number) => boolean): { harm: Map<number, number>; prev: Map<number, number> } | null {
+  const { walk, field } = sim.fx;
+  if (!walk) return null;
+  const w = field.width;
+  const start = tileOf(field, sim.me);
+  const harm = new Map<number, number>([[start, 0]]);
+  const prev = new Map<number, number>(); // the step before, on the least harmful way there
+  let frontier = [start];
+  for (let step = 1; step <= moves && frontier.length; step++) {
+    const next = new Set<number>();
+    for (const cur of frontier) {
+      const at = tilePos(field, cur);
+      const sofar = harm.get(cur)!;
+      for (const [dx, dy] of DIRS) {
+        if (!canStep(field, at, dx, dy) || blocked(at.x + dx, at.y + dy)) continue;
+        const ni = cur + dy * w + dx;
+        const h = sofar + walk[ni];
+        if (h < (harm.get(ni) ?? Infinity)) {
+          harm.set(ni, h);
+          prev.set(ni, cur);
+          next.add(ni);
+        }
+      }
+    }
+    frontier = [...next];
+  }
+  return { harm, prev };
+}
+
+/**
+ * Where to send a move so it's walked the way it was priced. game.ts walks it with planWalk: around hazards when that
+ * detour fits in the moves left, straight through otherwise, which can cross more fire than the least harmful route
+ * the scan priced. Then the move goes in legs: to the furthest tile on the priced route that planWalk reaches as cheaply.
+ */
+function routeTo(sim: Sim, to: Pos): Pos {
+  const fx = sim.fx;
+  const moves = sim.turn.movesLeft;
+  const blocked = (x: number, y: number) => sim.v.occupied(x, y, sim.me.id);
+  const dp = fx.walk ? walkHarm(sim, moves, blocked) : null;
+  if (!dp || !fx.walk) return to;
+  const walk = fx.walk;
+  const walked = (p: Pos) => {
+    const plan = planWalk(fx.field, sim.me, p, moves, blocked, sim.me);
+    const end = plan?.path[plan.path.length - 1];
+    if (!plan || !end || end.x !== p.x || end.y !== p.y) return Infinity;
+    return plan.hazards.reduce((sum, h) => sum + walk[tileOf(fx.field, h)], 0);
+  };
+  const cheap = (i: number) => walked(tilePos(fx.field, i)) <= (dp.harm.get(i) ?? Infinity) + 1e-6;
+  const goal = tileOf(fx.field, to);
+  if (cheap(goal)) return to;
+  const route: number[] = [];
+  const start = tileOf(fx.field, sim.me);
+  for (let i = goal; i !== start && route.length <= moves + 1; i = dp.prev.get(i) ?? start) route.push(i);
+  for (const i of route.slice(1)) if (cheap(i)) return tilePos(fx.field, i); // from the far end back
+  return to;
+}
+
+function makePreview(field: FieldLike, ops: FieldOp[]): Preview {
+  const p = previewField(field, ops, []);
+  return { field: p.field, blasts: new Set(p.result.blasts), changed: new Set(p.result.changed), sparks: {} };
+}
+
+/** Identifies a skill's aim for the preview caches (what it reaches only depends on these). */
+function aimKey(sim: Sim, id: SkillId, s: SkillStats, res: AimResult): string {
+  const at = s.target === 'around' ? sim.me : res.center;
+  return `${id}|${at.x},${at.y}|${res.prop ?? ''}|${res.foes.map((m) => m.id).join()}`;
+}
+
+/**
+ * What a skill aimed like this does to the battlefield (worked out once per aim and shared by every variant), or null
+ * when nothing it reaches reacts and it leaves nothing behind.
+ */
+function fieldPreview(sim: Sim, id: SkillId, s: SkillStats, res: AimResult): Preview | null {
+  const fx = sim.fx;
+  const leaves = !!s.surface && s.surface.at !== 'self';
+  if (!leaves && res.prop === undefined && (fx.empty || !fieldElement(s.element))) return null;
+  const key = aimKey(sim, id, s, res);
+  let p = fx.previews.get(key);
+  if (p === undefined) {
+    const f = fx.field;
+    const ops = aimFieldOps(s, sim.me, res, f);
+    const live = ops.some((op) => op.kind !== 'touch' || op.tiles.some((i) => f.ground[i] || f.clouds[i] || f.props[i]));
+    p = live ? makePreview(f, ops) : null;
+    fx.previews.set(key, p);
+  }
+  return p;
+}
+
+const EXPLOSION_AVG = avgDice(EXPLOSION);
+const EXPLOSION_VAR = (EXPLOSION.n * (EXPLOSION.d ** 2 - 1)) / 12;
+
+/** An explosion's 2d6 fire on a monster (resistances count: a Magma Imp drinks it in), and the chance it kills it. */
+function blastValue(sim: Sim, m: MonsterEntity): { value: number; kill: number } {
+  const k = damageFactor(m, 'fire');
+  if (k <= 0) return { value: Math.max(k * EXPLOSION_AVG, m.hp - m.maxHp), kill: 0 };
+  const kill = atLeast(EXPLOSION_AVG * k, EXPLOSION_VAR * k * k, m.hp);
+  return { value: Math.min(EXPLOSION_AVG * k, m.hp) + kill * killValue(m) + (1 - kill) * elementValue(sim, m, 'fire'), kill };
+}
+
+/**
+ * What appearing in a tile's hazard does to a monster right away (game.ts standIn): fire or lava burns it, poison
+ * poisons it, electrified water or steam zaps it and stuns it (the water makes it Wet first). `stun`: it ends up stunned.
+ */
+function monsterHarm(sim: Sim, m: MonsterEntity, f: FieldLike, i: number): { value: number; stun: boolean } {
+  const g = f.ground[i];
+  const c = f.clouds[i];
+  const statuses: StatusApply[] = [];
+  let dmg = 0;
+  if ((g?.id === 'fire' || g?.id === 'lava') && !immuneToStatus(m, 'burning')) {
+    dmg += avgDice(HAZARD_DICE[g.id]!) * Math.max(0, damageFactor(m, 'fire'));
+    statuses.push({ id: 'burning', turns: FIELD_STATUS_TURNS });
+  }
+  if (g?.id === 'poison' && !immuneToStatus(m, 'poisoned')) {
+    dmg += avgDice(HAZARD_DICE.poison!) * Math.max(0, damageFactor(m, 'poison'));
+    statuses.push({ id: 'poisoned', turns: FIELD_STATUS_TURNS });
+  }
+  if (c?.id === 'gas' && !immuneToStatus(m, 'poisoned')) statuses.push({ id: 'poisoned', turns: FIELD_STATUS_TURNS });
+  const k = damageFactor(m, 'lightning');
+  const stun = !!((g?.id === 'water' && g.shock) || (c?.id === 'steam' && c.shock)) && k > 0 && !hasStatus(m, 'stunned');
+  if (stun) dmg += avgDice(HAZARD_DICE.shock!) * k;
+  let value = Math.min(dmg, m.hp) + foeStatusValue(sim, m, statuses);
+  if (stun) value += foeStatusValue(sim, m, [{ id: 'stunned', turns: 1 }]);
+  if (g?.id === 'ice' && isMelee(m)) value += 0.1 * threat(m); // it may slip on its way to someone
+  return { value, stun };
+}
+
+interface FieldPlay {
+  value: number; // explosions and new hazards under monsters, minus the same under friends, plus fires put out under friends
+  stunned: Set<string>; // monsters it stuns (electrified water)
+}
+
+const NO_STUNS = new Set<string>();
+
+/**
+ * What a change to the battlefield is worth, for everyone standing in it (`base`: the battlefield before; `gone`: a
+ * monster that won't be there, the one that just died). Friends (you included) count against it like your own HP.
+ */
+function fieldValue(sim: Sim, p: Preview, base: FieldLike, gone?: string): FieldPlay {
+  let value = 0;
+  const stunned = new Set<string>();
+  for (const e of sim.ctx.entities) {
+    if (e.id === gone || (e.kind === 'player' && !standing(e))) continue;
+    const i = tileOf(base, e);
+    const blasted = p.blasts.has(i);
+    const changed = p.changed.has(i);
+    if (!blasted && !changed) continue;
+    const before = changed ? hazardAt(base, i, e) : 0;
+    const after = changed ? hazardAt(p.field, i, e) : 0;
+    // Water or steam makes whoever's in it Wet, which puts out Burning.
+    const burning = e.statuses.find((x) => x.id === 'burning');
+    const doused = changed && burning && (p.field.ground[i]?.id === 'water' || p.field.clouds[i]?.id === 'steam') ? 2.5 * (burning.power ?? 1) * Math.min(burning.turns, 2) : 0;
+    if (e.kind === 'monster') {
+      const blast = blasted ? blastValue(sim, e) : { value: 0, kill: 0 };
+      value += blast.value;
+      if (after > 0) {
+        const h = monsterHarm(sim, e, p.field, i);
+        value += (1 - blast.kill) * h.value; // what's left of it, if the blast didn't finish it
+        if (h.stun) stunned.add(e.id);
+      }
+      if (before > after) value -= 0.5 * monsterHarm(sim, e, base, i).value; // it would have started its turn in that
+      value -= Math.min(doused, e.hp);
+    } else {
+      // The blast and whatever appears under them land together: priced as one drop in HP. New oil or water under
+      // them counts too when the monsters can set it off.
+      const k = blasted ? Math.max(0, damageFactor(e, 'fire')) : 0;
+      const down = k ? atLeast(EXPLOSION_AVG * k, EXPLOSION_VAR * k * k, e.hp + e.tempHp) : 0;
+      const risk = changed ? Math.max(0, riskAt(sim.fx, p.field, i) - riskAt(sim.fx, base, i)) : 0;
+      value -= harmCost(e, EXPLOSION_AVG * k + after + risk, down);
+      if (before > after) value += 0.7 * (harmCost(e, before) - harmCost(e, after));
+      value += doused;
+    }
+  }
+  return { value, stunned };
+}
+
+/**
+ * Oil left under monsters waits for a spark, water for a shock (or a frost bolt on someone Wet): worth part of what that
+ * would set off, if the party has the element. Friends standing in it count against it.
+ */
+function setupPotential(sim: Sim, p: Preview, base: FieldLike): number {
+  let v = 0;
+  for (const [ground, el] of [['oil', 'fire'], ['water', 'lightning']] as const) {
+    if (!sim.odds[el]) continue;
+    const m = sim.monsters.find((x) => {
+      const i = tileOf(base, x);
+      return p.changed.has(i) && p.field.ground[i]?.id === ground && base.ground[i]?.id !== ground;
+    });
+    if (!m) continue;
+    const spark = (p.sparks[el] ??= makePreview(p.field, [{ kind: 'touch', tiles: [tileOf(base, m)], element: el }]));
+    v += sim.odds[el] * Math.max(0, fieldValue(sim, spark, p.field).value);
+  }
+  if (sim.odds.cold) {
+    let top = 0;
+    for (const m of sim.monsters) {
+      const i = tileOf(base, m);
+      if (p.changed.has(i) && p.field.ground[i]?.id === 'water' && !isWet(base, m)) top = Math.max(top, foeStatusValue(sim, m, [{ id: 'frozen', turns: 1 }]));
+    }
+    v += 0.5 * sim.odds.cold * top;
+  }
+  return v;
+}
+
+/**
+ * A bonus-action setup (Quick Grease) followed by this turn's action on the changed battlefield (a Fire Bolt into the
+ * oil), against the best action without it (walking included, so it's never oversold).
+ */
+function comboGain(sim: Sim, p: Preview): number {
+  const gain = (x: number) => (x > 0 ? x - 10 : 0); // actionAt adds 10 for "can act"
+  const before = memo(sim, 'setup:none', () => gain(scan(variant(sim, sim.me), sim.turn.movesLeft, actionAt).score));
+  const after = gain(actionAt(onField(sim, p.field)));
+  return Math.max(0, after - Math.max(0, before));
+}
+
+/**
+ * What killing this monster with this skill changes on the battlefield: the skill's own effect, then what the monster
+ * leaves behind (a bloated zombie's poison, a magma imp's fire), since game.ts holds death bursts until the killing
+ * skill is done. Against the skill's effect with it alive, which the plan already counts.
+ */
+function deathValue(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, m: MonsterEntity, own: Preview | null): number {
+  const death = MONSTERS[m.type]?.death;
+  if (!death) return 0;
+  const fx = sim.fx;
+  const key = `death|${m.id}|${aimKey(sim, id, s, res)}`;
+  let p = fx.previews.get(key) ?? null;
+  if (!p) {
+    const area = tilesAround(fx.field, m, death.radius);
+    const ops: FieldOp[] = [];
+    if (fieldElement(s.element) || s.surface || res.prop !== undefined) ops.push(...aimFieldOps(s, sim.me, res, fx.field));
+    if (death.ground) ops.push({ kind: 'ground', tiles: area, id: death.ground });
+    if (death.cloud) ops.push({ kind: 'cloud', tiles: area, id: death.cloud });
+    p = makePreview(fx.field, ops);
+    fx.previews.set(key, p);
+  }
+  return fieldValue(sim, p, fx.field, m.id).value - (own ? fieldValue(sim, own, fx.field).value : 0);
+}
+
+/** A friend's save against your spell (game.ts heroSave): their stat, Steady and Bless. */
+const heroSaveMod = (h: PlayerEntity, save: 'dex' | 'str' | 'wis') =>
+  statMod(h.classId, save) + (passiveOf(h, 'steady')?.value ?? 0) + (hasStatus(h, 'blessed') ? 2 : 0);
+
+/** A status landing on a friend caught in your area skill. */
+function heroDebuffCost(h: PlayerEntity, st: StatusApply): number {
+  const unshakable = hasBranch(h, 'steady', 'A');
+  switch (st.id) {
+    case 'stunned':
+      return unshakable ? 0 : 8; // a lost turn
+    case 'frozen':
+      return 8;
+    case 'dazed':
+      return unshakable ? 0 : 1.5;
+    case 'blinded':
+    case 'marked':
+      return 1.5;
+    case 'burning':
+    case 'poisoned':
+      return immuneToStatus(h, st.id) ? 0 : 2.5 * (st.power ?? 1) * Math.min(st.turns, 2);
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Friendly fire on one friend in the blast (you included): the same attack roll or save the monsters get. Expected
+ * damage is priced like your own HP, and the chance of dropping them like a revive.
+ */
+function friendlyHit(sim: Sim, id: SkillId, s: SkillStats, h: PlayerEntity): number {
+  const me = sim.me;
+  if (s.roll === 'contest') return 0;
+  const hits = s.roll ? hitsOf(me, s) : 1;
+  let p = 1; // chance each hit lands (or the save fails)
+  if (s.roll === 'attack') p = d20(attackBonus(me, s) + (hasStatus(me, 'blessed') ? 2 : 0) - (hasStatus(me, 'dazed') ? 2 : 0), acOf(h));
+  else if (s.roll === 'save') p = clamp((saveDc(me.classId, me.level) - 1 - heroSaveMod(h, s.save ?? 'dex')) / 20, 0, 1);
+  let cost = 0;
+  if (s.dmg) {
+    const k = Math.max(0, factorOf(h, s.element));
+    const per = (avgDice(s.dmg) + damageMod(me, s) + passiveDamage(me, id, s, h)) * k;
+    const rollVar = ((s.dmg.n * (s.dmg.d ** 2 - 1)) / 12) * k * k;
+    const evasion = s.roll === 'save' && hasBranch(h, 'opportunist', 'B'); // half on a failed save, nothing on a good one
+    const onFail = evasion ? per / 2 : per;
+    const onSave = s.roll === 'save' && s.half && !evasion ? per / 2 : 0;
+    let mean = 0;
+    let down = 0;
+    successOdds(new Array<number>(hits).fill(p)).forEach((pk, j) => {
+      const total = j * onFail + (hits - j) * onSave;
+      const variance = (j * (evasion ? 0.25 : 1) + (onSave ? (hits - j) / 4 : 0)) * rollVar;
+      mean += pk * total;
+      down += pk * atLeast(total, variance, h.hp + h.tempHp);
+    });
+    cost += heroLoss(h, mean, down);
+  }
+  const land = 1 - (1 - p) ** hits;
+  for (const st of s.onHit ?? []) cost += land * heroDebuffCost(h, st);
+  return cost;
+}
+
 function costOf(sim: Sim, id: SkillId, s: SkillStats): number {
   const kind = SKILLS[id].kind;
   if (kind === 'spell') return slotCost(s) * sim.price;
@@ -638,15 +1143,35 @@ function costOf(sim: Sim, id: SkillId, s: SkillStats): number {
 /** The utility of using a skill with this aim, or null if it would do nothing. */
 function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: boolean): { score: number; early: boolean } | null {
   const offensive = isOffensive(s);
-  if (offensive && !res.foes.length) return null;
+  // Nothing to hit: only a barrel, or a setup (Create Water on a burning friend), can still be worth it.
+  if (offensive && !res.foes.length && res.prop === undefined && !isSetup(s)) return null;
   const me = sim.me;
   let score = 0;
   let early = false;
+  // What it sets off on the battlefield: explosions, fire over the oil, lightning through the water...
+  const prev = fieldPreview(sim, id, s, res);
+  const play = prev ? fieldValue(sim, prev, sim.fx.field) : null;
   // Knockback is away from you, or from the area's center for anyone not standing on it (like game.ts).
   const from = (m: MonsterEntity) => (s.target === 'area' && (m.x !== res.center.x || m.y !== res.center.y) ? res.center : me);
-  res.foes.forEach((m, i) => (score += foeValue(sim, id, s, m, i === 0, from(m))));
-  // A Shove or Feint gives a hidden hero away for nothing (an attack roll spends it on advantage, already scored).
-  if (offensive && s.roll !== 'attack' && s.cost !== 'action') score -= hiddenWorth(sim);
+  res.foes.forEach((m, i) => (score += foeValue(sim, id, s, res, m, i === 0, from(m), prev, play?.stunned ?? NO_STUNS)));
+  if (play && prev) {
+    score += play.value;
+    // Oil or water left under monsters for a later spark; or, with Quick Grease, lit by this turn's own action.
+    let later = setupPotential(sim, prev, sim.fx.field);
+    if (setup && isSetup(s) && s.cost !== 'action' && sim.actionLater && res.foes.length >= 2) {
+      const combo = comboGain(sim, prev);
+      if (combo > later) {
+        later = combo;
+        early ||= combo > MIN_BONUS;
+      }
+    }
+    score += later;
+  }
+  // Friends in the blast take it too.
+  for (const h of res.caught ?? []) score -= friendlyHit(sim, id, s, h);
+  // A Shove or Feint gives a hidden hero away for nothing (an attack roll spends it on advantage, already scored), and
+  // so does smashing a barrel (no roll at all).
+  if (offensive && (res.prop !== undefined || (s.roll !== 'attack' && s.cost !== 'action'))) score -= hiddenWorth(sim);
   for (const f of res.friends) score += friendValue(sim, s, f);
   for (const st of s.selfStatus ?? []) score += heroStatusValue(sim, me, st);
   if (s.taunt) score += tauntValue(sim, s.taunt.radius, s.taunt.turns);
@@ -674,8 +1199,11 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
 function aimsFor(sim: Sim, s: SkillStats): (string | Pos | undefined)[] {
   const near = (p: Pos) => dist(sim.me, p) <= s.range;
   switch (s.target) {
-    case 'enemy':
-      return sim.monsters.filter(near).map((m) => m.id);
+    case 'enemy': {
+      const aims: (string | Pos)[] = sim.monsters.filter(near).map((m) => m.id);
+      if (canHitProps(s)) for (const p of sim.fx.propAims) if (near(p)) aims.push(p); // smash a barrel next to them
+      return aims;
+    }
     case 'ally':
       return sim.heroes.filter((p) => !p.dead && near(p)).map((p) => p.id);
     case 'area':
@@ -710,16 +1238,21 @@ function best(plans: Plan[], cost: SkillStats['cost']): Plan | null {
 
 // ---------------------------------------------------------------- where to stand
 
-/** The best tile within `moves` steps by `scoreAt` (minus a small cost per step), and the score of staying put. */
+/**
+ * The best tile within `moves` steps by `scoreAt` (minus a small cost per step, and the hazards walked into on the
+ * way), and the score of staying put.
+ */
 function scan(sim: Sim, moves: number, scoreAt: (p: Sim) => number): { pos: Pos; score: number; stay: number } {
   const stay = scoreAt(variant(sim, sim.me));
   let top = { pos: { x: sim.me.x, y: sim.me.y } as Pos, score: stay };
   if (moves > 0) {
-    const w = sim.v.map.width;
-    for (const [idx, steps] of reachable(sim.v.map, sim.me, moves, (x, y) => sim.v.occupied(x, y, sim.me.id))) {
+    const map = sim.fx.field;
+    const blocked = (x: number, y: number) => sim.v.occupied(x, y, sim.me.id);
+    const harm = walkHarm(sim, moves, blocked);
+    for (const [idx, steps] of reachable(map, sim.me, moves, blocked)) {
       if (!steps) continue;
-      const pos = { x: idx % w, y: Math.floor(idx / w) };
-      const score = scoreAt(standAt(sim, pos)) - steps * STEP_COST;
+      const pos = tilePos(map, idx);
+      const score = scoreAt(standAt(sim, pos)) - steps * STEP_COST - harmCost(sim.me, harm?.harm.get(idx) ?? 0);
       if (score > top.score) top = { pos, score };
     }
   }
@@ -728,7 +1261,7 @@ function scan(sim: Sim, moves: number, scoreAt: (p: Sim) => number): { pos: Pos;
 
 function bestMove(sim: Sim, scoreAt: (p: Sim) => number): Pos | null {
   const r = scan(sim, sim.turn.movesLeft, scoreAt);
-  return r.score > r.stay + MOVE_MARGIN ? r.pos : null;
+  return r.score > r.stay + MOVE_MARGIN ? routeTo(sim, r.pos) : null;
 }
 
 const dangerAt = (p: Sim) => (p.ranged.has(p.me.id) ? danger(p) * (hpPct(p.me) < 0.5 ? 6 : 4) : 0);
@@ -760,16 +1293,19 @@ function engageAt(p: Sim): number {
   const bonus = best(plans, 'bonus');
   let score = action && action.score > 0 ? 10 + action.score : -0.5 * approachDist(p);
   if (bonus && bonus.score > MIN_BONUS) score += bonus.score;
-  return score + FLANK_GIFT * flanksGiven(p) - dangerAt(p);
+  return score + FLANK_GIFT * flanksGiven(p) - dangerAt(p) - standCost(p);
 }
 
-/** A spot to finish the turn on: the best bonus action there (Shove, Hide...), then safety (ranged) or staying in the fight (melee). */
+/**
+ * A spot to finish the turn on: the best bonus action there (Shove, Hide...), then safety (ranged) or staying in the
+ * fight (melee), and out of fire, poison and electrified water.
+ */
 function afterAt(p: Sim): number {
   const bonus = best(plansFrom(p, false), 'bonus');
   let score = bonus && bonus.score > MIN_BONUS ? bonus.score : 0;
   if (p.ranged.has(p.me.id)) score += Math.min(nearestFoe(p), 3) * 0.2;
   else score -= Math.max(0, nearestFoe(p) - 1) * 0.3;
-  return score + FLANK_GIFT * flanksGiven(p) - dangerAt(p);
+  return score + FLANK_GIFT * flanksGiven(p) - dangerAt(p) - standCost(p);
 }
 
 // ---------------------------------------------------------------- the turn

@@ -6,7 +6,12 @@ export interface MapLike {
   width: number;
   height: number;
   tiles: string;
+  clouds?: Partial<Record<number, { id: string }>>; // the cloud layer (shared/surfaces.ts): steam and smoke block sight
 }
+
+/** Clouds you can't see through (shared/surfaces.ts CLOUDS). */
+const SIGHT_BLOCKERS = new Set(['steam', 'smoke']);
+const fogged = (m: MapLike, x: number, y: number) => !!m.clouds && SIGHT_BLOCKERS.has(m.clouds[y * m.width + x]?.id ?? '');
 
 /** 8-directional moves, orthogonal first so paths look natural. */
 export const DIRS: ReadonlyArray<readonly [number, number]> = [
@@ -54,10 +59,15 @@ export function line(a: Pos, b: Pos): Pos[] {
   return pts;
 }
 
-/** True if no wall lies strictly between a and b. */
+/**
+ * True if no wall lies strictly between a and b, and no smoke or steam is anywhere on the line (you can't see into,
+ * out of or through a cloud). Next to each other you can always see.
+ */
 export function hasLOS(m: MapLike, a: Pos, b: Pos): boolean {
+  if (dist(a, b) <= 1) return true;
   const pts = line(a, b);
   for (let i = 1; i < pts.length - 1; i++) if (isWall(m, pts[i].x, pts[i].y)) return false;
+  if (m.clouds) for (const p of pts) if (fogged(m, p.x, p.y)) return false;
   return true;
 }
 

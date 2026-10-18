@@ -111,7 +111,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 2 | XP, levels & skill system | 🟢 |
 | 3 | Save & resume | 🟢 |
 | 4 | Positioning & surprise | 🟢 |
-| 5 | Elements & surfaces (DOS2-style) | ⚪ |
+| 5 | Elements & surfaces (DOS2-style) | 🟢 |
 | 6 | Items, relics, shop & treasure | ⚪ |
 | 7 | Elites, blessings & NPC allies | ⚪ |
 | 8 | Real art *(independent; can be done anytime)* | ⚪ |
@@ -361,7 +361,7 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 5: Elements & surfaces (DOS2-style) ⚪
+## Phase 5: Elements & surfaces (DOS2-style) 🟢
 
 **Goal:** the battlefield itself becomes a weapon. Teams combo elements ("I soak them, you shock them").
 
@@ -395,21 +395,41 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 - Monster resistances and immunities by element (skeletons immune to poison, fire creatures heal from fire, ...).
 
 **Tasks**
-- [ ] Shared types: surface and cloud layers per tile with durations; an element tag on skills and damage
-- [ ] Interaction engine: one `combine(surface, element)` table, chain reactions, spreading, expiry
-- [ ] Status effects: Wet, Burning, Chilled/Frozen, Shocked/Stunned, Poisoned, with clear icons on units
-- [ ] Element sources:
-  - [ ] skills: cantrips like Ray of Frost and Shocking Grasp; slot spells like Fireball and Create Water
-  - [ ] skill branches (Fire Bolt III-A *Inferno* leaves fire)
-  - [ ] room props: oil barrels, puddles, braziers
+- [x] Shared types: ground and cloud layers per tile (rounds left, or permanent), props; skills' `element` reacts with the field and `surface` leaves something behind (`shared/surfaces.ts`, `GameState.ground/clouds/props`)
+- [x] Interaction engine: one `applyField` with the whole table, chain reactions (burning oil sets off poison, explosions light the oil around them and set off barrels), spreading (fire through connected oil, lightning through connected water and steam), expiry at the start of every round (ice melts into water, electricity fades after a round). The same code previews on the client and plans for the AI.
+- [x] Status effects with icons: Wet (half fire damage and can't catch fire; puts out Burning), Chilled → Frozen, Shocked (−2 AC) → Stunned, Burning, Poisoned. A second cold or lightning hit, or one on a Wet creature, freezes or stuns.
+- [x] Element sources:
+  - [x] skills: Fire Bolt, Ray of Frost, Shocking Grasp, Fireball and every other fire/cold/lightning skill react; new spells **Create Water** (Cleric) and **Grease** (Wizard)
+  - [x] skill branches: *Inferno* leaves fire, *Glacial Ray* leaves ice, *Meteor* leaves fire, *Smoke Bomb* (Shadow Step III-B, back from Phase 2) leaves smoke and hides you, *Deep Freeze* freezes
+  - [x] room props: oil barrels (hit = spill, fire = explosion), braziers (hit = burning coals), puddles, oil slicks, poison pools, lava
   - [ ] consumables (added in Phase 6)
-- [ ] Act-themed rooms: oil and lamps in the Goblin Warrens, water and poison in the Crypt, fire and lava in the Dragon's Lair
-- [ ] Monster element resistances/immunities, and elemental monsters
-- [ ] Rendering: translucent animated surface tiles under units, cloud layer above, combo pop-ups ("⚡ Electrified!")
-- [ ] Previews: the area of effect, allies in it, and the reaction it will cause
-- [ ] Smoke test: scripted scenarios check each combo in the table
+- [x] Act-themed rooms: oil, barrels and braziers in the Goblin Warrens, water and poison in the Crypt, lava, braziers and some oil in the Dragon's Lair
+- [x] Monster resistances (immune, resist, weak, healed by) and elemental monsters: 💣 Goblin Firebomber (its firebombs light oil), 🤮 Bloated Zombie (bursts into poison), 😈 Magma Imp (healed by fire, weak to cold, dies in a pool of fire); undead are immune to poison, the Fire Drake to fire, the Wight's touch is cold
+- [x] Rendering: animated pools under the units (fire flickers, water ripples, electrified tiles crackle), clouds above them, props, combo pop-ups ("⚡ Electrified!", "💥 Explosion!"), a frozen look
+- [x] Previews: the area, every ally caught in it (red rings, "⚠ Friendly fire"), the tiles that will react and the combo it sets off; props as targets; tile and monster tooltips (resistances, death bursts); a "click again" warning before walking through a hazard
+- [x] Smoke test: `tests/surfaces.test.ts` checks every combo in the table and the engine rules; `tests/elements.test.ts` plays scripted scenarios through the real server
 
 **Done when:** every combo in the table works and shows a preview. A playtest produces at least one deliberate team combo per act.
+
+**Result (2026-10-18):** ✅ Every combo in the table works (tested one by one) and the aiming preview shows the area, the allies caught in it and the combo it sets off.
+- **Bot runs** (8 runs of 4 heroes, 6 of 2, 3 solo): 0 stalls, 0 errors, 0 rejected bot actions.
+  - The 4-hero bots set off **54 combos with their own skills** (22 in act 1, 14 in act 2, 18 in act 3): 25 explosions, 16 oil fires, 15 steam clouds, 11 freezes, 7 frozen puddles, 5 shock stuns, 12 barrel and brazier hits.
+  - Friendly fire fell from 10 hits in 4 runs with the old AI to 5 in 8 runs; nobody fed fire to a Magma Imp.
+- **Tests:** 210 in total, up from 88 (the engine, scripted fights through the server, and the hero AI on the new battlefield). A fuzz run of 60,000 random steps (every skill, every surface, monster turns, round ticks) found no crashes or broken rules.
+- **Browser check:** oil slicks and barrels in act 1, puddles and poison in act 2, lava and braziers in act 3, combo pop-ups, previews with friendly fire, the walk warning.
+
+**Notes**
+- Rules decided along the way:
+  - a missed attack still splashes its element on the target's tile, so a missed firebomb still lights the oil;
+  - a monster's death burst waits until the spell that killed it is done, so a Fire Bolt kill on a Bloated Zombie doesn't detonate its fresh poison (an Inferno kill still does, because it leaves fire);
+  - a toppled brazier spares whoever knocked it over;
+  - a click-walk goes around hazards if it can, otherwise through as few as it can; the client asks for a second click first;
+  - lightning can't stun a creature that's already stunned, so nothing gets stun-locked;
+  - area skills (Fireball, Hail of Arrows, Radiant Flame...) hit heroes in the blast, but "around you" skills (Whirlwind, Word of Radiance, Thunderclap) only hit enemies.
+- Skills that fire at once (around-you skills, Smoke Bomb's cloud) have no aiming preview yet.
+- Bots rarely learn Grease and Create Water, so most bot combos come from fire, frost and lightning on the rooms' own oil, water and barrels. Steering bots toward them is level-up tuning, left for Phase 13.
+- Monsters don't use the battlefield on purpose yet (that's Phase 9); they only walk around hazards.
+- **Balance, parked for Phase 13:** 4-hero parties still win every run; solo heroes still die in act 1. Explosions (2d6) and lava (2d6) are guesses.
 
 ---
 

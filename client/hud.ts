@@ -2,9 +2,10 @@
 
 import { CLASSES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
-  describeSkill, hasStatus, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
+  canHitProps, describeSkill, hasStatus, hitsArea, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
 } from '../shared/skills.ts';
+import { COMBOS, PROPS } from '../shared/surfaces.ts';
 import type { GameState, LogLine, PlayerEntity, StatusInst } from '../shared/types.ts';
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
@@ -63,7 +64,21 @@ export function toggleAuto() {
   if (info) send('setAuto', !info.auto);
 }
 
+const COMBO_ICON = { fire: '🔥', cold: '❄️', lightning: '⚡', water: '💧' } as const;
+
+/** The element combos for the "How to play" list, one line per surface: "Water: 🔥 Steam cloud · ❄️ Ice · ...". */
+function comboLegend(): string {
+  const rows = COMBOS.map((c) => {
+    const parts = (Object.keys(COMBO_ICON) as (keyof typeof COMBO_ICON)[]).filter((el) => c[el]).map((el) => `${COMBO_ICON[el]} ${esc(c[el]!)}`);
+    return `<div><b>${esc(c.on)}:</b> ${parts.join(' · ')}</div>`;
+  });
+  return `<li><b>Elements and surfaces:</b> water, ice, fire, oil, poison and lava lie on the floor; steam, smoke and poison gas hang above it.
+    Fire, cold, lightning and water react with them. Hover a tile to read it. While you aim, the preview shows what will react and who gets caught,
+    and area attacks hit your allies too. Walking into a hazard takes a second click.${rows.join('')}</li>`;
+}
+
 export function initHud() {
+  document.querySelector('.help ul')?.insertAdjacentHTML('beforeend', comboLegend());
   $('#auto-btn').addEventListener('click', toggleAuto);
   $('#ability-bar').addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-skill]');
@@ -198,12 +213,15 @@ export function renderHud(s: GameState) {
     hint.hidden = !sel || s.phase !== 'combat' || approaching;
     if (sel && selStats) {
       const own = ownedSkill(m, sel)!;
+      // Oil barrels and braziers in the room can be hit too.
+      const props = canHitProps(selStats) ? [...new Set(Object.values(s.props ?? {}))].map((id) => id && PROPS[id].icon).join(' ') : '';
+      const r = selStats.radius ?? 1;
       const how =
         selStats.target === 'enemy'
-          ? `click an enemy${selStats.range <= 1 ? ' next to you' : ` within ${selStats.range} tiles`}`
+          ? `click an enemy${props ? ` or ${props}` : ''}${selStats.range <= 1 ? ' next to you' : ` within ${selStats.range} tiles`}`
           : selStats.target === 'ally'
             ? 'click an ally or a party card'
-            : `click a spot within ${selStats.range} tiles (hits enemies within ${selStats.radius ?? 1} of it)`;
+            : `click a spot within ${selStats.range} tiles (${hitsArea(selStats) ? `hits everyone within ${r} of it, allies too` : `covers everything within ${r} of it`})`;
       hint.textContent = `${selStats.icon} ${skillTitle(own)}: ${how} (Esc to cancel)`;
     }
   }

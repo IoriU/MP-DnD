@@ -5,6 +5,7 @@
 
 import { dist, hasLOS, type MapLike } from './grid.ts';
 import { CLASSES, MAX_CANTRIPS, MAX_SPELLS, TIER3_LEVEL, passiveSlots, profBonus, saveDc, sneakDice, statMod, type Dice, type Stat } from './rules.ts';
+import type { CloudId, GroundId, PropMap } from './surfaces.ts';
 import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, Pos, TurnState } from './types.ts';
 
 // ---------------------------------------------------------------- statuses
@@ -22,7 +23,11 @@ export type StatusId =
   | 'focused'
   | 'riposte'
   | 'hidden'
-  | 'surprised';
+  | 'surprised'
+  | 'wet'
+  | 'chilled'
+  | 'frozen'
+  | 'shocked';
 
 export interface StatusDef {
   name: string;
@@ -35,6 +40,8 @@ export interface StatusDef {
  * Durations: `turns` drops by 1 at the end of each of the affected creature's turns, and is removed at 0.
  * A status applied to a creature during its own turn doesn't count that turn (so Shield cast on your turn lasts
  * through the enemies' turns). Burning and Poisoned deal their damage at the start of the creature's turn.
+ * Elements add their own (shared/surfaces.ts): cold Chills, lightning Shocks, and a second hit, or one on a Wet
+ * creature, Freezes or Stuns it.
  */
 export const STATUSES: Record<StatusId, StatusDef> = {
   burning: { name: 'Burning', icon: '🔥', good: false, desc: 'Takes 1d4 fire damage (per power) at the start of each turn.' },
@@ -50,7 +57,18 @@ export const STATUSES: Record<StatusId, StatusDef> = {
   riposte: { name: 'Riposte', icon: '🤺', good: true, desc: 'Strikes back when a melee attack misses it.' },
   hidden: { name: 'Hidden', icon: '👤', good: true, desc: 'Enemies go for someone else if they can. The next attack has advantage and gives you away. With power, it also deals +power d6.' },
   surprised: { name: 'Surprised', icon: '😱', good: false, desc: "Caught off guard: loses its first turn and can't react (no Sentinel, Riposte or Bodyguard)." },
+  wet: { name: 'Wet', icon: '💧', good: false, desc: "Half fire damage and can't catch fire, but lightning stuns it and cold freezes it." },
+  chilled: { name: 'Chilled', icon: '🥶', good: false, desc: 'Half movement. More cold freezes it solid.' },
+  frozen: { name: 'Frozen', icon: '🧊', good: false, desc: 'Frozen solid: loses its next turn. Fire thaws it.' },
+  shocked: { name: 'Shocked', icon: '⚡', good: false, desc: '−2 AC. More lightning stuns it.' },
 };
+
+/** Statuses that make a creature lose its turn. */
+export const SKIP_TURN: StatusId[] = ['stunned', 'frozen', 'surprised'];
+/** Statuses that halve movement. */
+export const SLOWED: StatusId[] = ['dazed', 'chilled'];
+/** What Lay on Hands and other cleanses remove. */
+export const CLEANSED: StatusId[] = ['burning', 'poisoned', 'dazed', 'blinded', 'chilled', 'shocked', 'frozen'];
 
 export interface StatusApply {
   id: StatusId;
@@ -81,8 +99,11 @@ export type TargetMode = 'enemy' | 'ally' | 'self' | 'area' | 'around' | 'allies
  *  3. for each foe: `hits` times roll (attack roll vs AC / save vs your DC / auto-hit), deal `dmg` (+ stat mod if
  *     `mod`, + Sneak Attack once per turn if `sneak` and an ally is next to the target or you have advantage,
  *     + `execute` if the target is below half HP), then on a hit or failed save apply `onHit` and `push`
+ *     Area skills (aimed at a spot) hit heroes in the blast too: friendly fire.
  *  4. for each friend: heal, temp HP, cleanse, `status`
  *  5. on you: `selfStatus`, `taunt` (enemies within radius), `dash`, `refresh`, `resetCooldowns`
+ *  6. the battlefield: the element reacts with the tiles it reached (where everyone stood when it was cast),
+ *     then `surface` appears (see shared/surfaces.ts aimFieldOps)
  */
 export interface SkillStats {
   name: string;
@@ -113,6 +134,9 @@ export interface SkillStats {
   pull?: number; // before hitting, drag enemies within this many tiles next to you
   teleport?: boolean;
   stealth?: boolean; // can't be used with an enemy next to you (Hide)
+  // the battlefield (shared/surfaces.ts): fire, cold and lightning `element`s also react with whatever is on the tiles
+  // they reach; `surface` leaves something behind (on the target's tile, the area, or `at: 'self'` around you)
+  surface?: { ground?: GroundId; cloud?: CloudId; radius?: number; turns?: number; at?: 'self' };
   // support
   heal?: Dice;
   healMod?: boolean; // + casting stat modifier
@@ -256,7 +280,7 @@ const SKILL_DEFS = {
     base: { name: 'Shadow Step', icon: '🌑', cost: 'action', target: 'enemy', range: 6, slots: 1, teleport: true, stat: 'dex', roll: 'attack', adv: true, dmg: d(1, 8), mod: true, sneak: true },
     t2: { range: 9, dmg: d(2, 8) },
     a: { name: 'Assassinate', critFull: true },
-    b: { name: 'Vanish', selfStatus: [st('shielded', 1, 4)], dash: 3 },
+    b: { name: 'Smoke Bomb', surface: { cloud: 'smoke', radius: 1, at: 'self' }, selfStatus: [st('hidden', 2)], dash: 3 },
   },
   cheap_shot: {
     kind: 'spell', pool: 'rogue',
@@ -288,15 +312,15 @@ const SKILL_DEFS = {
     kind: 'cantrip', pool: 'wizard',
     base: { name: 'Fire Bolt', icon: '🔥', cost: 'action', target: 'enemy', range: 8, cooldown: 1, roll: 'attack', dmg: d(1, 10), element: 'fire' },
     t2: { dmg: d(2, 10) },
-    a: { name: 'Inferno', onHit: [st('burning', 2)] },
+    a: { name: 'Inferno', surface: { ground: 'fire' } },
     b: { name: 'Splitting Bolt', chain: 1 },
   },
   ray_of_frost: {
     kind: 'cantrip', pool: 'wizard',
-    base: { name: 'Ray of Frost', icon: '❄️', cost: 'action', target: 'enemy', range: 6, cooldown: 2, roll: 'attack', dmg: d(1, 8), element: 'cold', onHit: [st('dazed', 1)] },
+    base: { name: 'Ray of Frost', icon: '❄️', cost: 'action', target: 'enemy', range: 6, cooldown: 2, roll: 'attack', dmg: d(1, 8), element: 'cold' },
     t2: { dmg: d(2, 8) },
-    a: { name: 'Deep Freeze', onHit: [st('stunned', 1)] },
-    b: { name: 'Glacial Ray', range: 8, push: 1, onHit: [st('dazed', 2)] },
+    a: { name: 'Deep Freeze', onHit: [st('frozen', 1)] },
+    b: { name: 'Glacial Ray', range: 8, surface: { ground: 'ice', radius: 1 } },
   },
   shocking_grasp: {
     kind: 'cantrip', pool: 'wizard',
@@ -316,8 +340,15 @@ const SKILL_DEFS = {
     kind: 'spell', pool: 'wizard',
     base: { name: 'Fireball', icon: '☄️', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'dex', half: true, dmg: d(3, 6), element: 'fire' },
     t2: { dmg: d(4, 6), radius: 2 },
-    a: { name: 'Meteor', dmg: d(6, 6), slots: 2 },
+    a: { name: 'Meteor', dmg: d(6, 6), slots: 2, surface: { ground: 'fire' } },
     b: { name: 'Concussive Blast', push: 1, onHit: [st('dazed', 1)] },
+  },
+  grease: {
+    kind: 'spell', pool: 'wizard',
+    base: { name: 'Grease', icon: '🛢️', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, surface: { ground: 'oil' }, note: 'Oil burns: one spark sets all of it ablaze.' },
+    t2: { radius: 2 },
+    a: { name: 'Quick Grease', cost: 'bonus' },
+    b: { name: 'Slick', surface: { ground: 'oil', turns: 10 }, onHit: [st('dazed', 1)] },
   },
   shield: {
     kind: 'spell', pool: 'wizard',
@@ -330,7 +361,7 @@ const SKILL_DEFS = {
     { value: 1, note: '+1 damage on every fire hit.' },
     { value: 2, note: '+2 damage on every fire hit.' },
     { name: 'Overload', value: 2, note: '+2 fire damage, and your fire hits set the target Burning for 2 turns.' },
-    { name: 'Attunement', value: 2, note: '+2 fire damage. You take half damage from fire and can\'t be set Burning.' }),
+    { name: 'Attunement', value: 2, note: '+2 fire damage. You take half damage from fire, can\'t be set Burning, and fire on the ground doesn\'t hurt you.' }),
   arcane_ward: passive('wizard', '🔮', 'Arcane Ward',
     { value: 5, note: 'Start every fight with 5 temporary HP.' },
     { value: 10, note: 'Start every fight with 10 temporary HP.' },
@@ -365,6 +396,13 @@ const SKILL_DEFS = {
     t2: { heal: d(2, 4) },
     a: { name: 'Mass Healing Word', target: 'allies', radius: 6 },
     b: { name: 'Second Chance', overheal: true },
+  },
+  create_water: {
+    kind: 'spell', pool: 'cleric',
+    base: { name: 'Create Water', icon: '🌧️', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, surface: { ground: 'water' }, note: 'Puts out fires and washes away oil and poison. Wet enemies are easy to shock or freeze.' },
+    t2: { radius: 2 },
+    a: { name: 'Downpour', radius: 3 },
+    b: { name: 'Tidal Wave', push: 1, onHit: [st('dazed', 1)] },
   },
   bless: {
     kind: 'spell', pool: 'cleric',
@@ -514,6 +552,18 @@ function diceStr(x: Dice, extra = 0): string {
   return `${x.n}d${x.d}${b > 0 ? `+${b}` : b < 0 ? `${b}` : ''}`;
 }
 
+const ELEMENT_EFFECT: Partial<Record<Element, string>> = {
+  cold: 'Chills (half movement); a Wet or Chilled target freezes solid',
+  lightning: 'Shocks (−2 AC); a Wet or Shocked target is stunned',
+};
+const FIELD_WORD: Partial<Record<Element, string>> = {
+  fire: 'Ignites oil, blows up poison and turns water to steam',
+  cold: 'Freezes water and puts out fire',
+  lightning: 'Electrifies water and steam',
+};
+const GROUND_WORD: Record<GroundId, string> = { water: 'water', ice: 'ice', fire: 'fire', oil: 'oil', poison: 'poison', lava: 'lava' };
+const CLOUD_WORD: Record<CloudId, string> = { steam: 'steam', smoke: 'smoke', gas: 'poison gas' };
+
 const statusList = (list: StatusApply[]) =>
   list
     .map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name}${x.id === 'shielded' && x.power ? ` +${x.power} AC` : ''}${x.id === 'blessed' && x.power ? ' (+1d4 radiant on hits)' : ''}${x.id === 'hidden' && x.power ? ` (+${x.power}d6 on the attack from hiding)` : ''} ${x.turns} turn${x.turns === 1 ? '' : 's'}`)
@@ -530,7 +580,9 @@ export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'l
       case 'enemy':
         return s.teleport ? `Teleport next to an enemy within ${s.range} tiles` : s.range <= 1 ? 'Melee' : `Range ${s.range}`;
       case 'area':
-        return `Every enemy within ${s.radius ?? 1} of a spot up to ${s.range} tiles away`;
+        return hitsArea(s)
+          ? `Everyone within ${s.radius ?? 1} of a spot up to ${s.range} tiles away`
+          : `A spot up to ${s.range} tiles away (radius ${s.radius ?? 1})`;
       case 'around':
         return (s.radius ?? 1) <= 1 ? 'Every enemy next to you' : `Every enemy within ${s.radius} tiles of you`;
       case 'ally':
@@ -564,17 +616,27 @@ export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'l
   } else if (s.target === 'enemy' || s.target === 'area' || s.target === 'around') {
     parts.push(who);
   }
+  if (s.dmg && s.element && ELEMENT_EFFECT[s.element]) parts.push(ELEMENT_EFFECT[s.element]!);
   if (s.pull) parts.push(`First pulls enemies within ${s.pull} tiles next to you`);
-  if (s.onHit?.length) parts.push(`${s.roll ? 'On a hit: ' : 'Target: '}${statusList(s.onHit)}`);
+  if (s.onHit?.length) parts.push(`${s.roll ? 'On a hit: ' : s.target === 'area' ? 'Everyone in it: ' : 'Target: '}${statusList(s.onHit)}`);
   if (s.push && s.roll !== 'contest') parts.push(`Knocks back ${s.push} tile${s.push > 1 ? 's' : ''}`);
   if (s.stealth) parts.push("Can't be used with an enemy next to you");
+  if (s.surface) {
+    const what = [s.surface.ground && GROUND_WORD[s.surface.ground], s.surface.cloud && `a ${CLOUD_WORD[s.surface.cloud]} cloud`].filter(Boolean).join(' and ');
+    const r = s.surface.radius ?? (s.target === 'area' ? (s.radius ?? 1) : 0);
+    const where = s.surface.at === 'self' ? (r ? `around you (radius ${r})` : 'where you stand') : s.target === 'area' ? (r === (s.radius ?? 1) ? 'over the area' : `in radius ${r}`) : r ? `around the target (radius ${r})` : "on the target's tile";
+    const turns = s.surface.turns ? ` for ${s.surface.turns} rounds` : '';
+    parts.push(`Leaves ${what} ${where}${turns}`);
+  }
+  if (s.element && FIELD_WORD[s.element] && (s.dmg || s.surface)) parts.push(FIELD_WORD[s.element]!);
+  if (s.target === 'area' && (s.roll || s.onHit || s.push)) parts.push('⚠ Hits allies in the area too');
   if (s.heal) {
     const bonus = hero ? healBonus(hero, s) - (s.heal.bonus ?? 0) : 0;
     const extra = !hero ? `${s.healMod ? ' + WIS/STAT' : ''}${s.healLevel ? ' + level' : ''}` : '';
     parts.push(`${s.target === 'self' ? 'Heal' : `${who}: heal`} ${diceStr(s.heal, bonus)}${extra}. Gets the downed back up`);
   }
   if (s.overheal) parts.push('Healing past max HP becomes temporary HP');
-  if (s.cleanse) parts.push('Removes Burning, Poisoned, Dazed and Blinded');
+  if (s.cleanse) parts.push('Removes Burning, Poisoned, Dazed, Blinded, Chilled, Shocked and Frozen');
   if (s.tempHp) parts.push(`+${diceStr(s.tempHp)} temporary HP`);
   if (s.status?.length) parts.push(`${s.heal || s.target === 'self' ? '' : `${who}: `}${statusList(s.status)}`);
   if (s.selfStatus?.length) parts.push(`You: ${statusList(s.selfStatus)}`);
@@ -613,6 +675,7 @@ export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean
   if (inCombat) {
     if (!isMyTurn || !turn) return 'Not your turn';
     if (hasStatus(p, 'stunned')) return 'You are stunned';
+    if (hasStatus(p, 'frozen')) return 'You are frozen solid';
     if (s.cost === 'action' && turn.actionUsed) return 'Action already used this turn';
     if (s.cost === 'bonus' && turn.bonusUsed) return 'Bonus action already used this turn';
     if (own.cd > 0) return `Ready in ${own.cd} turn${own.cd > 1 ? 's' : ''}`;
@@ -630,7 +693,7 @@ export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean
 // ---------------------------------------------------------------- who does it hit?
 
 export interface AimCtx {
-  map: MapLike;
+  map: MapLike & { props?: PropMap };
   entities: Entity[];
   inCombat: boolean;
 }
@@ -639,8 +702,16 @@ export interface AimResult {
   center: Pos; // where it lands (the target, the area's center, or you)
   main?: Entity; // the creature aimed at, if any
   foes: MonsterEntity[];
-  friends: PlayerEntity[];
+  friends: PlayerEntity[]; // heals and buffs
+  caught?: PlayerEntity[]; // heroes caught in an area attack (friendly fire)
+  prop?: number; // tile index of an oil barrel or brazier that's being hit
 }
+
+/** Skills that can smash a prop (oil barrel, brazier): attacks, saves and auto-hits at one target, but no teleports. */
+export const canHitProps = (s: SkillStats) => s.target === 'enemy' && !!s.roll && s.roll !== 'contest' && !s.teleport;
+
+/** Does an area skill hit whoever is in the blast (friendly fire), or only create a surface? */
+export const hitsArea = (s: SkillStats) => s.target === 'area' && !!(s.roll || s.onHit?.length || s.push);
 
 /** Every monster within `radius` of `center`. */
 function foesNear(ctx: AimCtx, center: Pos, radius: number): MonsterEntity[] {
@@ -660,6 +731,15 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
       if (s.stealth && ctx.inCombat && ctx.entities.some((e) => e.kind === 'monster' && dist(e, caster) <= 1)) return "You can't hide with an enemy next to you.";
       return { center: caster, friends: [caster], foes: [] };
     case 'enemy': {
+      if (!byId && aim && typeof aim === 'object' && canHitProps(s)) {
+        // Aimed at an oil barrel or a brazier.
+        const i = aim.y * ctx.map.width + aim.x;
+        if (Number.isInteger(aim.x) && Number.isInteger(aim.y) && ctx.map.props?.[i]) {
+          if (!ctx.inCombat) return 'Only in combat';
+          if (!inRange(aim)) return dist(caster, aim) > s.range ? `Out of range (${s.name} reaches ${s.range} tile${s.range === 1 ? '' : 's'}).` : 'No line of sight.';
+          return { center: { x: aim.x, y: aim.y }, foes: [], friends: [], prop: i };
+        }
+      }
       if (!byId) return 'Pick a target.';
       if (byId.kind !== 'monster') return 'Pick an enemy.';
       if (!ctx.inCombat) return 'Only in combat';
@@ -682,10 +762,13 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
       const center = byId ? { x: byId.x, y: byId.y } : aim && typeof aim === 'object' ? { x: aim.x, y: aim.y } : null;
       if (!center || !Number.isInteger(center.x) || !Number.isInteger(center.y)) return 'Pick a spot.';
       if (center.x < 0 || center.y < 0 || center.x >= ctx.map.width || center.y >= ctx.map.height) return 'Pick a spot in the room.';
-      if (ctx.map.tiles[center.y * ctx.map.width + center.x] === '#') return 'Pick an open spot.';
+      if (ctx.map.tiles[center.y * ctx.map.width + center.x] === '#' && !ctx.map.props?.[center.y * ctx.map.width + center.x]) return 'Pick an open spot.';
       if (!ctx.inCombat) return 'Only in combat';
       if (!inRange(center)) return dist(caster, center) > s.range ? `Out of range (${s.name} reaches ${s.range} tiles).` : 'No line of sight.';
-      return { center, main: byId, foes: foesNear(ctx, center, s.radius ?? 1), friends: [] };
+      const caught = hitsArea(s)
+        ? ctx.entities.filter((e): e is PlayerEntity => e.kind === 'player' && !e.dead && !e.downed && dist(e, center) <= (s.radius ?? 1))
+        : [];
+      return { center, main: byId, foes: foesNear(ctx, center, s.radius ?? 1), friends: [], caught };
     }
     case 'around': {
       if (!ctx.inCombat) return 'Only in combat';

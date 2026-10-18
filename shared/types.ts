@@ -1,6 +1,7 @@
 // Types shared by the server (rules + state) and the browser client (rendering).
 
 import type { SkillId, StatusId } from './skills.ts';
+import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
 
 export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric';
 export type Phase = 'lobby' | 'map' | 'combat' | 'event' | 'rest' | 'victory' | 'defeat';
@@ -204,6 +205,9 @@ export interface GameState {
   width: number; // current room; 0 when not in a room
   height: number;
   tiles: string; // '#' wall, '.' floor; index = y * width + x
+  ground: GroundMap; // the battlefield (shared/surfaces.ts): water, ice, fire, oil, poison, lava under the creatures
+  clouds: CloudMap; // steam, smoke and poison gas above them
+  props: PropMap; // oil barrels and braziers, standing on '#' tiles
   players: PlayerInfo[];
   entities: Entity[];
   turn: TurnState | null;

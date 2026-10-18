@@ -25,6 +25,17 @@ const PASSIVE_RES: [string, RegExp][] = [
   ['Executioner', /Executioner!/], ['Evasion', /evades it completely/], ['Uncanny Dodge', /twists away/], ['Lucky', /gets lucky/],
   ['Bloodthirsty', /drinks in the victory/], ['Holy Mending', /Holy light from/], ['Defiant', /defiantly gets back up/],
 ];
+// The battlefield (Phase 5): reactions, hazards and friendly fire, counted from their log lines.
+const FIELD_RES: [string, RegExp][] = [
+  ['ignite', /goes up in flames/], ['explode', /^💥 It explodes/], ['electrify', /Lightning crackles through/], ['freeze-water', /water freezes over/],
+  ['melt', /The ice melts/], ['steam', /cloud of steam billows/], ['douse', /The fire goes out/], ['spill', /Oil spills everywhere/],
+  ['topple', /Burning coals spill/], ['wash', /washes it away/], ['explosion hits', /caught in the explosion/],
+  ['fire/lava hits', /is (caught|still) in the (flames|lava)/], ['poison hits', /wades through poison/], ['shock hits', /shocked by the electrified/],
+  ['gas', /breathes in the poison gas/], ['frozen', /freezes solid/], ['shock stuns', /stunned by the shock/], ['slips', /slips on the ice/],
+  ['friendly fire', /Friendly fire!/], ['prop hits', /hits the (Oil Barrel|Brazier)/], ['death bursts', /bursts in a spray|collapses into a pool/],
+  ['absorbed', /drinks in the (fire|cold|lightning|poison)/],
+];
+const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")
 
 export type Outcome = 'victory' | 'defeat' | 'timeout' | 'stalled' | 'error';
@@ -56,6 +67,8 @@ export interface RunResult {
   heroes: { name: string; classId: string; level: number; kills: number; steals: number; hp: number; maxHp: number; skills: string[] }[];
   skillUses: Record<string, number>; // by skill name as it appears in the log
   tactics: { sneakOk: number; sneakFail: number; charge: number; ambush: number; flanking: number; behind: number };
+  field: Record<string, number>; // FIELD_RES counts
+  combosByAct: Record<number, number>; // field reactions set off by a hero's skill, per act
   picks: number; // level-up picks taken
   rests: { long: number; train: number };
   toasts: string[];
@@ -82,6 +95,8 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     fightsStarted: 0, fights: [], downs: [], deaths: [], killer: null, heroes: [], toasts: [], toastCount: 0, anomalies: [], log: [],
     skillUses: {}, picks: 0, rests: { long: 0, train: 0 },
     tactics: { sneakOk: 0, sneakFail: 0, charge: 0, ambush: 0, flanking: 0, behind: 0 },
+    field: {},
+    combosByAct: {},
   };
   const socket = io(opts.url, { transports: ['websocket'], forceNew: true, reconnection: false });
   const box: { s: GameState | null } = { s: null };
@@ -109,6 +124,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
   let turnKey = '';
   let turnSince = Date.now();
   const seenNodes = new Set<string>();
+  let heroActed = false;
   const reportedTurns = new Set<string>();
   const classOf = (s: GameState, name: string) => s.players.find((p) => p.name === name)?.classId ?? '?';
 
@@ -140,6 +156,12 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       if (/Ambush!/.test(l.text)) t.ambush++;
       if (/→\d+ \([^)]*flanking/.test(l.text)) t.flanking++;
       if (/→\d+ \([^)]*from behind/.test(l.text)) t.behind++;
+      for (const [name, re] of FIELD_RES) if (re.test(l.text)) r.field[name] = (r.field[name] ?? 0) + 1;
+      // A reaction right after a hero's skill line is a combo the heroes set off (not a monster's firebomb).
+      if (REACTION_RE.test(l.text) && heroActed && s.run) r.combosByAct[s.run.act] = (r.combosByAct[s.run.act] ?? 0) + 1;
+      if (/ uses | attacks .*\(|'s .* \((DEX|STR|WIS) save|'s .*: \d+ hits? strike| hits the (Oil Barrel|Brazier)/.test(l.text)) {
+        heroActed = s.players.some((p) => l.text.startsWith(p.name) || [`${p.name} uses `, `${p.name} hits the`, ` ${p.name}'s `].some((x) => l.text.includes(x)));
+      } else if (!REACTION_RE.test(l.text) && !/caught in|is shocked|is stunned|freezes|knocked back|Friendly fire/.test(l.text)) heroActed = false;
       if (/ shoves | tries to shove /.test(l.text)) r.skillUses.Shove = (r.skillUses.Shove ?? 0) + 1;
       if (l.kind !== 'death') continue;
       const fell = /^\S+ (.+?) falls unconscious/.exec(l.text);
@@ -319,6 +341,9 @@ skills used (${uses.size} different):`);
     `approach: sneaked in ${sum('sneakOk')}, spotted ${sum('sneakFail')}, charged ${sum('charge')}, ambushed ${sum('ambush')}; ` +
       `attacks with advantage from flanking ${sum('flanking')}, from behind ${sum('behind')}`,
   );
+  const field = new Map<string, number>();
+  for (const r of results) for (const [k, v] of Object.entries(r.field)) field.set(k, (field.get(k) ?? 0) + v);
+  console.log(`battlefield: ${FIELD_RES.map(([k]) => `${k} ${field.get(k) ?? 0}`).join(' · ')}`);
   const last = results.filter((r) => r.heroes.length).at(-1);
   if (last) {
     console.log(`builds at the end of run ${last.code}:`);
@@ -334,7 +359,8 @@ skills used (${uses.size} different):`);
     const bosses = fights.filter((f) => f.kind === 'boss');
     console.log(
       `  Act ${a}: fights won ${fights.length - lost.length}/${fights.length} (boss ${bosses.filter((f) => f.won).length}/${bosses.length}), ` +
-        `rounds avg ${avg(fights.map((f) => f.rounds)).toFixed(1)}, wipes ${lost.length}${killers.length ? `; killed by ${killers.join(', ')}` : ''}`,
+        `rounds avg ${avg(fights.map((f) => f.rounds)).toFixed(1)}, wipes ${lost.length}, hero combos ${results.reduce((n, r) => n + (r.combosByAct[a] ?? 0), 0)}` +
+        `${killers.length ? `; killed by ${killers.join(', ')}` : ''}`,
     );
   }
 }

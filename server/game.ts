@@ -43,6 +43,9 @@ import {
 } from '../shared/rules.ts';
 import {
   SKILLS,
+  SKIP_TURN,
+  SLOWED,
+  CLEANSED,
   STATUSES,
   attackBonus,
   damageMod,
@@ -87,6 +90,30 @@ import type {
   TurnState,
 } from '../shared/types.ts';
 import { attackAdvantage, canReact, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
+import {
+  EXPLOSION,
+  FIELD_STATUS_TURNS,
+  HAZARD_DICE,
+  ICE_DC,
+  PROPS,
+  REACTIONS,
+  aimFieldOps,
+  applyField,
+  damageFactor,
+  fieldElement,
+  hazardAt,
+  immuneToStatus,
+  planWalk,
+  safePath,
+  selfFieldOps,
+  tickField,
+  tilePos,
+  tilesAround,
+  type CloudMap,
+  type FieldOp,
+  type GroundMap,
+  type PropMap,
+} from '../shared/surfaces.ts';
 import { generateActMap } from './actmap.ts';
 import { getEvent, pickEvent, type CheckResult, type EventDef, type EventEffect, type EventStat } from './events.ts';
 import { autoApproachChoice, autoEventChoice, autoLevelPick, autoPathChoice, autoRestPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
@@ -146,6 +173,9 @@ export class Game {
   width = 0; // the current room (0 when the party is on the map)
   height = 0;
   tiles = '';
+  ground: GroundMap = {}; // the battlefield (shared/surfaces.ts)
+  clouds: CloudMap = {};
+  props: PropMap = {};
   phase: Phase = 'lobby';
   emptySince: number | null = Date.now();
 
@@ -179,6 +209,7 @@ export class Game {
   private resumeFrom: SaveFile | null = null; // a loaded save waiting in the tavern
   private savePoint: SavePoint = { kind: 'map' }; // where a restart would pick the run back up
   private createdAt = Date.now();
+  private deferredBursts: { ops: FieldOp[]; by?: Entity }[] | null = null; // death bursts held until the killing skill is done
 
   constructor(io: Server, code: string) {
     this.io = io;
@@ -498,6 +529,9 @@ export class Game {
     this.tiles = '';
     this.width = 0;
     this.height = 0;
+    this.ground = {};
+    this.clouds = {};
+    this.props = {};
   }
 
   /** Back to the map: the party votes on the next node. */
@@ -966,10 +1000,13 @@ export class Game {
    */
   private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge') {
     this.dispose();
-    const layout = generateRoom(kind);
+    const layout = generateRoom(kind, rng, this.run?.act ?? 1);
     this.width = layout.width;
     this.height = layout.height;
     this.tiles = layout.tiles;
+    this.ground = layout.ground;
+    this.props = layout.props;
+    this.clouds = {};
     this.roomKind = kind;
     this.event = null;
     const heroes = this.heroes();
@@ -1065,11 +1102,12 @@ export class Game {
   handleMove(playerId: string, target: Pos) {
     const p = this.hero(playerId);
     if (!p || !this.canMove(p) || !Number.isInteger(target?.x) || !Number.isInteger(target?.y)) return;
-    let path = findPath(this, p, (x, y) => this.occupied(x, y, p.id), (x, y) => x === target.x && y === target.y);
-    if (!path?.length || !this.turn) return;
+    if (!this.turn) return;
     if (this.turn.movesLeft <= 0) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
-    path = path.slice(0, this.turn.movesLeft);
-    this.startWalk(p, path);
+    // Around fire, poison and the like when that still gets there; the client warns before walking through.
+    const plan = planWalk(this, p, target, this.turn.movesLeft, (x, y) => this.occupied(x, y, p.id), p);
+    if (!plan?.path.length) return;
+    this.startWalk(p, plan.path);
   }
 
   handleStep(playerId: string, dx: number, dy: number) {
@@ -1081,7 +1119,7 @@ export class Game {
   }
 
   private canMove(p: PlayerEntity): boolean {
-    return this.standing(p) && this.phase === 'combat' && this.current()?.id === p.id && !hasStatus(p, 'stunned');
+    return this.standing(p) && this.phase === 'combat' && this.current()?.id === p.id && !hasStatus(p, 'stunned') && !hasStatus(p, 'frozen');
   }
 
   private startWalk(p: PlayerEntity, path: Pos[]) {
@@ -1123,6 +1161,9 @@ export class Game {
     p.x = next.x;
     p.y = next.y;
     this.watch(p);
+    if (this.standIn(p, 'step') && this.turn) this.turn.movesLeft = 0; // slipped on ice, stunned, or down
+    if (!this.standing(p)) this.cancelWalk(p.id);
+    this.checkEnd();
     this.broadcast();
     return true;
   }
@@ -1188,13 +1229,14 @@ export class Game {
     const e = this.current();
     if (!e) return this.advanceTurn();
     this.turnOwner = e.id;
-    t.movesLeft = hasStatus(e, 'dazed') ? Math.floor(e.speed / 2) : e.speed;
+    t.movesLeft = SLOWED.some((id) => hasStatus(e, id)) ? Math.floor(e.speed / 2) : e.speed;
     t.actionUsed = false;
     t.bonusUsed = false;
     if (e.kind === 'player' && e.dead) return this.advanceTurn();
 
     if (e.kind === 'player' && !e.downed) this.heroTurnStart(e);
     this.tickStatuses(e);
+    this.standIn(e, 'start'); // still in the fire, the poison, the water...
     if (this.checkEnd()) return;
     if (!this.entities.includes(e)) return this.advanceTurn(); // burned to death
     if (e.kind === 'player' && e.dead) return this.advanceTurn();
@@ -1211,6 +1253,10 @@ export class Game {
     } else if (hasStatus(e, 'stunned')) {
       this.addLog('info', `💫 ${e.name} is stunned and loses the turn.`);
       this.float(e, 'stunned', '#ffd84d');
+      this.later(token, 900, () => this.advanceTurn());
+    } else if (hasStatus(e, 'frozen')) {
+      this.addLog('info', `🧊 ${e.name} is frozen solid and loses the turn.`);
+      this.float(e, 'frozen', '#cdefff');
       this.later(token, 900, () => this.advanceTurn());
     } else if (e.kind === 'monster') {
       this.runMonster(e, token).catch((err) => console.error('monster AI error', err));
@@ -1280,9 +1326,9 @@ export class Game {
         if (!used) break; // rejected: don't loop on it
         await sleep(450);
       } else {
-        const path = findPath(this, p, (x, y) => this.occupied(x, y, p.id), (x, y) => x === intent.to.x && y === intent.to.y);
+        const path = planWalk(this, p, intent.to, t.movesLeft, (x, y) => this.occupied(x, y, p.id), p)?.path;
         if (!path?.length) break;
-        for (const step of path.slice(0, t.movesLeft)) {
+        for (const step of path) {
           if (!this.tryMove(p, step)) break;
           await sleep(MONSTER_STEP_MS);
           if (!ok()) return;
@@ -1303,6 +1349,7 @@ export class Game {
     if (t.index >= t.order.length) {
       t.index = 0;
       t.round++;
+      tickField(this); // fires burn out, ice melts, electricity fades
     }
     this.beginTurn();
   }
@@ -1420,9 +1467,12 @@ export class Game {
 
     if (!canHit(m, target)) {
       const goal = (x: number, y: number) => canHit({ x, y }, target);
-      // If other monsters block the way, path through them and shuffle as close as possible.
+      const blocked = (x: number, y: number) => this.occupied(x, y, m.id);
+      // Around hazards unless that's a long detour. If other monsters block the way, path through them and shuffle as close as possible.
+      const direct = findPath(this, m, blocked, goal);
+      const safe = safePath(this, m, blocked, goal, m);
       const path =
-        findPath(this, m, (x, y) => this.occupied(x, y, m.id), goal) ??
+        (safe && (!direct || safe.length <= direct.length + 3) ? safe : direct) ??
         findPath(this, m, (x, y) => this.heroes().some((p) => !p.dead && p.x === x && p.y === y), goal) ??
         [];
       for (const step of path.slice(0, this.turn?.movesLeft ?? m.speed)) {
@@ -1434,10 +1484,15 @@ export class Game {
         m.x = step.x;
         m.y = step.y;
         this.watch(m);
+        const stuck = this.standIn(m, 'step');
         this.broadcast();
+        if (this.checkEnd()) return;
+        if (!this.entities.includes(m)) return diedMidTurn();
         await sleep(MONSTER_STEP_MS);
         if (!ok()) return;
+        if (stuck) break;
       }
+      if (SKIP_TURN.some((id) => hasStatus(m, id))) return this.advanceTurn(); // stunned or frozen on the way
     }
 
     for (let i = 0; i < def.attacks; i++) {
@@ -1468,7 +1523,11 @@ export class Game {
       this.addLog('info', `🛡️ ${guard.name} throws themself in front of ${victim.name}!`);
       target = guard;
     }
+    const at = { x: target.x, y: target.y };
     const hit = this.attackRoll(m, target, { bonus: def.atk, dmg: def.dmg, verb: def.verb, element: def.element ?? 'physical' });
+    // Fire, cold and lightning attacks react with whatever the target stands in (a firebomb on oil...).
+    const el = fieldElement(def.element);
+    if (el) this.runField([{ kind: 'touch', tiles: [at.y * this.width + at.x], element: el }], m);
     if (!hit && hasStatus(target, 'riposte') && !hasStatus(target, 'surprised') && this.standing(target) && dist(m, target) <= 1 && this.entities.includes(m)) {
       this.addLog('info', `🤺 ${target.name} ripostes!`);
       this.freeStrike(target, m, 'Riposte');
@@ -1506,6 +1565,7 @@ export class Game {
       this.addLog(saved ? 'miss' : 'hit', `${p.name} DEX save ${text} vs DC ${BREATH_DC}: ${saved ? (evasion ? 'evades it completely' : 'half damage') : 'fails'}, ${dmg} fire.`);
       if (dmg > 0) this.damage(p, dmg, m, 'fire', true);
     }
+    this.runField([{ kind: 'touch', tiles: victims.map((p) => p.y * this.width + p.x), element: 'fire' }], m);
   }
 
   /** A hero's saving throw: d20 + stat + Steady + Bless; Fortune rerolls a natural 1. */
@@ -1570,8 +1630,19 @@ export class Game {
     const name = skillTitle(own);
     const color = ELEMENT_COLOR[s.element ?? 'physical'];
     const basic = SKILLS[own.id].kind === 'basic';
-    const singleRoll = (s.target === 'enemy' && !!s.roll) || (s.target === 'ally' && !!s.heal);
-    if (!singleRoll && !(s.target === 'self' && s.heal)) {
+    const inCombat = this.phase === 'combat';
+    // What it does to the battlefield, from where everyone stands now; it happens after the hits.
+    const fieldOps = inCombat ? aimFieldOps(s, p, res, this) : [];
+    // Monsters it kills burst (poison, fire) only after its own effect, so a Fire Bolt kill doesn't set off the poison.
+    const outer = this.deferredBursts === null;
+    if (outer) this.deferredBursts = [];
+    const singleRoll = (s.target === 'enemy' && !!s.roll && res.prop === undefined) || (s.target === 'ally' && !!s.heal);
+    if (res.prop !== undefined) {
+      const prop = this.props[res.prop];
+      const at = tilePos(this, res.prop);
+      this.addLog('info', `${s.icon} ${p.name} hits the ${prop ? PROPS[prop].name : 'barrel'} with ${name}!`);
+      if (dist(p, at) > 1) this.shot(p, at, color);
+    } else if (!singleRoll && !(s.target === 'self' && s.heal)) {
       const on = res.main && s.target !== 'area' ? ` on ${res.main.name}` : '';
       this.addLog('info', `${s.icon} ${p.name} uses ${name}${on}!`);
     }
@@ -1584,22 +1655,29 @@ export class Game {
       this.fx.push({ kind: 'burst', x: res.center.x, y: res.center.y, radius: s.radius ?? 1, color });
     }
 
-    // Foes: roll, damage, then statuses and knockback on whoever got hit.
-    for (const f of res.foes) {
-      if (!this.entities.includes(f)) continue; // died to an earlier hit
+    // Foes: roll, damage, then statuses and knockback on whoever got hit. Area attacks hit heroes in the blast too.
+    const strikeOne = (f: Entity) => {
+      if (!this.entities.includes(f) || (f.kind === 'player' && !this.standing(f))) return; // died to an earlier hit
       let landed = false;
       if (!s.roll) landed = true;
       else if (s.roll === 'auto') landed = this.autoHit(p, f, s, name, color);
-      else if (s.roll === 'contest') landed = this.contestHit(p, f, s, name);
+      else if (s.roll === 'contest') landed = f.kind === 'monster' && this.contestHit(p, f, s, name);
       else {
-        for (let i = 0; i < hitsOf(p, s) && this.entities.includes(f); i++) {
+        for (let i = 0; i < hitsOf(p, s) && this.entities.includes(f) && !(f.kind === 'player' && !this.standing(f)); i++) {
           const hit = s.roll === 'save' ? this.saveHit(p, f, s, name, color) : this.weaponHit(p, f, s, name, color, basic);
           landed ||= hit;
         }
       }
-      if (!landed || !this.entities.includes(f)) continue;
+      if (!landed || !this.entities.includes(f) || (f.kind === 'player' && !this.standing(f))) return;
       for (const st of s.onHit ?? []) this.applyStatus(f, st, p);
       if (s.push && s.roll !== 'contest') this.push(f, s.target === 'area' && (f.x !== res.center.x || f.y !== res.center.y) ? res.center : p, s.push);
+    };
+    for (const f of res.foes) strikeOne(f);
+    const caught = (res.caught ?? []).filter((h) => this.standing(h));
+    if (caught.length) {
+      const who = caught.map((h) => (h === p ? `${p.name} themself` : h.name)).join(', ');
+      this.addLog('miss', `⚠️ Friendly fire! ${who} ${caught.length > 1 ? 'are' : 'is'} caught in the ${name}.`);
+      for (const h of caught) strikeOne(h);
     }
 
     // Friends: heals, temporary HP, cleansing and buffs.
@@ -1616,12 +1694,13 @@ export class Game {
         this.addLog('heal', `${s.icon} ${line}: +${healed} HP.`);
       }
       if (s.tempHp) fr.tempHp = Math.max(fr.tempHp, rollDice(s.tempHp));
-      if (s.cleanse) fr.statuses = fr.statuses.filter((x) => !['burning', 'poisoned', 'dazed', 'blinded'].includes(x.id));
+      if (s.cleanse) fr.statuses = fr.statuses.filter((x) => !CLEANSED.includes(x.id));
       for (const st of s.status ?? []) this.applyStatus(fr, st, p);
       if (s.status?.length && fr !== p) this.grantXp(p, XP_BUFF);
     }
 
-    // You.
+    // You. Any move against the enemy gives a hidden hero away (Smoke Bomb hides you again right after).
+    if (s.target === 'enemy' || s.target === 'area' || s.target === 'around') p.statuses = p.statuses.filter((x) => x.id !== 'hidden');
     for (const st of s.selfStatus ?? []) this.applyStatus(p, st, p);
     if (s.taunt) {
       const taunted = this.monsters().filter((m) => dist(m, p) <= s.taunt!.radius);
@@ -1636,12 +1715,21 @@ export class Game {
       }
     }
     if (s.resetCooldowns) for (const o of p.skills) if (o !== own) o.cd = 0;
-    // Any move against the enemy gives a hidden hero away.
-    if (s.target === 'enemy' || s.target === 'area' || s.target === 'around') p.statuses = p.statuses.filter((x) => x.id !== 'hidden');
+
+    // The battlefield: the element reacts with the tiles it reached, then the skill's surface appears.
+    if (inCombat) {
+      this.runField(fieldOps, p);
+      this.runField(selfFieldOps(s, p, this), p);
+    }
+    if (outer) {
+      const bursts = this.deferredBursts ?? [];
+      this.deferredBursts = null;
+      for (const b of bursts) this.runField(b.ops, b.by);
+    }
   }
 
   /** An attack-roll skill against one foe. */
-  private weaponHit(p: PlayerEntity, f: MonsterEntity, s: SkillStats, name: string, color: string, basic: boolean): boolean {
+  private weaponHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string, basic: boolean): boolean {
     if (dist(p, f) > 1) this.shot(p, f, color);
     return this.attackRoll(p, f, {
       bonus: attackBonus(p, s), dmg: s.dmg ?? { n: 1, d: 4 }, extra: damageMod(p, s), verb: 'attacks', weapon: name,
@@ -1649,27 +1737,36 @@ export class Game {
     });
   }
 
-  /** A saving-throw skill against one foe. Returns true if it failed the save. */
-  private saveHit(p: PlayerEntity, f: MonsterEntity, s: SkillStats, name: string, color: string): boolean {
-    const def = MONSTERS[f.type];
+  /** A saving-throw skill against one creature (a hero, if caught in friendly fire). Returns true if it failed the save. */
+  private saveHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string): boolean {
     const save = s.save ?? 'dex';
-    const d20 = rollDie(20);
-    const total = d20 + def[save];
+    let total: number;
+    let rolled: string;
+    if (f.kind === 'monster') {
+      const bonus = MONSTERS[f.type][save];
+      const d20 = rollDie(20);
+      total = d20 + bonus;
+      rolled = `🎲${d20}${fmtMod(bonus)}=${total}`;
+    } else {
+      ({ total, text: rolled } = this.heroSave(f, save));
+    }
     const dc = saveDc(p.classId, p.level);
     const saved = total >= dc;
     this.shot(p, f, color);
     let dmg = s.dmg ? rollDice(s.dmg) + damageMod(p, s) + this.bonusDamage(p, f, s.element ?? 'physical') : 0;
-    if (saved) dmg = s.half ? Math.floor(dmg / 2) : 0;
-    const roll = `${save.toUpperCase()} save 🎲${d20}${fmtMod(def[save])}=${total} vs DC ${dc}`;
+    const evasion = f.kind === 'player' && s.target === 'area' && hasBranch(f, 'opportunist', 'B');
+    if (saved) dmg = s.half && !evasion ? Math.floor(dmg / 2) : 0;
+    else if (evasion) dmg = Math.floor(dmg / 2);
+    const roll = `${save.toUpperCase()} save ${rolled} vs DC ${dc}`;
     this.addLog(saved ? 'miss' : 'hit', `${f.name} ${saved ? 'resists' : 'is caught by'} ${p.name}'s ${name} (${roll})${dmg ? `: ${dmg}${elementWord(s.element)}` : ''}.`);
-    if (dmg > 0) this.damage(f, dmg, p, s.element ?? 'physical');
+    if (dmg > 0) this.damage(f, dmg, p, s.element ?? 'physical', s.target === 'area');
     else this.float(f, 'saved', '#9aa0a6');
     if (!saved && this.entities.includes(f)) this.afterHit(p, f, s.element ?? 'physical', false);
     return !saved;
   }
 
   /** Never misses (Magic Missile): every dart in one go. */
-  private autoHit(p: PlayerEntity, f: MonsterEntity, s: SkillStats, name: string, color: string): boolean {
+  private autoHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string): boolean {
     const hits = hitsOf(p, s);
     let total = 0;
     for (let i = 0; i < hits; i++) total += rollDice(s.dmg ?? { n: 1, d: 4 }) + damageMod(p, s) + this.bonusDamage(p, f, s.element ?? 'physical');
@@ -1721,10 +1818,12 @@ export class Game {
     }
     if (!spots.length) return;
     const from = { x: p.x, y: p.y };
-    const spot = spots.sort((a, b) => dist(b, from) - dist(a, from))[0];
+    const harm = (q: Pos) => hazardAt(this, q.y * this.width + q.x, p);
+    const spot = spots.sort((a, b) => harm(a) - harm(b) || dist(b, from) - dist(a, from))[0];
     p.x = spot.x;
     p.y = spot.y;
     this.addLog('info', `🌑 ${p.name} steps out of the shadows behind ${t.name}.`);
+    this.standIn(p, 'appear');
   }
 
   /** Drags enemies within `range` tiles next to you (Cyclone). */
@@ -1744,6 +1843,7 @@ export class Game {
       f.x = best.x;
       f.y = best.y;
       this.addLog('info', `🌀 ${f.name} is dragged into the storm.`);
+      this.standIn(f, 'step');
     }
   }
 
@@ -1752,21 +1852,35 @@ export class Game {
     const dx = Math.sign(t.x - from.x);
     const dy = Math.sign(t.y - from.y);
     if (!dx && !dy) return;
-    let moved = 0;
+    const path: Pos[] = [];
+    let at: Pos = { x: t.x, y: t.y };
     for (let i = 0; i < tiles; i++) {
-      if (!canStep(this, t, dx, dy) || this.occupied(t.x + dx, t.y + dy, t.id)) break;
-      t.x += dx;
-      t.y += dy;
-      moved++;
+      if (!canStep(this, at, dx, dy) || this.occupied(at.x + dx, at.y + dy, t.id)) break;
+      at = { x: at.x + dx, y: at.y + dy };
+      path.push(at);
     }
-    if (moved) this.addLog('info', `${t.name} is knocked back ${moved} tile${moved > 1 ? 's' : ''}.`);
+    if (!path.length) return;
+    this.addLog('info', `${t.name} is knocked back ${path.length} tile${path.length > 1 ? 's' : ''}.`);
+    for (const step of path) {
+      t.x = step.x;
+      t.y = step.y;
+      // Shoved into the fire: every tile it's pushed through counts.
+      if (this.standIn(t, 'step') || !this.entities.includes(t)) return;
+    }
   }
 
   /** Adds or refreshes a status. Statuses put on whoever's turn it is don't count that turn. */
   private applyStatus(t: Entity, a: StatusApply, by?: Entity) {
     if (!this.entities.includes(t)) return;
     if (t.kind === 'player' && (a.id === 'stunned' || a.id === 'dazed') && hasBranch(t, 'steady', 'A')) return; // Unshakable
-    if (t.kind === 'player' && a.id === 'burning' && hasBranch(t, 'elemental_affinity', 'B')) return; // Attunement
+    if (immuneToStatus(t, a.id)) return; // fire can't burn a fire drake (or an Attuned wizard), poison can't hurt the dead
+    if (a.id === 'burning' && hasStatus(t, 'wet')) {
+      // Wet creatures don't catch fire: the flames just dry them off.
+      t.statuses = t.statuses.filter((x) => x.id !== 'wet');
+      if (this.phase === 'combat') this.float(t, '💨 dried off', '#cfd8dc');
+      return;
+    }
+    if (a.id === 'wet') t.statuses = t.statuses.filter((x) => x.id !== 'burning');
     if (t.kind === 'player' && a.id === 'surprised' && passiveOf(t, 'alert')) {
       this.addLog('info', `⏰ ${t.name} is too alert to be caught off guard.`);
       return;
@@ -1781,7 +1895,8 @@ export class Game {
       t.statuses.push({ id: a.id, turns, ...(a.power ? { power: a.power } : {}), ...(by ? { by: by.id } : {}) });
     }
     const def = STATUSES[a.id];
-    if (this.phase === 'combat' && t !== by) this.float(t, `${def.icon} ${def.name}`, def.good ? '#7ddc6f' : '#ffb04d');
+    // Only new statuses pop up: wading through a puddle shouldn't say "Wet" on every step.
+    if (this.phase === 'combat' && t !== by && !have) this.float(t, `${def.icon} ${def.name}`, def.good ? '#7ddc6f' : '#ffb04d');
   }
 
   // ------------------------------------------------------------ dice & damage
@@ -1790,6 +1905,7 @@ export class Game {
   private acOf(t: Entity): number {
     let ac = t.ac;
     for (const s of t.statuses) if (s.id === 'shielded') ac += s.power ?? 2;
+    if (hasStatus(t, 'shocked')) ac -= 2;
     if (t.kind === 'player' && t.tempHp > 0 && hasBranch(t, 'arcane_ward', 'A')) ac += 2;
     return ac;
   }
@@ -1900,8 +2016,23 @@ export class Game {
   }
 
   private damage(t: Entity, amount: number, by?: Entity, element: Element = 'physical', area = false) {
+    if (element !== 'physical' && amount > 0) {
+      // Resistances (monsters by kind, Attunement), and Wet halves fire.
+      const k = damageFactor(t, element);
+      if (k === 0) {
+        this.float(t, 'immune', '#9aa0a6');
+        return;
+      }
+      if (k < 0) {
+        const healed = Math.min(amount, t.maxHp - t.hp);
+        t.hp += healed;
+        this.addLog('heal', `${t.name} drinks in the ${element}: +${healed} HP.`);
+        if (healed) this.float(t, `+${healed}`, '#7ddc6f');
+        return;
+      }
+      if (k !== 1) amount = Math.max(1, Math.floor(amount * k));
+    }
     if (t.kind === 'player') {
-      if (element === 'fire' && hasBranch(t, 'elemental_affinity', 'B')) amount = Math.floor(amount / 2);
       if (by && !area && amount > 1 && hasBranch(t, 'slippery', 'A') && !t.used.includes('round:dodge') && this.standing(t)) {
         t.used.push('round:dodge');
         amount = Math.ceil(amount / 2);
@@ -1923,7 +2054,10 @@ export class Game {
     if (t.kind === 'monster' && by?.kind === 'player') t.dmgBy[by.id] = (t.dmgBy[by.id] ?? 0) + Math.min(amount, t.hp);
     t.hp = Math.max(0, t.hp - amount);
     this.float(t, `-${amount}`, t.kind === 'player' ? '#ff6b6b' : '#ffd84d');
-    if (t.hp > 0) return;
+    if (t.hp > 0) {
+      this.elementHit(t, element, by);
+      return;
+    }
     if (t.kind === 'monster') {
       this.monsterDies(t, by);
     } else if (!t.downed && !t.dead) {
@@ -1932,7 +2066,126 @@ export class Game {
       t.statuses = [];
       this.cancelWalk(t.id);
       this.addLog('death', `🩸 ${t.name} falls unconscious! Heal them to get them back up.`);
+      // Went down on their own turn (walked into the fire): the turn is over.
+      if (this.turnOwner === t.id && this.phase === 'combat') {
+        const token = this.turnToken;
+        this.later(token, 800, () => this.advanceTurn());
+      }
     }
+  }
+
+  /** What an element does to a creature it hurts: cold chills then freezes, lightning shocks then stuns, fire thaws. */
+  private elementHit(t: Entity, el: Element, by?: Entity) {
+    if (!this.entities.includes(t) || this.phase !== 'combat') return;
+    const wet = hasStatus(t, 'wet');
+    if (el === 'fire') {
+      t.statuses = t.statuses.filter((x) => x.id !== 'chilled' && x.id !== 'frozen');
+    } else if (el === 'cold') {
+      if (hasStatus(t, 'frozen')) return;
+      if (wet || hasStatus(t, 'chilled')) {
+        t.statuses = t.statuses.filter((x) => x.id !== 'chilled' && x.id !== 'wet');
+        this.addLog('info', `🧊 ${t.name} freezes solid!`);
+        this.applyStatus(t, { id: 'frozen', turns: 1 }, by);
+      } else this.applyStatus(t, { id: 'chilled', turns: FIELD_STATUS_TURNS }, by);
+    } else if (el === 'lightning') {
+      if (hasStatus(t, 'stunned')) return; // can't be stunned again while stunned
+      if (wet || hasStatus(t, 'shocked')) {
+        t.statuses = t.statuses.filter((x) => x.id !== 'shocked');
+        this.addLog('info', `⚡ ${t.name} is stunned by the shock${wet ? ' (Wet)' : ''}!`);
+        this.applyStatus(t, { id: 'stunned', turns: 1 }, by);
+      } else this.applyStatus(t, { id: 'shocked', turns: FIELD_STATUS_TURNS }, by);
+    }
+  }
+
+  // ------------------------------------------------------------ the battlefield (shared/surfaces.ts)
+
+  /**
+   * Runs field operations for real: logs and pops up the reactions, blows up whoever is next to an explosion, and
+   * affects everyone standing where something new appeared.
+   */
+  private runField(ops: FieldOp[], by?: Entity) {
+    if (!ops.length || this.phase !== 'combat') return;
+    const r = applyField(this, ops, by?.id);
+    for (const x of r.reactions) {
+      const info = REACTIONS[x.kind];
+      const c = x.tiles.map((i) => tilePos(this, i));
+      const mid = c[Math.floor(c.length / 2)];
+      this.fx.push({ kind: 'float', x: mid.x, y: mid.y, text: info.text, color: info.color });
+      if (x.kind === 'explode') for (const p of c.slice(0, 6)) this.fx.push({ kind: 'burst', x: p.x, y: p.y, radius: 1, color: info.color });
+      this.addLog('info', `${info.text.split(' ')[0]} ${info.log}${x.tiles.length > 1 ? ` (${x.tiles.length} tiles)` : ''}!`);
+    }
+    const at = (e: Entity) => e.y * this.width + e.x;
+    const blasts = new Set(r.blasts);
+    for (const e of [...this.entities]) {
+      if (!blasts.has(at(e)) || !this.entities.includes(e) || (e.kind === 'player' && !this.standing(e))) continue;
+      const dmg = rollDice(EXPLOSION);
+      this.addLog('hit', `💥 ${e.name} is caught in the explosion: ${dmg} fire.`);
+      this.damage(e, dmg, by, 'fire', true);
+    }
+    const changed = new Set(r.changed);
+    for (const e of [...this.entities]) if (changed.has(at(e))) this.standIn(e, 'appear');
+  }
+
+  /**
+   * A creature meets the ground and cloud on its tile: when it steps in, starts its turn there, or something appears
+   * under it. Returns true if it has to stop moving (it slipped, got stunned or went down).
+   */
+  private standIn(e: Entity, mode: 'step' | 'start' | 'appear'): boolean {
+    const alive = () => this.entities.includes(e) && !(e.kind === 'player' && !this.standing(e));
+    if (this.phase !== 'combat' || !alive()) return true;
+    const stopped = () => hasStatus(e, 'stunned') || hasStatus(e, 'frozen');
+    const wasStopped = stopped(); // stunned by the blow that's shoving it: it still flies the whole way
+    const i = e.y * this.width + e.x;
+    const g = this.ground[i];
+    const c = this.clouds[i];
+    const source = (id?: string) => this.entity(id);
+    const zap = (by?: string) => {
+      const dmg = rollDice(HAZARD_DICE.shock!);
+      this.addLog('hit', `⚡ ${e.name} is shocked by the electrified ${g?.shock ? 'water' : 'steam'}: ${dmg} lightning.`);
+      this.damage(e, dmg, source(by), 'lightning', true);
+    };
+    if (g) {
+      if ((g.id === 'fire' || g.id === 'lava') && !immuneToStatus(e, 'burning')) {
+        const dmg = rollDice(HAZARD_DICE[g.id]!);
+        const where = g.id === 'lava' ? 'the lava' : 'the flames';
+        this.addLog('hit', `🔥 ${e.name} ${mode === 'start' ? `is still in ${where}` : `is caught in ${where}`}: ${dmg} fire.`);
+        this.damage(e, dmg, source(g.by), 'fire', true);
+        if (alive()) this.applyStatus(e, { id: 'burning', turns: FIELD_STATUS_TURNS }, source(g.by));
+      } else if (g.id === 'poison' && !immuneToStatus(e, 'poisoned')) {
+        const dmg = rollDice(HAZARD_DICE.poison!);
+        this.addLog('hit', `☠️ ${e.name} wades through poison: ${dmg} poison.`);
+        this.damage(e, dmg, source(g.by), 'poison', true);
+        if (alive()) this.applyStatus(e, { id: 'poisoned', turns: FIELD_STATUS_TURNS }, source(g.by));
+      } else if (g.id === 'water') {
+        this.applyStatus(e, { id: 'wet', turns: FIELD_STATUS_TURNS }, source(g.by));
+        if (g.shock) zap(g.by);
+      } else if (g.id === 'ice' && mode === 'step') {
+        let total: number;
+        let text: string;
+        if (e.kind === 'player') ({ total, text } = this.heroSave(e, 'dex'));
+        else {
+          const d20 = rollDie(20);
+          const bonus = MONSTERS[e.type].dex;
+          total = d20 + bonus;
+          text = `🎲${d20}${fmtMod(bonus)}=${total}`;
+        }
+        if (total < ICE_DC) {
+          this.addLog('miss', `🧊 ${e.name} slips on the ice (DEX ${text} vs DC ${ICE_DC}) and loses the rest of the move.`);
+          this.float(e, 'slipped!', '#cdefff');
+          return true;
+        }
+      }
+    }
+    if (c && alive()) {
+      if (c.id === 'steam') {
+        this.applyStatus(e, { id: 'wet', turns: FIELD_STATUS_TURNS }, source(c.by));
+        if (c.shock) zap(c.by);
+      } else if (c.id === 'gas' && !immuneToStatus(e, 'poisoned')) {
+        if (!hasStatus(e, 'poisoned')) this.addLog('hit', `🤢 ${e.name} breathes in the poison gas.`);
+        this.applyStatus(e, { id: 'poisoned', turns: FIELD_STATUS_TURNS }, source(c.by));
+      }
+    }
+    return !alive() || (!wasStopped && stopped());
   }
 
   /** Kill credit, kill steals, XP shares and on-kill passives. */
@@ -1965,6 +2218,17 @@ export class Game {
       if (h) this.grantXp(h, xp);
     }
     if (killer && this.standing(killer)) this.onKill(killer);
+    // A bloated zombie bursts into poison, a magma imp into fire.
+    const death = MONSTERS[t.type].death;
+    if (death && this.phase === 'combat') {
+      this.addLog('info', `${t.glyph} ${t.name} ${death.text}!`);
+      const area = tilesAround(this, t, death.radius);
+      const ops: FieldOp[] = [];
+      if (death.ground) ops.push({ kind: 'ground', tiles: area, id: death.ground });
+      if (death.cloud) ops.push({ kind: 'cloud', tiles: area, id: death.cloud });
+      if (this.deferredBursts) this.deferredBursts.push({ ops, by: killer ?? undefined });
+      else this.runField(ops, killer ?? undefined);
+    }
   }
 
   private onKill(p: PlayerEntity) {
@@ -2169,6 +2433,9 @@ export class Game {
       width: this.width,
       height: this.height,
       tiles: this.tiles,
+      ground: this.ground,
+      clouds: this.clouds,
+      props: this.props,
       players: this.players,
       entities: this.entities,
       turn: this.turn,

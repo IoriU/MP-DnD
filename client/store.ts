@@ -118,6 +118,15 @@ export function bestAttack(s: GameState, m: PlayerEntity, target: Entity): Skill
   return null;
 }
 
+/** The first free basic attack that can smash the oil barrel or brazier on this tile. */
+export function bestPropAttack(s: GameState, m: PlayerEntity, at: Pos): SkillId | null {
+  for (const id of hotbar(m)) {
+    if (SKILLS[id].kind !== 'basic' || blockReason(id)) continue;
+    if (typeof aimAt(s, m, id, at) !== 'string') return id;
+  }
+  return null;
+}
+
 /** Why clicking a monster did nothing: a basic attack that's blocked (not your turn, action spent), else distance. */
 export function attackProblem(m: PlayerEntity): string {
   const basics = hotbar(m).filter((id) => SKILLS[id].kind === 'basic');

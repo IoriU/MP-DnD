@@ -56,6 +56,26 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - Attacks from behind and flanking attacks (a friend directly across the target) have **advantage**. Hover a monster to see it before you attack.
   - A monster turns to face whoever walks up to it or hits it in melee, so backstabs need teamwork: hit it from behind while it's busy with someone else, shoot it in the back, or Hide first.
   - **Shove** (everyone, bonus action) knocks an enemy back.
+- **The battlefield** (elements & surfaces, like Divinity: Original Sin):
+  - The ground can hold 💧 water, 🧊 ice, 🔥 fire, 🛢️ oil, ☠️ poison or 🌋 lava, and the air ♨️ steam, 🌫️ smoke or 🤢 poison gas. Steam and smoke block line of sight. Hover a tile to see what's on it.
+  - Stepping into fire, poison or lava (or starting your turn there) hurts. Ice can make you slip and lose your move. Water makes you **Wet**.
+  - Fire, cold and lightning react with what they touch:
+
+    | On the tile | 🔥 Fire | ❄️ Cold | ⚡ Lightning | 💧 Water |
+    |---|---|---|---|---|
+    | Water | Steam cloud | Ice | Electrified water: the whole puddle | — |
+    | Oil | All the connected oil burns | — | — | Washed away |
+    | Poison | **Explosion** + fire | — | — | Washed away |
+    | Ice | Melts | — | — | — |
+    | Fire | — | Put out | — | Put out (steam) |
+    | Steam | — | — | Electrified steam | — |
+    | Oil barrel | **Explosion** + burning oil | | | |
+  - On creatures, cold **Chills** (half movement) and lightning **Shocks** (−2 AC). A second hit, or one on a **Wet** target, **Freezes** or **Stuns** it. Wet also halves fire damage and puts out Burning.
+  - **Friendly fire is on**: area spells like Fireball hit allies in the blast too. The aiming preview shows every tile, every ally caught in it and the combo it will set off.
+  - Hit an 🛢️ oil barrel or a 🏮 brazier to spill oil or burning coals. Shoving enemies into fire works too.
+  - Each act has its own terrain: oil and lamps in the Goblin Warrens, water and poison in the Crypt, lava in the Dragon's Lair. Some monsters resist elements (hover them), and some leave poison or fire behind when they die.
+  - Clicking a tile walks around hazards if it can. If the only way goes through one, the game asks you to click again.
+  - New combo skills: the Cleric's **Create Water** (soak them, then shock or freeze them) and the Wizard's **Grease** (then set it on fire).
 - **Sneak or Charge:** before most fights the party sees the room and votes. Sneaking is a group Stealth check: if at least half of you pass, the monsters lose their first turn; if not, you lose yours. Some fights are ambushes. The Rogue's **Hide** makes monsters ignore them and gives their next attack advantage.
 - **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Each level-up offers 3 cards (new skills, upgrades, passives, boons); pick one whenever you like, nobody has to wait.
 - **At 0 HP** you fall unconscious and roll death saves on your turn. Healing (a potion, Healing Word or Second Wind) gets you back up. If the party wins the fight, everyone gets back up, even the dead.
@@ -70,15 +90,15 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 |---|---|
 | 🛡️ Fighter | Tank with AC 16. Shield Bash knocks enemies back, Second Wind heals, Battle Cry and Sentinel keep enemies on you. Attacks twice from level 5. |
 | 🗡️ Rogue | Sneak Attack adds extra d6s when an ally is next to the target or you have advantage. Shadow Step teleports behind a target. The kill-steal class. |
-| 🧙 Wizard | Fire Bolt and Ray of Frost at range, Fireball for crowds, Magic Missile never misses. Fragile. |
-| ✨ Cleric | Healing Word picks up downed allies from range, Bless makes the party hit harder, Sacred Flame forces a DEX save. |
+| 🧙 Wizard | Fire, frost and lightning at range: the element master. Fireball for crowds, Grease to set up a blaze, Magic Missile never misses. Fragile. |
+| ✨ Cleric | Healing Word picks up downed allies from range, Bless makes the party hit harder, Sacred Flame forces a DEX save, Create Water soaks enemies for the Wizard's lightning. |
 
 ## Development
 
 ```bash
 npm run dev        # server with auto-restart + Vite hot reload: open http://localhost:5173
 npm run typecheck  # TypeScript checks
-npm test           # unit tests (map and room generators, events, skills, XP, hero AI)
+npm test           # unit tests (map and room generators, events, skills, XP, the battlefield, hero AI)
 npm run smoke      # with a server running: a party of auto-played bots plays one run headlessly
 npm run balance    # many full bot runs in parallel: win rate, where parties die, kills, skills used
 npm run resume-check  # plays a few rooms, kills the server, restarts it and checks the party continues where it was
@@ -94,6 +114,7 @@ To test multiplayer alone, open several browser tabs. Each new tab is a new play
 shared/rules.ts    classes, monsters, acts, dice, XP and balance numbers  ← start here to tweak the game
 shared/skills.ts   every skill and passive (tiers I/II/III-A/III-B), statuses, targeting, descriptions
 shared/tactics.ts  facing, back attacks, flanking: every reason a roll has advantage
+shared/surfaces.ts the battlefield: ground, clouds, props, the combo engine, hazards, previews
 shared/grid.ts     line of sight, pathfinding
 shared/types.ts    the game state sent from server to clients
 server/game.ts     the "Dungeon Master": the run, voting, rooms, turns, combat, monster AI

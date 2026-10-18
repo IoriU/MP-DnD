@@ -2,6 +2,7 @@
 // Tweak numbers here to rebalance the game; both server and client read from this file.
 
 import type { Element, SkillId } from './skills.ts';
+import type { CloudId, GroundId } from './surfaces.ts';
 import type { BoonId, ClassId, NodeType } from './types.ts';
 
 export const MAX_PLAYERS = 6;
@@ -148,6 +149,11 @@ export const MAX_BONUS_AC = 2;
 
 // ---------------------------------------------------------------- monsters
 
+/** How a creature takes an element: no damage, half, double, or it heals from it. */
+export type Resist = 'immune' | 'resist' | 'weak' | 'absorb';
+
+export const RESIST_WORD: Record<Resist, string> = { immune: 'Immune to', resist: 'Resists', weak: 'Weak to', absorb: 'Healed by' };
+
 export interface MonsterDef {
   name: string;
   glyph: string;
@@ -164,7 +170,9 @@ export interface MonsterDef {
   verb: string;
   threat: number; // encounter budget cost
   xp: number; // shared out when it dies (see XP_* above)
-  element?: Element; // damage type of its attacks (Physical if unset)
+  element?: Element; // damage type of its attacks (Physical if unset); fire, cold and lightning react with the ground
+  resist?: Partial<Record<Element, Resist>>;
+  death?: { ground?: GroundId; cloud?: CloudId; radius: number; text: string }; // what it leaves behind when it dies
   breath?: boolean; // fire breath every 3rd round
 }
 
@@ -183,24 +191,33 @@ export const MONSTERS: Record<string, MonsterDef> = {
   kobold: m('Kobold', '🦎', 5, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, verb: 'stabs' }),
   goblin: m('Goblin', '👺', 7, 15, 4, { n: 1, d: 6, bonus: 2 }, 2, { dex: 2, verb: 'slashes' }),
   archer: m('Goblin Archer', '🏹', 7, 13, 4, { n: 1, d: 6, bonus: 2 }, 2, { dex: 2, range: 8, verb: 'shoots' }),
+  firebomber: m('Goblin Firebomber', '💣', 7, 12, 4, { n: 1, d: 6, bonus: 1 }, 3, { dex: 2, range: 6, element: 'fire', verb: 'lobs a firebomb at' }),
   hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, verb: 'cuts' }),
   goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, verb: 'slashes' }),
   mimic: m('Mimic', '📦', 30, 12, 4, { n: 1, d: 8, bonus: 2 }, 10, { attacks: 2, speed: 4, dex: 0, str: 3, verb: 'chomps' }),
   // Act 2: Forgotten Crypt
-  skeleton: m('Skeleton', '💀', 13, 13, 4, { n: 1, d: 6, bonus: 2 }, 3, { dex: 2, wis: -1, verb: 'hacks' }),
-  zombie: m('Zombie', '🧟', 22, 8, 3, { n: 1, d: 6, bonus: 1 }, 2, { speed: 4, dex: -2, str: 2, wis: -2, verb: 'claws' }),
+  skeleton: m('Skeleton', '💀', 13, 13, 4, { n: 1, d: 6, bonus: 2 }, 3, { dex: 2, wis: -1, resist: { poison: 'immune' }, verb: 'hacks' }),
+  zombie: m('Zombie', '🧟', 22, 8, 3, { n: 1, d: 6, bonus: 1 }, 2, { speed: 4, dex: -2, str: 2, wis: -2, resist: { poison: 'immune', fire: 'weak' }, verb: 'claws' }),
+  bloated: m('Bloated Zombie', '🤮', 18, 8, 3, { n: 1, d: 6, bonus: 1 }, 2, {
+    speed: 4, dex: -2, str: 2, wis: -2, resist: { poison: 'immune' }, verb: 'slaps',
+    death: { ground: 'poison', radius: 1, text: 'bursts in a spray of poison' },
+  }),
   wolf: m('Wolf', '🐺', 11, 13, 4, { n: 2, d: 4, bonus: 2 }, 3, { speed: 8, dex: 2, verb: 'bites' }),
-  spider: m('Giant Spider', '🕷️', 22, 14, 5, { n: 1, d: 8, bonus: 3 }, 5, { dex: 3, verb: 'bites' }),
-  wight: m('Wight', '👻', 45, 14, 5, { n: 1, d: 8, bonus: 3 }, 12, { attacks: 2, dex: 2, str: 2, wis: 2, verb: 'drains' }),
-  broodmother: m('Spider Broodmother', '🕸️', 50, 14, 6, { n: 1, d: 10, bonus: 3 }, 12, { dex: 3, str: 3, attacks: 2, verb: 'bites' }),
-  bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, { attacks: 2, str: 4, wis: 2, xp: 350, verb: 'cleaves' }),
+  spider: m('Giant Spider', '🕷️', 22, 14, 5, { n: 1, d: 8, bonus: 3 }, 5, { dex: 3, resist: { poison: 'resist' }, verb: 'bites' }),
+  wight: m('Wight', '👻', 45, 14, 5, { n: 1, d: 8, bonus: 3 }, 12, { attacks: 2, dex: 2, str: 2, wis: 2, element: 'cold', resist: { poison: 'immune', cold: 'resist' }, verb: 'drains' }),
+  broodmother: m('Spider Broodmother', '🕸️', 50, 14, 6, { n: 1, d: 10, bonus: 3 }, 12, { dex: 3, str: 3, attacks: 2, resist: { poison: 'resist' }, verb: 'bites' }),
+  bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, { attacks: 2, str: 4, wis: 2, xp: 350, resist: { poison: 'immune' }, verb: 'cleaves' }),
   // Act 3: Dragon's Lair
   orc: m('Orc', '👹', 15, 13, 5, { n: 1, d: 12, bonus: 3 }, 4, { str: 3, verb: 'cleaves' }),
-  cultist: m('Dragon Cultist', '🦹', 18, 12, 5, { n: 2, d: 6 }, 4, { range: 6, wis: 1, element: 'fire', verb: 'hurls fire at' }),
+  cultist: m('Dragon Cultist', '🦹', 18, 12, 5, { n: 2, d: 6 }, 4, { range: 6, wis: 1, element: 'fire', resist: { fire: 'resist' }, verb: 'hurls fire at' }),
+  imp: m('Magma Imp', '😈', 16, 13, 5, { n: 1, d: 6, bonus: 2 }, 4, {
+    range: 4, dex: 3, element: 'fire', resist: { fire: 'absorb', cold: 'weak' }, verb: 'spits magma at',
+    death: { ground: 'fire', radius: 1, text: 'collapses into a pool of fire' },
+  }),
   ogre: m('Ogre', '🧌', 45, 11, 6, { n: 2, d: 8, bonus: 4 }, 8, { dex: -1, str: 4, wis: -2, verb: 'smashes' }),
   warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, verb: 'cleaves' }),
-  drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, verb: 'rends' }),
-  wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, { attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, verb: 'rends' }),
+  drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, resist: { fire: 'immune' }, verb: 'rends' }),
+  wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, { attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, resist: { fire: 'resist' }, verb: 'rends' }),
 };
 
 /**
@@ -227,45 +244,48 @@ export interface ActDef {
 export const ACTS: ActDef[] = [
   {
     name: 'Goblin Warrens', glyph: '👺',
-    pool: ['rat', 'kobold', 'goblin', 'archer'],
+    pool: ['rat', 'kobold', 'goblin', 'archer', 'firebomber'],
     encounters: [
       { name: 'Rat Nest', monsters: ['rat', 'rat', 'rat', 'kobold'] },
       { name: 'Goblin Patrol', monsters: ['goblin', 'goblin', 'archer'] },
       { name: 'Kobold Tunnel Crew', monsters: ['kobold', 'kobold', 'goblin'] },
+      { name: 'Firebomb Squad', monsters: ['firebomber', 'goblin', 'kobold'], minRow: 2 },
       { name: 'Archer Nest', monsters: ['archer', 'archer', 'goblin'], minRow: 3 },
-      { name: 'Goblin Warband', monsters: ['goblin', 'goblin', 'archer', 'kobold', 'rat'], minRow: 6 },
+      { name: 'Goblin Warband', monsters: ['goblin', 'goblin', 'archer', 'firebomber', 'kobold', 'rat'], minRow: 6 },
     ],
     elites: ['hobgoblin', 'mimic'],
-    escorts: { hobgoblin: ['goblin', 'archer'], mimic: ['rat'] },
+    escorts: { hobgoblin: ['goblin', 'archer', 'firebomber'], mimic: ['rat'] },
     boss: 'goblin_king', minions: ['goblin', 'archer'],
   },
   {
     name: 'Forgotten Crypt', glyph: '💀',
-    pool: ['skeleton', 'zombie', 'wolf', 'spider'],
+    pool: ['skeleton', 'zombie', 'bloated', 'wolf', 'spider'],
     encounters: [
-      { name: 'Restless Dead', monsters: ['skeleton', 'zombie', 'zombie'] },
+      { name: 'Restless Dead', monsters: ['skeleton', 'zombie', 'zombie', 'bloated'] },
+      { name: 'Plague Pit', monsters: ['bloated', 'bloated', 'zombie'], minRow: 2 },
       { name: 'Wolf Pack', monsters: ['wolf', 'wolf', 'wolf'] },
       { name: 'Bone Sentries', monsters: ['skeleton', 'skeleton'] },
       { name: 'Spider Lair', monsters: ['spider', 'spider', 'wolf'], minRow: 3 },
-      { name: 'Bone Legion', monsters: ['skeleton', 'skeleton', 'zombie', 'spider'], minRow: 6 },
+      { name: 'Bone Legion', monsters: ['skeleton', 'skeleton', 'zombie', 'bloated', 'spider'], minRow: 6 },
     ],
     elites: ['wight', 'broodmother'],
-    escorts: { wight: ['skeleton', 'zombie'], broodmother: ['spider', 'wolf'] },
+    escorts: { wight: ['skeleton', 'zombie', 'bloated'], broodmother: ['spider', 'wolf'] },
     boss: 'bone_knight', minions: ['skeleton', 'zombie'],
   },
   {
     name: "Dragon's Lair", glyph: '🐉',
-    pool: ['orc', 'cultist', 'kobold', 'ogre'],
+    pool: ['orc', 'cultist', 'imp', 'kobold', 'ogre'],
     encounters: [
       { name: 'Orc Raiders', monsters: ['orc', 'orc', 'kobold'] },
-      { name: 'Cult Ritual', monsters: ['cultist', 'cultist', 'kobold'] },
+      { name: 'Cult Ritual', monsters: ['cultist', 'cultist', 'imp', 'kobold'] },
+      { name: 'Imp Swarm', monsters: ['imp', 'imp', 'kobold'], minRow: 2 },
       { name: 'Kobold Swarm', monsters: ['kobold', 'kobold', 'kobold', 'cultist'] },
       { name: 'Ogre Brutes', monsters: ['ogre', 'kobold', 'kobold'], minRow: 4 },
-      { name: "Dragon's Guard", monsters: ['orc', 'cultist', 'ogre', 'kobold'], minRow: 6 },
+      { name: "Dragon's Guard", monsters: ['orc', 'cultist', 'imp', 'ogre', 'kobold'], minRow: 6 },
     ],
     elites: ['warchief', 'drake'],
-    escorts: { warchief: ['orc', 'kobold'], drake: ['cultist', 'kobold'] },
-    boss: 'wyrm', minions: ['kobold', 'cultist'],
+    escorts: { warchief: ['orc', 'kobold'], drake: ['cultist', 'imp', 'kobold'] },
+    boss: 'wyrm', minions: ['kobold', 'cultist', 'imp'],
   },
 ];
 

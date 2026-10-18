@@ -444,3 +444,9 @@ button.tag.lvl:hover { background: var(--accent-2); }
   h1 { font-size: 32px; }
   .panel { padding: 20px; }
 }
+
+/* Battlefield tooltips: surface descriptions wrap, reactions and electrified tiles in their own colors. */
+.tip-desc { display: inline-block; max-width: 260px; white-space: normal; color: var(--muted); }
+.tip-shock { color: #fff36b; }
+.tip-react { font-weight: 600; }
+.tip-death { color: #d6b8ff; }

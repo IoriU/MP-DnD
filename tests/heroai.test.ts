@@ -1,24 +1,38 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
+import { canStep, dist, reachable } from '../shared/grid.ts';
 import { CLASSES, CLASS_IDS, MONSTERS, TIER3_LEVEL, maxHpFor, maxSlotsFor } from '../shared/rules.ts';
-import { SKILLS, SKILL_IDS, canUpgrade, countKind, limitFor, ownedSkill, resolveAim, skillBlockReason, slotCost, statsOf, type SkillId } from '../shared/skills.ts';
+import { SKILLS, SKILL_IDS, canUpgrade, countKind, limitFor, ownedSkill, resolveAim, skillBlockReason, slotCost, statsOf, type SkillId, type StatusId } from '../shared/skills.ts';
+import { aimFieldOps, applyField, hazardAt, planWalk, type CloudId, type FieldLike, type GroundId, type PropId } from '../shared/surfaces.ts';
 import { attackAdvantage, dirTo, isBehind, isFlanking, netAdvantage } from '../shared/tactics.ts';
 import type { ClassId, MonsterEntity, PlayerEntity, Pos, TurnState } from '../shared/types.ts';
 import { autoApproachChoice, autoEventChoice, autoPathChoice, nextHeroIntent, upkeepIntent, type HeroIntent, type HeroView } from '../server/heroai.ts';
 import { recalcHero, startingSkills } from '../server/progression.ts';
 import { makeRng, type Rng } from '../server/rng.ts';
 
-/** A room with a wall ring and no obstacles. */
-function room(w: number, h: number): MapLike {
+/** A room with a wall ring and no obstacles (and nothing on the battlefield yet). */
+function room(w: number, h: number): FieldLike {
   const tiles = Array.from({ length: w * h }, (_, i) => {
     const x = i % w;
     const y = Math.floor(i / w);
     return x === 0 || y === 0 || x === w - 1 || y === h - 1 ? '#' : '.';
   }).join('');
-  return { width: w, height: h, tiles };
+  return { width: w, height: h, tiles, ground: {}, clouds: {}, props: {} };
 }
 const map = room(12, 8);
+
+/** A fresh copy of the 12x8 room with ground (permanent unless `turns`) on these tiles. */
+function field(ground: [number, number, GroundId][] = [], extra: { clouds?: [number, number, CloudId][]; props?: [number, number, PropId][]; shock?: boolean } = {}): FieldLike {
+  const f = room(12, 8);
+  for (const [x, y, id] of ground) f.ground[y * f.width + x] = { id, turns: null, ...(extra.shock && id === 'water' ? { shock: 1 } : {}) };
+  for (const [x, y, id] of extra.clouds ?? []) f.clouds[y * f.width + x] = { id, turns: 3 };
+  for (const [x, y, id] of extra.props ?? []) {
+    f.props[y * f.width + x] = id;
+    f.tiles = f.tiles.slice(0, y * f.width + x) + '#' + f.tiles.slice(y * f.width + x + 1);
+  }
+  return f;
+}
+const status = (id: StatusId, turns = 2) => ({ id, turns });
 
 let ids = 0;
 function hero(classId: ClassId, x: number, y: number, extra: Partial<PlayerEntity> = {}): PlayerEntity {
@@ -445,11 +459,207 @@ test('approach vote: a stealthy party sneaks past a dull guard, a clumsy one cha
   assert.equal(autoApproachChoice([], 10), 'charge');
 });
 
+// ---------------------------------------------------------------- elements & surfaces (Phase 5)
+
+const groundAt = (f: FieldLike, p: Pos) => f.ground[p.y * f.width + p.x]?.id;
+
+/**
+ * Plays the turn like game.ts until the hero acts or ends it: moves go through planWalk (around hazards when that still
+ * gets there). Returns the act and every hazardous tile the hero stepped into on the way.
+ */
+function walkToAct(v: HeroView): { intent: HeroIntent; hazards: Pos[] } {
+  const hazards: Pos[] = [];
+  for (let i = 0; i < 10; i++) {
+    const intent = nextHeroIntent(v);
+    if (intent.kind !== 'move') return { intent, hazards };
+    const plan = planWalk(v.map, v.hero, intent.to, v.turn.movesLeft, (x, y) => v.occupied(x, y, v.hero.id), v.hero);
+    assert.ok(plan?.path.length, `can walk to ${JSON.stringify(intent.to)}`);
+    hazards.push(...plan.path.filter((p) => hazardAt(v.map, p.y * v.map.width + p.x, v.hero) > 0));
+    Object.assign(v.hero, plan.path[plan.path.length - 1]);
+    v.turn.movesLeft -= plan.path.length;
+  }
+  throw new Error('keeps walking');
+}
+
+test('a hero standing in fire steps out of it, and stays next to the goblin', () => {
+  const m = field([[3, 3, 'fire']]);
+  const f = hero('fighter', 3, 3);
+  const g = goblin(4, 3, { hp: 20, maxHp: 20 });
+  const intent = nextHeroIntent(view(f, [f], [g], { ...freshTurn(), actionUsed: true, bonusUsed: true }, m));
+  assert.equal(intent.kind, 'move', JSON.stringify(intent));
+  if (intent.kind === 'move') {
+    assert.notEqual(groundAt(m, intent.to), 'fire');
+    assert.equal(dist(intent.to, g), 1, 'still in the fight');
+  }
+  // Without the fire it has no reason to move.
+  const calm = hero('fighter', 3, 3);
+  assert.deepEqual(nextHeroIntent(view(calm, [calm], [g], { ...freshTurn(), actionUsed: true, bonusUsed: true })), { kind: 'end' });
+});
+
+test('a fighter walks around the fire to attack from a safe side, even a step further', () => {
+  const m = field([[7, 2, 'fire'], [7, 3, 'fire'], [7, 4, 'fire']]);
+  const f = hero('fighter', 2, 3);
+  const g = goblin(8, 3, { hp: 20, maxHp: 20 });
+  const { intent, hazards } = walkToAct(view(f, [f], [g], freshTurn(), m));
+  assert.deepEqual(intent, { kind: 'act', skill: 'longsword', target: g.id });
+  assert.notEqual(groundAt(m, f), 'fire', `attacks from ${f.x},${f.y}`);
+  assert.deepEqual(hazards, [], 'never steps into the fire');
+});
+
+test('through a wall of fire, a hero walks the way with the fewest flames (even if game.ts would go straight)', () => {
+  // Columns 3-5 burn top to bottom, except a gap in columns 4-5 along the top: one flame that way, three straight on.
+  const fire: [number, number, GroundId][] = [];
+  for (let x = 3; x <= 5; x++) for (let y = 1; y <= 6; y++) if (!(y === 1 && x > 3)) fire.push([x, y, 'fire']);
+  const m = field(fire);
+  const f = hero('fighter', 1, 3);
+  const g = goblin(8, 2, { hp: 20, maxHp: 20 });
+  const { intent, hazards } = walkToAct(view(f, [f], [g], freshTurn(), m));
+  assert.deepEqual(intent, { kind: 'act', skill: 'longsword', target: g.id });
+  assert.equal(hazards.length, 1, `stepped into ${JSON.stringify(hazards)}`);
+});
+
+test('a hero does not stand in electrified water or poison when a dry tile does the same job', () => {
+  for (const [id, shock] of [['water', true], ['poison', false]] as const) {
+    // Every tile next to the goblin is wet (or poisoned), except one.
+    const tiles: [number, number, GroundId][] = [];
+    for (let y = 2; y <= 4; y++) for (let x = 5; x <= 7; x++) if (!(x === 6 && y === 3) && !(x === 7 && y === 4)) tiles.push([x, y, id]);
+    const m = field(tiles, { shock });
+    const f = hero('fighter', 2, 3);
+    const g = goblin(6, 3, { hp: 20, maxHp: 20 });
+    const { intent } = walkToAct(view(f, [f], [g], freshTurn(), m));
+    assert.deepEqual(intent, { kind: 'act', skill: 'longsword', target: g.id });
+    assert.deepEqual({ x: f.x, y: f.y }, { x: 7, y: 4 }, `${id}: the one dry tile`);
+  }
+});
+
+test('a wizard does not Fireball goblins crowding the fighter, but does fireball a cluster clear of friends', () => {
+  const ctxOf = (v: HeroView) => ({ map: v.map, entities: [...v.heroes, ...v.monsters], inCombat: true });
+  // Every spot that catches two of these goblins catches the fighter too.
+  const w = withSkills(hero('wizard', 2, 3), [['fire_bolt'], ['fireball']]);
+  const f = hero('fighter', 7, 3);
+  const crowd = [goblin(7, 2), goblin(7, 4), goblin(8, 3)];
+  const v = view(w, [w, f], crowd);
+  const intent = firstAct(v); // it may step around for a shot at a goblin's back first
+  assert.equal(validAct(v, intent), null);
+  assert.ok(intent.kind === 'act' && intent.skill !== 'fireball', JSON.stringify(intent));
+  // A clean cluster of three elsewhere: Fireball that one, without catching anyone.
+  const w2 = withSkills(hero('wizard', 2, 3), [['fire_bolt'], ['fireball']]);
+  const f2 = hero('fighter', 7, 3);
+  const all = [goblin(7, 2), goblin(7, 4), goblin(8, 3), goblin(9, 6), goblin(10, 6), goblin(10, 5)];
+  const v2 = view(w2, [w2, f2], all);
+  const fb = firstAct(v2);
+  assert.equal(validAct(v2, fb), null);
+  assert.ok(fb.kind === 'act' && fb.skill === 'fireball', JSON.stringify(fb));
+  const res = resolveAim(statsOf({ id: 'fireball', tier: 1 }), w2, fb.target, ctxOf(v2));
+  assert.ok(typeof res === 'object' && !res.caught?.length && res.foes.length === 3, JSON.stringify(fb.target));
+});
+
+test('goblins standing in a puddle: the wizard walks up to Shocking Grasp them all, on dry ground it shoots instead', () => {
+  const at: Pos[] = [{ x: 7, y: 3 }, { x: 8, y: 3 }, { x: 8, y: 4 }];
+  const wizard = () => withSkills(hero('wizard', 3, 3), [['fire_bolt'], ['shocking_grasp']]);
+  const wet = field(at.map((p) => [p.x, p.y, 'water'] as [number, number, GroundId]));
+  const w = wizard();
+  const gs = at.map((p) => goblin(p.x, p.y, { statuses: [status('wet')] }));
+  const v = view(w, [w], gs, freshTurn(), wet);
+  const { intent, hazards } = walkToAct(v);
+  assert.equal(validAct(v, intent), null);
+  assert.ok(intent.kind === 'act' && intent.skill === 'shocking_grasp', JSON.stringify(intent));
+  assert.notEqual(groundAt(wet, w), 'water', 'not standing in the puddle it electrifies');
+  assert.deepEqual(hazards, []);
+  // The same goblins on dry ground: Fire Bolt from where it stands.
+  const w2 = wizard();
+  const dry = view(w2, [w2], at.map((p) => goblin(p.x, p.y)));
+  const shot = firstAct(dry);
+  assert.ok(shot.kind === 'act' && shot.skill === 'fire_bolt', JSON.stringify(shot));
+});
+
+test('a wizard does not Fire Bolt a fire-immune Fire Drake, and freezes a Magma Imp instead of feeding it fire', () => {
+  for (const type of ['drake', 'imp']) {
+    const w = withSkills(hero('wizard', 2, 3), [['fire_bolt'], ['ray_of_frost']]);
+    const m = monster(type, 7, 3);
+    const v = view(w, [w], [m]);
+    const intent = firstAct(v);
+    assert.equal(validAct(v, intent), null);
+    assert.ok(intent.kind === 'act' && intent.skill !== 'fire_bolt', `${type}: ${JSON.stringify(intent)}`);
+    if (type === 'imp') assert.equal(intent.kind === 'act' && intent.skill, 'ray_of_frost', 'cold: the imp is weak to it');
+  }
+});
+
+test('frozen monsters lose their turn: nobody taunts them, Fire Bolt goes for the one that is not frozen', () => {
+  const f = withSkills(hero('fighter', 4, 3), [['battle_cry']]);
+  const w = hero('wizard', 6, 3);
+  const gs = [goblin(5, 2), goblin(5, 4)].map((g) => ({ ...g, statuses: [status('frozen', 1)] }));
+  const intent = nextHeroIntent(view(f, [f, w], gs, { ...freshTurn(), actionUsed: true, movesLeft: 0 }));
+  assert.ok(intent.kind !== 'act' || intent.skill !== 'battle_cry', JSON.stringify(intent));
+  // Fire thaws: rather burn the goblin that still gets a turn.
+  const w2 = withSkills(hero('wizard', 2, 3), [['fire_bolt']]);
+  const ice = goblin(7, 2, { statuses: [status('frozen', 1)] });
+  const free = goblin(7, 4);
+  assert.deepEqual(nextHeroIntent(view(w2, [w2], [ice, free])), { kind: 'act', skill: 'fire_bolt', target: free.id });
+  // And a frozen hero just ends the turn (game.ts skips it).
+  const stuck = hero('fighter', 3, 3, { statuses: [status('frozen', 1)] });
+  assert.deepEqual(nextHeroIntent(view(stuck, [stuck], [goblin(4, 3)])), { kind: 'end' });
+});
+
+test('a bloated zombie bursts only after the spell that killed it, so finishing it off is worth it even next to the fighter', () => {
+  const wizard = () => withSkills(hero('wizard', 2, 3), [['fire_bolt'], ['ray_of_frost']]);
+  // Its poison splashes the fighter next to it whoever kills it, but the Fire Bolt no longer sets it off: still worth it.
+  const w = wizard();
+  const f = hero('fighter', 6, 3);
+  const zombie = monster('bloated', 7, 3, { hp: 3 });
+  const v = view(w, [w, f], [zombie, goblin(8, 5, { hp: 20, maxHp: 20 })]);
+  const intent = firstAct(v);
+  assert.equal(validAct(v, intent), null);
+  assert.ok(intent.kind === 'act' && intent.target === zombie.id, JSON.stringify(intent));
+  // With only monsters around it, the burst poisons them too.
+  const w2 = wizard();
+  const z2 = monster('bloated', 7, 3, { hp: 3 });
+  const pack = [z2, goblin(8, 3, { hp: 9, maxHp: 9 }), goblin(8, 4, { hp: 9, maxHp: 9 })];
+  const second = firstAct(view(w2, [w2], pack));
+  assert.ok(second.kind === 'act' && second.target === z2.id, JSON.stringify(second));
+});
+
+test('a wizard blows up an oil barrel next to two goblins, but not with the fighter standing by it', () => {
+  const m = field([], { props: [[8, 3, 'barrel']] });
+  const w = withSkills(hero('wizard', 2, 3), [['fire_bolt']]);
+  const gs = [goblin(7, 2), goblin(9, 4)];
+  const v = view(w, [w], gs, freshTurn(), m);
+  const intent = nextHeroIntent(v);
+  assert.deepEqual(intent, { kind: 'act', skill: 'fire_bolt', target: { x: 8, y: 3 } });
+  assert.equal(validAct(v, intent), null);
+  const w2 = withSkills(hero('wizard', 2, 3), [['fire_bolt']]);
+  const f = hero('fighter', 7, 3);
+  const near = nextHeroIntent(view(w2, [w2, f], [goblin(7, 2), goblin(9, 4)], freshTurn(), field([], { props: [[8, 3, 'barrel']] })));
+  assert.ok(near.kind !== 'act' || typeof near.target !== 'object', JSON.stringify(near));
+});
+
+test('Quick Grease under a cluster, then Fire Bolt into the oil', () => {
+  const m = field();
+  const w = withSkills(hero('wizard', 2, 3, { level: 4 }), [['fire_bolt'], ['grease', 3, 'A']]);
+  recalcHero(w);
+  w.slots = w.maxSlots;
+  const gs = [goblin(8, 2), goblin(8, 3), goblin(9, 3)];
+  const turn = freshTurn();
+  const v = view(w, [w], gs, turn, m);
+  const grease = nextHeroIntent(v);
+  assert.ok(grease.kind === 'act' && grease.skill === 'grease', JSON.stringify(grease));
+  assert.equal(validAct(v, grease), null);
+  // Pour it (what game.ts does with the surface), then the action lights it.
+  const s = statsOf(ownedSkill(w, 'grease')!);
+  const res = resolveAim(s, w, grease.target, { map: m, entities: [w, ...gs], inCombat: true });
+  assert.ok(typeof res === 'object');
+  applyField(m, aimFieldOps(s, w, res, m));
+  applyAct(v, grease);
+  assert.ok(gs.every((g) => groundAt(m, g) === 'oil'), 'all three stand in oil');
+  const bolt = firstAct(view(w, [w], gs, turn, m));
+  assert.ok(bolt.kind === 'act' && bolt.skill === 'fire_bolt', JSON.stringify(bolt));
+});
+
 // ---------------------------------------------------------------- property tests: never an invalid act, never stuck
 
 const ACTIVE = SKILL_IDS.filter((id) => ['cantrip', 'spell', 'passive'].includes(SKILLS[id].kind));
 
-function randomMap(r: Rng): MapLike {
+function randomMap(r: Rng): FieldLike {
   const w = r.int(6, 16);
   const h = r.int(5, 12);
   const tiles = Array.from({ length: w * h }, (_, i) => {
@@ -457,7 +667,7 @@ function randomMap(r: Rng): MapLike {
     const y = Math.floor(i / w);
     return x === 0 || y === 0 || x === w - 1 || y === h - 1 || r.chance(0.12) ? '#' : '.';
   }).join('');
-  return { width: w, height: h, tiles };
+  return { width: w, height: h, tiles, ground: {}, clouds: {}, props: {} };
 }
 
 function randomHero(r: Rng, pos: Pos): PlayerEntity {
@@ -564,4 +774,82 @@ test(`whole turns in ${FIGHTS} random fights end without a rejected act or a loo
   }
   // The new tricks do come up in random fights (so the checks above cover them).
   for (const id of ['hide', 'shove']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
+});
+
+// ---------------------------------------------------------------- the same on a messy battlefield (Phase 5)
+
+const GROUND_IDS: GroundId[] = ['water', 'ice', 'fire', 'oil', 'poison', 'lava'];
+const CLOUD_IDS: CloudId[] = ['steam', 'smoke', 'gas'];
+
+/** A random fight on a messy battlefield: puddles, fires and clouds everywhere, props in the walls, elemental statuses. */
+function messyFight(seed: number) {
+  const f = randomFight(seed);
+  const { r, map: m } = f;
+  for (let i = 0; i < m.width * m.height; i++) {
+    const x = i % m.width;
+    const y = Math.floor(i / m.width);
+    if (m.tiles[i] === '#') {
+      if (x > 0 && y > 0 && x < m.width - 1 && y < m.height - 1 && r.chance(0.4)) m.props[i] = r.pick(['barrel', 'brazier'] as const);
+      continue;
+    }
+    if (r.chance(0.25)) {
+      const id = r.pick(GROUND_IDS);
+      m.ground[i] = { id, turns: id === 'lava' ? null : r.pick([null, 2]), ...(id === 'water' && r.chance(0.3) ? { shock: 1 } : {}) };
+    }
+    if (r.chance(0.08)) {
+      const id = r.pick(CLOUD_IDS);
+      m.clouds[i] = { id, turns: 2, ...(id === 'steam' && r.chance(0.3) ? { shock: 1 } : {}) };
+    }
+  }
+  for (const e of [...f.heroes, ...f.monsters]) {
+    for (const id of ['wet', 'chilled', 'frozen', 'shocked'] as const) if (r.chance(id === 'frozen' ? 0.04 : 0.12)) e.statuses.push({ id, turns: 1 });
+  }
+  return f;
+}
+
+/** game.ts walks an auto hero's move with planWalk: it has to get all the way there. */
+function walkLikeTheGame(v: HeroView, to: Pos, seed: number): Pos[] {
+  const plan = planWalk(v.map, v.hero, to, v.turn.movesLeft, (x, y) => v.occupied(x, y, v.hero.id), v.hero);
+  const end = plan?.path[plan.path.length - 1];
+  assert.ok(plan && end && end.x === to.x && end.y === to.y, `seed ${seed}: can't walk to ${JSON.stringify(to)}`);
+  return plan.path;
+}
+
+test(`every act in ${FIGHTS} random fights on a messy battlefield passes the game's checks`, () => {
+  let acts = 0;
+  for (let seed = 1; seed <= FIGHTS; seed++) {
+    const f = messyFight(seed + 20_000);
+    const v = view(f.me, f.heroes, f.monsters, f.turn, f.map);
+    const intent = nextHeroIntent(v);
+    assert.equal(validAct(v, intent), null, `seed ${seed}: ${JSON.stringify(intent)}`);
+    if (intent.kind === 'act') acts++;
+    if (intent.kind === 'move') walkLikeTheGame(v, intent.to, seed);
+  }
+  assert.ok(acts > FIGHTS / 5, `the AI did act sometimes (${acts})`);
+});
+
+test(`whole turns in ${FIGHTS} random fights on a messy battlefield end without a rejected act or a loop`, () => {
+  const used = new Map<string, number>();
+  for (let seed = 1; seed <= FIGHTS; seed++) {
+    const f = messyFight(seed + 30_000);
+    const { me, turn } = f;
+    for (let steps = 0; ; steps++) {
+      assert.ok(steps < 25, `seed ${seed}: the turn never ends`);
+      const v = view(me, f.heroes, f.monsters, turn, f.map);
+      const intent = nextHeroIntent(v);
+      if (intent.kind === 'end') break;
+      if (intent.kind === 'move') {
+        const path = walkLikeTheGame(v, intent.to, seed);
+        Object.assign(me, intent.to);
+        turn.movesLeft -= path.length;
+        continue;
+      }
+      assert.equal(validAct(v, intent), null, `seed ${seed} step ${steps}: ${JSON.stringify(intent)}`);
+      const key = typeof intent.target === 'object' && f.map.props[intent.target.y * f.map.width + intent.target.x] ? 'prop' : intent.skill;
+      used.set(key, (used.get(key) ?? 0) + 1);
+      applyAct(v, intent, f.r);
+    }
+  }
+  // Barrels get smashed and the setups get cast (so the checks above cover them).
+  for (const id of ['prop', 'grease', 'create_water']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
 });
