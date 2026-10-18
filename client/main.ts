@@ -48,6 +48,8 @@ window.addEventListener('keydown', (ev) => {
     return;
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return; // leave browser shortcuts alone
+  // Space and Enter activate a focused vote button instead of ending the turn or opening chat.
+  if ((ev.key === ' ' || ev.key === 'Enter') && active?.closest('#approach-view, #event-view, #rest-view, #map-view')) return;
   const s = store.state;
   if (!s || (s.phase !== 'map' && s.phase !== 'event' && s.phase !== 'rest' && s.phase !== 'combat')) return;
   const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
@@ -60,9 +62,9 @@ window.addEventListener('keydown', (ev) => {
     send('step', dir[0], dir[1]);
     return;
   }
-  if (/^[1-9]$/.test(key)) {
+  if (/^[0-9]$/.test(key)) {
     const m = me();
-    const skill = m && hotbar(m)[Number(key) - 1]; // keys follow the hotbar: attacks, cantrips, spells, potion
+    const skill = m && hotbar(m)[(Number(key) + 9) % 10]; // keys follow the hotbar: attacks, cantrips, spells, Shove, potion. 1-9, then 0 for the 10th
     if (skill) useSkill(skill);
     return;
   }

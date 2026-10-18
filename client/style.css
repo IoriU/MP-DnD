@@ -193,6 +193,11 @@ button.tag.lvl:hover { background: var(--accent-2); }
   font-size: 12px;
   white-space: nowrap;
 }
+/* Advantage preview lines in the tooltip: green = advantage, red = disadvantage. */
+.tip-adv { font-weight: 600; }
+.tip-adv.up { color: var(--good); }
+.tip-adv.down { color: #ff8c7a; }
+.tip-adv.even { color: var(--muted); }
 #target-hint {
   position: absolute;
   top: 12px;
@@ -334,6 +339,7 @@ button.tag.lvl:hover { background: var(--accent-2); }
 .ability.kind-spell { border-left-color: #b58cff; }
 .ability.kind-basic { border-left-color: #c2b49c; }
 .ability.kind-item { border-left-color: #7ddc6f; }
+.ability.kind-action { border-left-color: #ffa24d; }
 .ability:hover { border-color: var(--accent); }
 .ability.selected { border-color: var(--accent); background: #3b2d12; }
 .ability.off { opacity: 0.5; }

@@ -59,6 +59,11 @@ export function isMyTurn(): boolean {
   return !!m && store.state?.phase === 'combat' && currentEntity()?.id === m.id;
 }
 
+/** Is the Sneak-or-Charge vote open? The room is on screen with the monsters placed, but no turn order yet. */
+export function inApproach(s: GameState | null = store.state): boolean {
+  return !!s && s.phase === 'combat' && s.vote?.kind === 'approach';
+}
+
 export function occupied(s: GameState, x: number, y: number, exceptId?: string): boolean {
   return s.entities.some((e) => e.x === x && e.y === y && e.id !== exceptId && !(e.kind === 'player' && e.dead));
 }
@@ -76,7 +81,14 @@ export function blockReason(id: SkillId): string | null {
   const s = store.state;
   const m = me();
   if (!s || !m) return 'Not in the game';
-  return skillBlockReason(m, id, s.phase === 'combat', s.turn, isMyTurn());
+  const reason = skillBlockReason(m, id, s.phase === 'combat', s.turn, isMyTurn());
+  if (reason) return reason;
+  // Hide can't be used with an enemy next to you. resolveAim knows, so the button greys out and says why.
+  if (s.phase === 'combat' && mySkillStats(m, id)?.stealth) {
+    const aim = aimAt(s, m, id, null);
+    if (typeof aim === 'string') return aim;
+  }
+  return null;
 }
 
 /** The stats of one of my skills at its current tier. */

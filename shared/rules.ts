@@ -107,6 +107,15 @@ export const statMod = (c: ClassId, stat: Stat) => CLASSES[c].mods[stat];
 export const saveDc = (c: ClassId, level: number) => 8 + profBonus(level) + CLASSES[c].mods[CLASSES[c].stat];
 export const BREATH_DC = 13;
 
+// ---------------------------------------------------------------- sneaking & surprise
+
+export const STEALTH_DC_BASE = 12; // + the sharpest monster's WIS
+export const AMBUSH_CHANCE = 0.1; // a regular fight (past the first rows) turns out to be an ambush
+/** A hero's Stealth: DEX, and Rogues add their proficiency. */
+export const stealthBonus = (p: { classId: ClassId; level: number }) => CLASSES[p.classId].mods.dex + (p.classId === 'rogue' ? profBonus(p.level) : 0);
+/** Group Stealth DC to sneak up on these monsters (by MONSTERS key). */
+export const stealthDc = (types: string[]) => STEALTH_DC_BASE + Math.max(0, ...types.map((t) => MONSTERS[t]?.wis ?? 0));
+
 // ---------------------------------------------------------------- XP & levels
 
 export const LEVEL_CAP = 12;

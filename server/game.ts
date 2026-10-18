@@ -10,6 +10,7 @@ import { canStep, dist, findPath, hasLOS } from '../shared/grid.ts';
 import {
   ACTS,
   ACT_ROWS,
+  AMBUSH_CHANCE,
   BREATH_DC,
   CLASSES,
   CLASS_IDS,
@@ -36,6 +37,8 @@ import {
   scaledHp,
   sneakDice,
   statMod,
+  stealthBonus,
+  stealthDc,
   type Dice,
 } from '../shared/rules.ts';
 import {
@@ -83,9 +86,10 @@ import type {
   RunInfo,
   TurnState,
 } from '../shared/types.ts';
+import { attackAdvantage, canReact, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import { generateActMap } from './actmap.ts';
 import { getEvent, pickEvent, type CheckResult, type EventDef, type EventEffect, type EventStat } from './events.ts';
-import { autoEventChoice, autoLevelPick, autoPathChoice, autoRestPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
+import { autoApproachChoice, autoEventChoice, autoLevelPick, autoPathChoice, autoRestPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
 import { applyLevelUps, applyPick, killShares, makeOffer, recalcHero, startingSkills, upgrade, validRestPick } from './progression.ts';
 import { pick, randInt, rng } from './rng.ts';
 import { generateRoom } from './room.ts';
@@ -116,7 +120,7 @@ interface Walk {
 }
 
 interface Vote {
-  kind: 'path' | 'event';
+  kind: 'path' | 'event' | 'approach';
   options: string[];
   votes: Record<string, string>;
   deadline: number | null;
@@ -155,6 +159,7 @@ export class Game {
   private restPicks: Record<string, RestPick> | null = null; // the open rest site, if any
   private restDeadline: number | null = null;
   private restTimer: ReturnType<typeof setTimeout> | null = null;
+  private approachDc: number | null = null; // the Sneak-or-Charge vote before a fight
   private heroTurnToken = -1; // the turn an auto hero is currently playing
   private event: EventDef | null = null;
   private seenEvents: string[] = [];
@@ -395,6 +400,7 @@ export class Game {
     this.vote = null;
     this.restPicks = null;
     this.restDeadline = null;
+    this.approachDc = null;
   }
 
   private makePlayer(info: PlayerInfo, level: number): PlayerEntity {
@@ -404,6 +410,7 @@ export class Game {
       x: 0, y: 0, level, xp: 0, skills: startingSkills(info.classId), levelUps: 0, offer: null,
       hp: 0, maxHp: 0, ac: c.ac, speed: c.speed, bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0,
       potions: 2, kills: 0, steals: 0, slots: 0, maxSlots: 0, downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [], statuses: [],
+      facing: { x: 1, y: 0 },
     };
     recalcHero(p); // fills HP and slots for the level
     return p;
@@ -429,6 +436,7 @@ export class Game {
       color: info.color,
       x: 0,
       y: 0,
+      facing: { x: 1, y: 0 },
       skills: (saved.skills ?? base.skills).filter((s) => isSkillId(s.id)).map((s) => ({ ...s, cd: 0 })),
       statuses: [],
       tempHp: 0,
@@ -560,7 +568,9 @@ export class Game {
         const choice =
           vote.kind === 'path'
             ? autoPathChoice(vote.options.map((id) => ({ id, type: this.node(id)?.type ?? 'combat' })), heroes)
-            : autoEventChoice(vote.options, heroes);
+            : vote.kind === 'approach'
+              ? autoApproachChoice(heroes, this.approachDc ?? 99)
+              : autoEventChoice(vote.options, heroes);
         this.handleVote(p.id, choice);
       }
       if (this.vote === vote) this.resolveVote();
@@ -615,6 +625,7 @@ export class Game {
     if (winners.length > 1) this.addLog('system', '🎲 The vote is tied, so the dice decide.');
     const winner = pick(winners);
     if (v.kind === 'path') this.enterNode(winner);
+    else if (v.kind === 'approach') this.resolveApproach(winner);
     else this.chooseEventOption(winner);
     this.broadcast();
   }
@@ -634,7 +645,9 @@ export class Game {
       case 'elite':
       case 'boss': {
         const fight = this.encounterFor(node);
-        this.startRoom(node.type, fight.monsters, fight.name);
+        // Regular fights past the first rows are sometimes ambushes; bosses are expecting you.
+        const ambush = node.type === 'combat' && node.row >= 2 && rng.chance(AMBUSH_CHANCE);
+        this.startRoom(node.type, fight.monsters, fight.name, node.type === 'boss' ? 'charge' : ambush ? 'ambush' : 'vote');
         break;
       }
       case 'rest':
@@ -947,7 +960,11 @@ export class Game {
 
   // ------------------------------------------------------------ rooms
 
-  private startRoom(kind: NodeType, monsters: string[], name: string) {
+  /**
+   * Builds the room and starts the fight. 'vote': the party first votes Sneak or Charge;
+   * 'ambush': the heroes start surprised; 'charge': a straight fight.
+   */
+  private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge') {
     this.dispose();
     const layout = generateRoom(kind);
     this.width = layout.width;
@@ -972,9 +989,64 @@ export class Game {
     const counted = [...new Set(names)].map((n) => `${n}${names.filter((x) => x === n).length > 1 ? ` ×${names.filter((x) => x === n).length}` : ''}`);
     const icon = kind === 'boss' ? '👑' : kind === 'elite' ? '💀' : '⚔️';
     this.addLog('system', `${icon} ${name}: ${counted.join(', ')}!`);
+    // Each side starts out looking at the other.
+    const centre = (es: Entity[]) => ({ x: es.reduce((a, e) => a + e.x, 0) / es.length, y: es.reduce((a, e) => a + e.y, 0) / es.length });
+    const foes = centre(this.monsters());
+    const party = centre(heroes);
+    for (const h of heroes) this.face(h, foes);
+    for (const m of this.monsters()) this.face(m, party);
     this.phase = 'combat';
+    if (start === 'vote') {
+      this.approachDc = stealthDc(this.monsters().map((m) => m.type));
+      this.addLog('system', `🤫 Sneak up on them (group Stealth vs DC ${this.approachDc}) or charge in?`);
+      this.openVote('approach', ['sneak', 'charge']);
+    } else {
+      if (start === 'ambush') {
+        this.addLog('crit', '⚠️ Ambush! They were waiting for you.');
+        for (const h of heroes) this.applyStatus(h, { id: 'surprised', turns: 1 });
+      } else if (kind === 'boss') {
+        this.addLog('info', `The ${name} has been expecting you.`);
+      }
+      this.startCombat();
+    }
+    this.broadcast();
+  }
+
+  /** The Sneak-or-Charge vote is in: roll the group Stealth check if sneaking, then start the fight. */
+  private resolveApproach(choice: string) {
+    const dc = this.approachDc;
+    this.approachDc = null;
+    if (this.phase !== 'combat' || this.turn || dc === null) return;
+    if (choice === 'sneak') {
+      const heroes = this.heroes().filter((h) => this.standing(h));
+      let passed = 0;
+      const rolls = heroes.map((h) => {
+        const d20 = rollDie(20);
+        const bonus = stealthBonus(h);
+        const ok = d20 + bonus >= dc;
+        if (ok) passed++;
+        return `${h.name} 🎲${d20}${fmtMod(bonus)}=${d20 + bonus} ${ok ? '✓' : '✗'}`;
+      });
+      const success = passed * 2 >= heroes.length;
+      this.addLog(success ? 'crit' : 'miss', `🤫 Sneaking in (DC ${dc}): ${rolls.join(' · ')}. ${success ? 'They never saw you coming!' : "You've been spotted!"}`);
+      const caught = success ? this.monsters() : heroes;
+      for (const e of caught) this.applyStatus(e, { id: 'surprised', turns: 1 });
+    } else {
+      this.addLog('info', '⚔️ The party charges in!');
+    }
     this.startCombat();
     this.broadcast();
+  }
+
+  /** Enemies next to a creature that just stepped there turn to face it (shared/tactics.ts: turnsToFace). */
+  private watch(mover: Entity) {
+    for (const e of this.entities) if (turnsToFace(e, mover, mover)) this.face(e, mover);
+  }
+
+  /** Turns a creature toward a spot (8-way). Facing never becomes 0,0. */
+  private face(e: Entity, to: Pos) {
+    const d = dirTo(e, { x: Math.round(to.x), y: Math.round(to.y) });
+    if (d.x || d.y) e.facing = d;
   }
 
   private spawnMonster(type: string, pos: Pos, partySize: number) {
@@ -984,7 +1056,7 @@ export class Game {
     const hp = boss || elite ? scaledHp(def.hp, partySize, boss) : def.hp;
     this.entities.push({
       id: this.newId(), kind: 'monster', type, name: def.name, glyph: def.glyph, x: pos.x, y: pos.y,
-      hp, maxHp: hp, ac: def.ac, speed: def.speed, boss, elite, statuses: [], dmgBy: {},
+      hp, maxHp: hp, ac: def.ac, speed: def.speed, boss, elite, statuses: [], dmgBy: {}, facing: { x: -1, y: 0 },
     });
   }
 
@@ -1047,8 +1119,10 @@ export class Game {
     const dy = next.y - p.y;
     if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1 || !canStep(this, p, dx, dy) || this.occupied(next.x, next.y, p.id)) return false;
     this.turn.movesLeft--;
+    p.facing = { x: dx, y: dy };
     p.x = next.x;
     p.y = next.y;
+    this.watch(p);
     this.broadcast();
     return true;
   }
@@ -1063,7 +1137,7 @@ export class Game {
   /** Fresh start for every fight: cooldowns ready, no leftover statuses, once-per-fight effects back. */
   private prepareForFight(p: PlayerEntity) {
     for (const s of p.skills) s.cd = 0;
-    p.statuses = [];
+    p.statuses = p.statuses.filter((s) => s.id === 'surprised'); // an ambush or a failed sneak still counts
     p.used = [];
     p.tempHp = passiveOf(p, 'arcane_ward')?.value ?? 0;
     if (hasBranch(p, 'slippery', 'B') || hasBranch(p, 'alert', 'B')) p.statuses.push({ id: 'focused', turns: 99 });
@@ -1130,6 +1204,10 @@ export class Game {
       if (e.downed) this.later(token, 1000, () => this.advanceTurn());
       // A great death save gets them back up mid-turn: auto heroes still need someone to play it.
       else if (!e.dead && this.isAuto(e.playerId)) this.runHero(e, token);
+    } else if (hasStatus(e, 'surprised')) {
+      this.addLog('info', `😱 ${e.name} is caught by surprise and loses the turn.`);
+      this.float(e, 'surprised!', '#ffd84d');
+      this.later(token, 900, () => this.advanceTurn());
     } else if (hasStatus(e, 'stunned')) {
       this.addLog('info', `💫 ${e.name} is stunned and loses the turn.`);
       this.float(e, 'stunned', '#ffd84d');
@@ -1334,11 +1412,10 @@ export class Game {
     // Taunted monsters go for whoever taunted them.
     const taunt = m.statuses.find((s) => s.id === 'taunted');
     const taunter = this.heroes().find((p) => p.id === taunt?.by && this.standing(p));
-    const target =
-      taunter ??
-      this.heroes()
-        .filter((p) => this.standing(p))
-        .sort((a, b) => dist(a, m) - dist(b, m) || a.hp - b.hp)[0];
+    // Hidden heroes are ignored while anyone else is in the open.
+    const standing = this.heroes().filter((p) => this.standing(p));
+    const visible = standing.filter((p) => !hasStatus(p, 'hidden'));
+    const target = taunter ?? (visible.length ? visible : standing).sort((a, b) => dist(a, m) - dist(b, m) || a.hp - b.hp)[0];
     if (!target) return this.advanceTurn();
 
     if (!canHit(m, target)) {
@@ -1353,8 +1430,10 @@ export class Game {
         const stopped = this.provokeSentinels(m, step);
         if (!this.entities.includes(m)) return diedMidTurn();
         if (stopped) break;
+        this.face(m, step);
         m.x = step.x;
         m.y = step.y;
+        this.watch(m);
         this.broadcast();
         await sleep(MONSTER_STEP_MS);
         if (!ok()) return;
@@ -1365,7 +1444,7 @@ export class Game {
       const victim =
         this.standing(target) && canHit(m, target) && !(taunter && target !== taunter)
           ? target
-          : this.heroes().find((p) => this.standing(p) && canHit(m, p));
+          : (visible.find((p) => this.standing(p) && canHit(m, p)) ?? this.heroes().find((p) => this.standing(p) && canHit(m, p)));
       if (!victim) break;
       this.monsterAttack(m, victim);
       this.broadcast();
@@ -1382,7 +1461,7 @@ export class Game {
     const def = MONSTERS[m.type];
     let target = victim;
     const guard = this.heroes().find(
-      (h) => h !== victim && this.standing(h) && hasBranch(h, 'sentinel', 'A') && dist(h, victim) <= 1 && !h.used.includes('round:bodyguard'),
+      (h) => h !== victim && this.standing(h) && !hasStatus(h, 'surprised') && hasBranch(h, 'sentinel', 'A') && dist(h, victim) <= 1 && !h.used.includes('round:bodyguard'),
     );
     if (guard) {
       guard.used.push('round:bodyguard');
@@ -1390,7 +1469,7 @@ export class Game {
       target = guard;
     }
     const hit = this.attackRoll(m, target, { bonus: def.atk, dmg: def.dmg, verb: def.verb, element: def.element ?? 'physical' });
-    if (!hit && hasStatus(target, 'riposte') && this.standing(target) && dist(m, target) <= 1 && this.entities.includes(m)) {
+    if (!hit && hasStatus(target, 'riposte') && !hasStatus(target, 'surprised') && this.standing(target) && dist(m, target) <= 1 && this.entities.includes(m)) {
       this.addLog('info', `🤺 ${target.name} ripostes!`);
       this.freeStrike(target, m, 'Riposte');
     }
@@ -1400,7 +1479,7 @@ export class Game {
   private provokeSentinels(m: MonsterEntity, to: Pos): boolean {
     for (const h of this.heroes()) {
       const sentinel = passiveOf(h, 'sentinel');
-      if (!sentinel || !this.standing(h) || h.used.includes('round:sentinel')) continue;
+      if (!sentinel || !this.standing(h) || hasStatus(h, 'surprised') || h.used.includes('round:sentinel')) continue;
       if (dist(h, m) > 1 || dist(h, to) <= 1) continue;
       h.used.push('round:sentinel');
       this.addLog('info', `👁️ ${h.name} punishes ${m.name} for leaving their reach!`);
@@ -1500,6 +1579,7 @@ export class Game {
     // Movement tricks first.
     if (s.teleport && res.main) this.teleportNextTo(p, res.main);
     if (s.pull) this.pullFoes(p, res.foes, s.pull);
+    if (s.target === 'enemy' || s.target === 'area') this.face(p, res.center);
     if (s.target === 'area' || s.target === 'around') {
       this.fx.push({ kind: 'burst', x: res.center.x, y: res.center.y, radius: s.radius ?? 1, color });
     }
@@ -1510,6 +1590,7 @@ export class Game {
       let landed = false;
       if (!s.roll) landed = true;
       else if (s.roll === 'auto') landed = this.autoHit(p, f, s, name, color);
+      else if (s.roll === 'contest') landed = this.contestHit(p, f, s, name);
       else {
         for (let i = 0; i < hitsOf(p, s) && this.entities.includes(f); i++) {
           const hit = s.roll === 'save' ? this.saveHit(p, f, s, name, color) : this.weaponHit(p, f, s, name, color, basic);
@@ -1518,7 +1599,7 @@ export class Game {
       }
       if (!landed || !this.entities.includes(f)) continue;
       for (const st of s.onHit ?? []) this.applyStatus(f, st, p);
-      if (s.push) this.push(f, s.target === 'area' && (f.x !== res.center.x || f.y !== res.center.y) ? res.center : p, s.push);
+      if (s.push && s.roll !== 'contest') this.push(f, s.target === 'area' && (f.x !== res.center.x || f.y !== res.center.y) ? res.center : p, s.push);
     }
 
     // Friends: heals, temporary HP, cleansing and buffs.
@@ -1555,6 +1636,8 @@ export class Game {
       }
     }
     if (s.resetCooldowns) for (const o of p.skills) if (o !== own) o.cd = 0;
+    // Any move against the enemy gives a hidden hero away.
+    if (s.target === 'enemy' || s.target === 'area' || s.target === 'around') p.statuses = p.statuses.filter((x) => x.id !== 'hidden');
   }
 
   /** An attack-roll skill against one foe. */
@@ -1594,6 +1677,25 @@ export class Game {
     this.addLog('hit', `${p.name}'s ${name}: ${hits} hit${hits > 1 ? 's' : ''} strike ${f.name} for ${total}${elementWord(s.element)}.`);
     this.damage(f, total, p, s.element ?? 'physical');
     if (this.entities.includes(f)) this.afterHit(p, f, s.element ?? 'physical', false);
+    return true;
+  }
+
+  /** Shove: your stat + proficiency against the target's best of STR and DEX. Win by 5+ and it flies further. */
+  private contestHit(p: PlayerEntity, f: MonsterEntity, s: SkillStats, name: string): boolean {
+    const def = MONSTERS[f.type];
+    const mine = rollDie(20);
+    const theirs = rollDie(20);
+    const bonus = attackBonus(p, s);
+    const resist = Math.max(def.str, def.dex);
+    const margin = mine + bonus - (theirs + resist);
+    const roll = `🎲${mine}${fmtMod(bonus)}=${mine + bonus} vs 🎲${theirs}${fmtMod(resist)}=${theirs + resist}`;
+    if (margin < 0) {
+      this.addLog('miss', `${p.name} tries to ${name.toLowerCase()} ${f.name} (${roll}) but it holds its ground.`);
+      this.float(f, 'holds', '#9aa0a6');
+      return false;
+    }
+    this.addLog('hit', `${p.name} ${name.toLowerCase()}s ${f.name} (${roll})!`);
+    this.push(f, p, (s.push ?? 1) + (margin >= 5 ? 1 : 0));
     return true;
   }
 
@@ -1665,6 +1767,10 @@ export class Game {
     if (!this.entities.includes(t)) return;
     if (t.kind === 'player' && (a.id === 'stunned' || a.id === 'dazed') && hasBranch(t, 'steady', 'A')) return; // Unshakable
     if (t.kind === 'player' && a.id === 'burning' && hasBranch(t, 'elemental_affinity', 'B')) return; // Attunement
+    if (t.kind === 'player' && a.id === 'surprised' && passiveOf(t, 'alert')) {
+      this.addLog('info', `⏰ ${t.name} is too alert to be caught off guard.`);
+      return;
+    }
     const turns = a.turns + (t.id === this.turnOwner ? 1 : 0);
     const have = t.statuses.find((x) => x.id === a.id);
     if (have) {
@@ -1700,14 +1806,20 @@ export class Game {
   /** Rolls an attack (advantage, crits, Sneak Attack, passives) and applies the damage. Returns true on a hit. */
   private attackRoll(a: Entity, t: Entity, o: AttackOpts): boolean {
     const hero = a.kind === 'player' ? a : null;
-    const focused = a.statuses.find((s) => s.id === 'focused');
-    if (focused) a.statuses = a.statuses.filter((s) => s !== focused); // spent on this attack
-    const adv = !!o.adv || !!focused || hasStatus(t, 'marked');
-    const dis = hasStatus(a, 'blinded');
+    // Advantage: the skill, hidden, focused, a marked target, flanking, or striking from behind (shared/tactics.ts).
+    const why = attackAdvantage(a, t, this.entities, !!o.adv);
+    const net = netAdvantage(why);
+    const adv = net > 0;
+    const dis = net < 0;
+    const hidden = a.statuses.find((s) => s.id === 'hidden');
+    // Focus and hiding are spent on this attack, and you turn to face what you're hitting.
+    a.statuses = a.statuses.filter((s) => s.id !== 'focused' && s.id !== 'hidden');
+    this.face(a, t);
     const r1 = rollDie(20);
     const r2 = rollDie(20);
-    let d20 = adv && !dis ? Math.max(r1, r2) : dis && !adv ? Math.min(r1, r2) : r1;
-    const rolled = adv !== dis ? `🎲${r1}|${r2}→${d20}` : `🎲${d20}`;
+    let d20 = adv ? Math.max(r1, r2) : dis ? Math.min(r1, r2) : r1;
+    const reasons = (adv ? why.adv : dis ? why.dis : []).filter((r) => r !== 'the skill');
+    const rolled = adv || dis ? `🎲${r1}|${r2}→${d20}${reasons.length ? ` (${reasons.join(', ')})` : ''}` : `🎲${d20}`;
     let reroll = '';
     if (d20 === 1 && hero && this.useLucky(hero)) {
       d20 = rollDie(20);
@@ -1724,6 +1836,7 @@ export class Game {
     if (!hit) {
       this.addLog('miss', `${what}: ${roll}, miss${d20 === 1 ? ' (natural 1!)' : ''}`);
       this.float(t, 'miss', '#9aa0a6');
+      if (dist(a, t) <= 1 && canReact(t)) this.face(t, a);
       return false;
     }
 
@@ -1731,7 +1844,7 @@ export class Game {
     const notes: string[] = [];
     if (hero && o.sneak && !hero.used.includes('turn:sneak')) {
       const flanked = this.heroes().some((h) => h !== hero && this.standing(h) && dist(h, t) <= 1);
-      if (flanked || (adv && !dis)) {
+      if (flanked || adv) {
         const sneak = rollDice({ n: sneakDice(hero.level), d: 6 }, crit);
         total += sneak;
         hero.used.push('turn:sneak');
@@ -1751,6 +1864,11 @@ export class Game {
         notes.push(`${holy} radiant`);
       }
     }
+    if (hidden?.power) {
+      const ambush = rollDice({ n: hidden.power, d: 6 }, crit);
+      total += ambush;
+      notes.push(`${ambush} from the shadows`);
+    }
     const favor = a.statuses.find((s) => s.id === 'blessed' && s.power);
     if (favor) {
       const holy = rollDice({ n: 1, d: 4 }, crit);
@@ -1761,6 +1879,7 @@ export class Game {
     this.addLog(crit ? 'crit' : 'hit', `${what}: ${roll}, ${crit ? 'CRITICAL HIT' : 'hit'} for ${total}${elementWord(o.element)}${notes.length ? ` (incl. ${notes.join(', ')})` : ''}`);
     this.damage(t, total, a, o.element);
     if (hero && this.entities.includes(t)) this.afterHit(hero, t, o.element, !!o.basic);
+    if (dist(a, t) <= 1 && this.entities.includes(t) && canReact(t)) this.face(t, a); // you turn toward whoever hit you
     return true;
   }
 
@@ -2044,6 +2163,7 @@ export class Game {
         picks: this.restPicks,
         endsInMs: this.restDeadline === null ? null : Math.max(0, this.restDeadline - Date.now()),
       },
+      approach: this.approachDc === null ? null : { dc: this.approachDc },
       notice: this.notice,
       roomKind: this.roomKind,
       width: this.width,

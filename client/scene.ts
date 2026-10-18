@@ -2,12 +2,13 @@
 // No image assets: tiles are drawn shapes and creatures are emoji, so you can swap in real art later.
 
 import Phaser from 'phaser';
-import { hasLOS, reachable } from '../shared/grid.ts';
-import { STATUSES, type SkillId } from '../shared/skills.ts';
-import type { Entity, Fx, GameState, PlayerEntity, Pos } from '../shared/types.ts';
+import { dist, hasLOS, reachable } from '../shared/grid.ts';
+import { STATUSES, hasStatus, type SkillId } from '../shared/skills.ts';
+import { advantageText, attackAdvantage, dirTo, isBehind, isFlanking, netAdvantage, turnsToFace, type AdvantageInfo } from '../shared/tactics.ts';
+import type { Entity, Fx, GameState, MonsterEntity, PlayerEntity, Pos } from '../shared/types.ts';
 import { send } from './net.ts';
 import {
-  aimAt, attackProblem, bestAttack, currentEntity, isMyTurn, me, mySkillStats, occupied, onFx, select, store, subscribe, validTarget,
+  aimAt, attackProblem, bestAttack, currentEntity, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, select, store, subscribe, validTarget,
 } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
@@ -33,11 +34,20 @@ const hash = (x: number, y: number) => {
 interface Sprite {
   c: Phaser.GameObjects.Container;
   ring: Phaser.GameObjects.Graphics;
+  face: Phaser.GameObjects.Graphics; // the facing arrow on the ring
   glyph: Phaser.GameObjects.Text;
   bar: Phaser.GameObjects.Graphics;
   tags: Phaser.GameObjects.Text; // status icons
   tagBg: Phaser.GameObjects.Graphics;
   key: string;
+}
+
+/** "⬆️ advantage (flanking)" in green, "⬇️ disadvantage (blinded)" in red; '' for a straight roll. */
+function advantageLine(a: AdvantageInfo): string {
+  const net = netAdvantage(a);
+  if (net) return `<span class="tip-adv ${net > 0 ? 'up' : 'down'}">${net > 0 ? '⬆️' : '⬇️'} ${esc(advantageText(a))}</span>`;
+  if (a.adv.length) return `<span class="tip-adv even">⚖️ ${esc(advantageText(a))} (${esc(a.adv.join(', '))} vs ${esc(a.dis.join(', '))})</span>`;
+  return '';
 }
 
 class DungeonScene extends Phaser.Scene {
@@ -48,6 +58,10 @@ class DungeonScene extends Phaser.Scene {
   private sprites = new Map<string, Sprite>();
   private tiles = '';
   private hover: Pos | null = null;
+  private pointer: Pos | null = null; // mouse position over the canvas in screen pixels, so the tooltip can refresh when the state changes
+  private spots = new Map<number, string[]>(); // reachable tiles that would give advantage (tile index -> "Goblin: from behind")
+  private inset = 0; // pixels at the top of the canvas covered by the Sneak-or-Charge card; the room is fitted below it
+  private userCam = false; // the player panned or zoomed, so leave the camera alone
 
   constructor() {
     super('dungeon');
@@ -65,21 +79,27 @@ class DungeonScene extends Phaser.Scene {
       if (!p.rightButtonDown()) return this.onHover(p);
       // Right-drag pans the camera.
       const cam = this.cameras.main;
+      this.userCam = true;
       cam.scrollX -= (p.x - p.prevPosition.x) / cam.zoom;
       cam.scrollY -= (p.y - p.prevPosition.y) / cam.zoom;
     });
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.onClick(p));
     this.input.on('gameout', () => {
       this.hover = null;
+      this.pointer = null;
       this.drawCursor();
       $('#tooltip').hidden = true;
     });
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
       const cam = this.cameras.main;
+      this.userCam = true;
       cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), 0.5, 3));
     });
     this.scale.on('resize', () => {
-      if (store.state?.tiles) this.fitCamera(store.state);
+      const s = store.state;
+      if (!s?.tiles) return;
+      this.inset = this.insetFor(s);
+      this.fitCamera(s);
     });
 
     Object.assign(window, { delvers: { scene: this, store } }); // handy for debugging in the browser console
@@ -110,20 +130,29 @@ class DungeonScene extends Phaser.Scene {
       if (this.tiles) this.clearRoom();
       return;
     }
+    const inset = this.insetFor(s);
+    const insetChanged = inset !== this.inset;
+    this.inset = inset;
     if (s.tiles !== this.tiles) {
       this.drawMap(s);
       this.fitCamera(s);
+    } else if (insetChanged && !this.userCam) {
+      this.fitCamera(s, true); // the Sneak-or-Charge card came or went: slide the room into the free space
     }
     this.syncEntities(s);
     this.drawOverlay(s);
     this.drawCursor();
+    this.showTip();
   }
 
   private clearRoom() {
     this.tiles = '';
+    this.inset = 0;
+    this.spots.clear();
     this.mapG.clear();
     this.overlayG.clear();
     this.cursorG.clear();
+    $('#tooltip').hidden = true;
     for (const sp of this.sprites.values()) sp.c.destroy();
     this.sprites.clear();
   }
@@ -151,13 +180,28 @@ class DungeonScene extends Phaser.Scene {
     }
   }
 
-  /** Zooms so the whole room fits the canvas, and centers it. */
-  private fitCamera(s: GameState) {
+  /** How much of the canvas top the Sneak-or-Charge card covers (0 when it isn't up). */
+  private insetFor(s: GameState): number {
+    if (!inApproach(s)) return 0;
+    const card = document.querySelector<HTMLElement>('#approach-view .ap-card');
+    return card ? Math.min(card.offsetHeight + 24, this.cameras.main.height * 0.5) : 0;
+  }
+
+  /** Zooms so the whole room fits the canvas (below the approach card, if it's up), and centers it. */
+  private fitCamera(s: GameState, animate = false) {
     const cam = this.cameras.main;
     const w = s.width * T;
     const h = s.height * T;
-    cam.setZoom(Phaser.Math.Clamp(Math.min(cam.width / w, cam.height / h) * 0.94, 0.5, 2.5));
-    cam.centerOn(w / 2, h / 2);
+    const zoom = Phaser.Math.Clamp(Math.min(cam.width / w, Math.max(80, cam.height - this.inset) / h) * 0.94, 0.5, 2.5);
+    const cy = h / 2 - this.inset / (2 * zoom); // shifts the room down by half the inset
+    this.userCam = false;
+    if (animate) {
+      cam.zoomTo(zoom, 350, 'Sine.easeInOut', true);
+      cam.pan(w / 2, cy, 350, 'Sine.easeInOut', true);
+    } else {
+      cam.setZoom(zoom);
+      cam.centerOn(w / 2, cy);
+    }
   }
 
   private syncEntities(s: GameState) {
@@ -188,13 +232,14 @@ class DungeonScene extends Phaser.Scene {
 
   private makeSprite(e: Entity): Sprite {
     const ring = this.add.graphics();
+    const face = this.add.graphics();
     const big = e.kind === 'monster' && (e.boss || e.elite);
     const glyph = this.add.text(0, -1, e.glyph, { fontFamily: EMOJI_FONT, fontSize: big ? '26px' : '19px', resolution: 2 }).setOrigin(0.5);
     const bar = this.add.graphics();
     const tagBg = this.add.graphics();
     const tags = this.add.text(0, 0, '', { fontFamily: EMOJI_FONT, fontSize: '9px', resolution: 2 }).setOrigin(0.5, 0);
-    const c = this.add.container(0, 0, [ring, glyph, bar, tagBg, tags]).setDepth(e.kind === 'player' ? 11 : 10);
-    return { c, ring, glyph, bar, tags, tagBg, key: '' };
+    const c = this.add.container(0, 0, [ring, face, glyph, bar, tagBg, tags]).setDepth(e.kind === 'player' ? 11 : 10);
+    return { c, ring, face, glyph, bar, tags, tagBg, key: '' };
   }
 
   private styleSprite(sp: Sprite, e: Entity) {
@@ -202,14 +247,28 @@ class DungeonScene extends Phaser.Scene {
     const down = e.kind === 'player' && e.downed;
     const temp = e.kind === 'player' ? e.tempHp : 0;
     const shown = dead ? [] : e.statuses.slice(0, MAX_TAGS);
-    const key = `${e.hp}/${e.maxHp}/${temp}/${dead}/${down}/${e.statuses.map((x) => x.id).join(',')}`;
+    const key = `${e.hp}/${e.maxHp}/${temp}/${dead}/${down}/${e.facing?.x},${e.facing?.y}/${e.statuses.map((x) => x.id).join(',')}`;
     if (sp.key === key) return;
     sp.key = key;
     const big = e.kind === 'monster' && (e.boss || e.elite);
     const r = big ? 19 : 14;
     const color = e.kind === 'player' ? hexColor(e.color) : big ? 0xe8b04a : 0xd94a3a;
     sp.ring.clear().fillStyle(0x000000, 0.55).fillCircle(0, 0, r).lineStyle(big ? 3 : 2, color, dead ? 0.3 : 1).strokeCircle(0, 0, r);
-    sp.glyph.setText(dead ? '🪦' : e.glyph).setAlpha(down ? 0.5 : 1).setAngle(down ? 90 : 0);
+    // Hidden heroes fade out. A small arrow on the ring shows which way the creature faces (attacks from behind have advantage).
+    sp.glyph.setText(dead ? '🪦' : e.glyph).setAlpha(down ? 0.5 : hasStatus(e, 'hidden') ? 0.55 : 1).setAngle(down ? 90 : 0);
+    sp.face.clear();
+    const f = e.facing;
+    if (!dead && !down && f && (f.x || f.y)) {
+      const len = Math.hypot(f.x, f.y);
+      const ux = f.x / len;
+      const uy = f.y / len;
+      const half = 5; // half the arrow's width
+      const bx = ux * (r - 1);
+      const by = uy * (r - 1);
+      sp.face.fillStyle(color, 1).lineStyle(1.5, 0x000000, 0.9);
+      const tri = [ux * (r + 7), uy * (r + 7), bx - uy * half, by + ux * half, bx + uy * half, by - ux * half] as const;
+      sp.face.fillTriangle(...tri).strokeTriangle(...tri);
+    }
     sp.bar.clear();
     if (!dead) {
       const w = r * 2 - 4;
@@ -258,6 +317,7 @@ class DungeonScene extends Phaser.Scene {
   /** Blue = where you can walk this turn. With a skill selected: its range, and the valid targets. */
   private drawOverlay(s: GameState) {
     const g = this.overlayG.clear();
+    this.spots.clear();
     const m = me();
     if (!m || s.phase !== 'combat') return;
     const sel = store.selected;
@@ -289,7 +349,34 @@ class DungeonScene extends Phaser.Scene {
         const x = idx % s.width;
         g.fillRect(x * T + 1, ((idx - x) / s.width) * T + 1, T - 2, T - 2);
       }
+      // Gold dots: standing here you'd attack a monster from behind or flank it. Hover a dotted tile to see who and why.
+      for (const [idx, steps] of reach) {
+        if (steps === 0) continue;
+        const x = idx % s.width;
+        const y = (idx - x) / s.width;
+        const why = this.spotReasons(s, m, x, y);
+        if (!why.length) continue;
+        this.spots.set(idx, why);
+        const cx = x * T + T / 2;
+        const cy = y * T + T / 2;
+        g.fillStyle(0xf6cf7a, 0.95).fillCircle(cx, cy, 3.5).lineStyle(1, 0x000000, 0.7).strokeCircle(cx, cy, 3.5);
+      }
     }
+  }
+
+  /** What a melee attack from this tile would get you: "Goblin: from behind, flanking", one entry per monster next to it. */
+  private spotReasons(s: GameState, m: PlayerEntity, x: number, y: number): string[] {
+    const out: string[] = [];
+    const there = { ...m, x, y }; // me, if I stood here
+    const moved = x !== m.x || y !== m.y;
+    for (const mon of s.entities) {
+      if (mon.kind !== 'monster' || dist(mon, there) !== 1) continue;
+      // Walking up to a monster makes it turn to face you (unless you're hidden), so only flanks survive the walk.
+      const looking = moved && turnsToFace(mon, m, there) ? { ...mon, facing: dirTo(mon, there) } : mon;
+      const why = [isBehind(looking, there) ? 'from behind' : '', isFlanking(there, mon, s.entities) ? 'flanking' : ''].filter(Boolean);
+      if (why.length) out.push(`${mon.name}: ${why.join(', ')}`);
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- input
@@ -305,32 +392,79 @@ class DungeonScene extends Phaser.Scene {
   }
 
   private onHover(p: Phaser.Input.Pointer) {
-    const s = store.state;
     this.hover = this.tileAt(p);
+    this.pointer = { x: p.x, y: p.y };
     this.drawCursor();
+    this.showTip();
+  }
+
+  /** The tooltip for whatever is under the mouse. Also redrawn when the state changes, so previews stay current. */
+  private showTip() {
     const tip = $('#tooltip');
-    const e = s?.tiles ? this.entityAt(s, this.hover) : undefined;
-    if (!e) {
+    const s = store.state;
+    const h = this.hover;
+    const p = this.pointer;
+    const inRoom = !!s?.tiles && !!h && h.x >= 0 && h.y >= 0 && h.x < s.width && h.y < s.height;
+    const e = inRoom ? this.entityAt(s!, h!) : undefined;
+    const lines = !inRoom || !p ? null : e ? this.entityTip(s!, e) : this.spotTip(s!, h!);
+    if (!lines || !p) {
       tip.hidden = true;
       return;
-    }
-    const tag = e.kind === 'monster' && e.boss ? ' <span class="tag">boss</span>' : e.kind === 'monster' && e.elite ? ' <span class="tag">elite</span>' : '';
-    const temp = e.kind === 'player' && e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '';
-    const lines = [`<b>${esc(e.name)}</b>${tag}`, `${e.hp} / ${e.maxHp} HP${temp} · AC ${e.ac}`];
-    if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name} ${x.turns}`).join(' · '));
-    const m = me();
-    if (e.kind === 'monster' && m && s?.phase === 'combat') {
-      const sel = store.selected;
-      const atk = sel ? null : bestAttack(s, m, e);
-      const use = sel
-        ? validTarget(s, m, e, sel) ? `Click to use ${mySkillStats(m, sel)?.name}` : ''
-        : atk ? `Click to attack (${mySkillStats(m, atk)?.name})` : attackProblem(m);
-      if (use) lines.push(`<span class="muted">${esc(use)}</span>`);
     }
     tip.innerHTML = lines.join('<br>');
     tip.style.left = `${p.x + 16}px`;
     tip.style.top = `${p.y + 16}px`;
     tip.hidden = false;
+  }
+
+  private entityTip(s: GameState, e: Entity): string[] {
+    const tag = e.kind === 'monster' && e.boss ? ' <span class="tag">boss</span>' : e.kind === 'monster' && e.elite ? ' <span class="tag">elite</span>' : '';
+    const temp = e.kind === 'player' && e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '';
+    const lines = [`<b>${esc(e.name)}</b>${tag}`, `${e.hp} / ${e.maxHp} HP${temp} · AC ${e.ac}`];
+    if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name} ${x.turns}`).join(' · '));
+    const m = me();
+    if (e.kind === 'monster' && m && s.phase === 'combat') {
+      const sel = store.selected;
+      const atk = sel ? null : bestAttack(s, m, e);
+      const adv = this.attackPreview(s, m, e);
+      if (adv) {
+        const line = advantageLine(adv);
+        if (line) lines.push(line);
+      }
+      // Already covered by the "from behind" reason when it's in the preview; otherwise (not your turn, or a skill that doesn't roll to hit) say it here.
+      if (isBehind(e, m) && !adv?.adv.includes('from behind')) lines.push('<span class="tip-adv up">🔙 facing away from you</span>');
+      const use = inApproach(s)
+        ? 'Choose Sneak or Charge first'
+        : sel
+          ? validTarget(s, m, e, sel) ? `Click to use ${mySkillStats(m, sel)?.name}` : ''
+          : atk ? `Click to attack (${mySkillStats(m, atk)?.name})` : attackProblem(m);
+      if (use) lines.push(`<span class="muted">${esc(use)}</span>`);
+    }
+    return lines;
+  }
+
+  /**
+   * Why my attack roll on this monster would have advantage or disadvantage: the selected skill if it rolls to hit and
+   * can reach it, else the basic attack a click would use. Null when nothing would be rolled (or it isn't my turn).
+   */
+  private attackPreview(s: GameState, m: PlayerEntity, e: MonsterEntity): AdvantageInfo | null {
+    if (!isMyTurn()) return null;
+    const sel = store.selected;
+    const id = sel ?? bestAttack(s, m, e);
+    const st = id && mySkillStats(m, id);
+    if (!id || !st || st.roll !== 'attack') return null;
+    if (sel) {
+      // Enemy skills aim at the monster, area skills at its tile, "around" skills hit everything next to me.
+      const aim = aimAt(s, m, sel, st.target === 'area' ? { x: e.x, y: e.y } : st.target === 'around' ? null : e.id);
+      if (typeof aim === 'string' || !aim.foes.some((f) => f.id === e.id)) return null;
+    }
+    return attackAdvantage(m, e, s.entities, !!st.adv);
+  }
+
+  /** The tooltip over a gold-dotted tile: which monsters you'd have advantage on from there. */
+  private spotTip(s: GameState, h: Pos): string[] | null {
+    const why = this.spots.get(h.y * s.width + h.x);
+    return why ? ['<b>🎯 Advantage from here</b>', ...why.map((w) => `<span class="tip-adv up">${esc(w)}</span>`)] : null;
   }
 
   private drawCursor() {
@@ -386,7 +520,7 @@ class DungeonScene extends Phaser.Scene {
     if (p.rightButtonDown()) return select(null);
     const s = store.state;
     const m = me();
-    if (!s || !m || s.phase !== 'combat') return;
+    if (!s || !m || s.phase !== 'combat' || inApproach(s)) return; // no moves before the first turn
     const t = this.tileAt(p);
     const target = this.entityAt(s, t);
 

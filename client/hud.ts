@@ -2,13 +2,13 @@
 
 import { CLASSES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
-  describeSkill, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
+  describeSkill, hasStatus, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
 } from '../shared/skills.ts';
 import type { GameState, LogLine, PlayerEntity, StatusInst } from '../shared/types.ts';
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
-import { aimAt, blockReason, currentEntity, isAuto, isMyTurn, me, mySkillStats, select, store, validTarget } from './store.ts';
+import { aimAt, blockReason, currentEntity, inApproach, isAuto, isMyTurn, me, mySkillStats, select, store, validTarget } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
 let lastLogId = -1;
@@ -108,6 +108,7 @@ function title(s: GameState): string {
     case 'rest':
       return '🔥 Rest site';
     case 'combat': {
+      if (inApproach(s)) return '🤫 Sneak or charge?';
       const label = s.roomKind === 'boss' ? '👑 Boss fight' : s.roomKind === 'elite' ? '💀 Elite fight' : '⚔️ Combat';
       return s.turn ? `${label}, round ${s.turn.round}` : label;
     }
@@ -142,7 +143,9 @@ export function renderHud(s: GameState) {
         if (!e) return '';
         const cls = [id === cur?.id ? 'current' : '', e.kind, e.kind === 'player' && e.playerId === store.playerId ? 'mine' : ''].join(' ');
         const auto = e.kind === 'player' && isAuto(s, e.playerId) ? ' 🤖' : '';
-        return `<span class="chip ${cls}" title="Initiative ${t.init[id] ?? '?'}">${e.glyph} ${esc(e.name)}${auto}</span>`;
+        const surprised = hasStatus(e, 'surprised') ? ` ${STATUSES.surprised.icon}` : ''; // loses its first turn
+        const tip = `Initiative ${t.init[id] ?? '?'}${surprised ? ' · Surprised: loses its first turn' : ''}`;
+        return `<span class="chip ${cls}" title="${tip}">${e.glyph} ${esc(e.name)}${auto}${surprised}</span>`;
       })
       .join('')}</div>`;
   }
@@ -175,7 +178,10 @@ export function renderHud(s: GameState) {
     const autoBtn = $('#auto-btn');
     autoBtn.classList.toggle('on', !!myInfo?.auto);
     autoBtn.innerHTML = `🤖 Auto: ${myInfo?.auto ? 'on' : 'off'} <kbd>P</kbd>`;
-    if (s.phase === 'combat' && s.turn && myTurn && myInfo?.auto) {
+    const approaching = inApproach(s);
+    if (approaching) {
+      eco.innerHTML = '<span class="muted">🤫 Vote Sneak or Charge (the card above the room). The fight starts when the vote is in.</span>';
+    } else if (s.phase === 'combat' && s.turn && myTurn && myInfo?.auto) {
       eco.innerHTML = '<span class="pill">🤖 Auto-play is taking your turn. Press P to take over.</span>';
     } else if (s.phase === 'combat' && s.turn) {
       eco.innerHTML = myTurn
@@ -185,11 +191,11 @@ export function renderHud(s: GameState) {
       const picks = m.levelUps > 0 ? ` <span class="pill lvl">⬆️ ${m.levelUps} level-up pick${m.levelUps > 1 ? 's' : ''} waiting</span>` : '';
       eco.innerHTML = `<span class="muted">Between rooms: drink a potion or use a heal (pick it, then click a friend's card). Slots come back at a Long Rest.</span>${picks}`;
     }
-    $('#end-turn').hidden = s.phase !== 'combat';
+    $('#end-turn').hidden = s.phase !== 'combat' || approaching;
     $<HTMLButtonElement>('#end-turn').disabled = !myTurn;
 
     const hint = $('#target-hint');
-    hint.hidden = !sel || s.phase !== 'combat';
+    hint.hidden = !sel || s.phase !== 'combat' || approaching;
     if (sel && selStats) {
       const own = ownedSkill(m, sel)!;
       const how =
@@ -225,11 +231,11 @@ function skillButton(m: PlayerEntity, id: SkillId, n: number): string {
   return `<button type="button" class="ability kind-${def.kind}${reason ? ' off' : ''}${store.selected === id ? ' selected' : ''}" data-skill="${id}" title="${esc(tip)}">
     <span class="ab-icon">${st.icon}${cd}</span>
     <span class="ab-main"><span class="aname">${esc(id === 'potion' ? 'Potion' : skillTitle(own))}</span><span class="ab-meta">${meta}</span></span>
-    ${n <= 9 ? `<span class="key">${n}</span>` : ''}
+    ${n <= 10 ? `<span class="key">${n % 10}</span>` : ''}
   </button>`;
 }
 
-/** Two rows (attacks + cantrips, spells + potion), the slot pips, and a row of passive icons. */
+/** Rows for attacks + cantrips, spells, and Shove + the potion (everyone has those), the slot pips, and a row of passive icons. */
 function hotbarHtml(m: PlayerEntity): string {
   const names = CLASSES[m.classId].names;
   const keys = hotbar(m);
@@ -250,7 +256,9 @@ function hotbarHtml(m: PlayerEntity): string {
     <div class="hb-row">${row(['basic', 'cantrip'])}</div>
     <div class="hb-label"><span>🔮 ${names.spell} ${count('spell')}</span>
       <span class="pips" title="${esc(`${names.slots}: ${m.slots} of ${m.maxSlots} left. A Long Rest restores them.`)}"><b>${names.slots}</b>${pips || '<span class="muted">none</span>'}</span></div>
-    <div class="hb-row">${row(['spell', 'item'])}</div>
+    ${keys.some((id) => SKILLS[id].kind === 'spell') ? `<div class="hb-row">${row(['spell'])}</div>` : ''}
+    <div class="hb-label"><span>🎒 Actions</span></div>
+    <div class="hb-row">${row(['action', 'item'])}</div>
     <div class="hb-label"><span>🔁 Passives ${count('passive')}</span></div>
     <div class="passives">${passives || '<span class="muted">none yet</span>'}</div>`;
 }

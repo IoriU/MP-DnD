@@ -55,6 +55,7 @@ export interface RunResult {
   killer: string | null; // the encounter that wiped the party
   heroes: { name: string; classId: string; level: number; kills: number; steals: number; hp: number; maxHp: number; skills: string[] }[];
   skillUses: Record<string, number>; // by skill name as it appears in the log
+  tactics: { sneakOk: number; sneakFail: number; charge: number; ambush: number; flanking: number; behind: number };
   picks: number; // level-up picks taken
   rests: { long: number; train: number };
   toasts: string[];
@@ -80,6 +81,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     nodes: Object.fromEntries(NODE_TYPES.map((t) => [t, 0])) as Record<NodeType, number>,
     fightsStarted: 0, fights: [], downs: [], deaths: [], killer: null, heroes: [], toasts: [], toastCount: 0, anomalies: [], log: [],
     skillUses: {}, picks: 0, rests: { long: 0, train: 0 },
+    tactics: { sneakOk: 0, sneakFail: 0, charge: 0, ambush: 0, flanking: 0, behind: 0 },
   };
   const socket = io(opts.url, { transports: ['websocket'], forceNew: true, reconnection: false });
   const box: { s: GameState | null } = { s: null };
@@ -131,6 +133,14 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       if (l.kind === 'level' && / (learns|upgrades|masters|gains|gets|stocks) /.test(l.text) && !/trains by the fire/.test(l.text)) r.picks++;
       if (/trains by the fire/.test(l.text)) r.rests.train++;
       if (/takes a Long Rest/.test(l.text)) r.rests.long++;
+      const t = r.tactics;
+      if (/never saw you coming/.test(l.text)) t.sneakOk++;
+      if (/You've been spotted/.test(l.text)) t.sneakFail++;
+      if (/The party charges in/.test(l.text)) t.charge++;
+      if (/Ambush!/.test(l.text)) t.ambush++;
+      if (/→\d+ \([^)]*flanking/.test(l.text)) t.flanking++;
+      if (/→\d+ \([^)]*from behind/.test(l.text)) t.behind++;
+      if (/ shoves | tries to shove /.test(l.text)) r.skillUses.Shove = (r.skillUses.Shove ?? 0) + 1;
       if (l.kind !== 'death') continue;
       const fell = /^\S+ (.+?) falls unconscious/.exec(l.text);
       if (fell) r.downs.push(classOf(s, fell[1]));
@@ -304,6 +314,11 @@ skills used (${uses.size} different):`);
   const long = results.reduce((a, r) => a + r.rests.long, 0);
   const train = results.reduce((a, r) => a + r.rests.train, 0);
   console.log(`level-up picks: ${picks}; rest choices: Long Rest ${long}, Train ${train}`);
+  const sum = (k: keyof RunResult['tactics']) => results.reduce((a, r) => a + r.tactics[k], 0);
+  console.log(
+    `approach: sneaked in ${sum('sneakOk')}, spotted ${sum('sneakFail')}, charged ${sum('charge')}, ambushed ${sum('ambush')}; ` +
+      `attacks with advantage from flanking ${sum('flanking')}, from behind ${sum('behind')}`,
+  );
   const last = results.filter((r) => r.heroes.length).at(-1);
   if (last) {
     console.log(`builds at the end of run ${last.code}:`);

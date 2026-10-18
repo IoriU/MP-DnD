@@ -312,9 +312,63 @@
 .rv-picks li { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
 .rv-pick { margin-left: auto; text-align: right; }
 
+/* ---------------------------------------------------------------- approach card (Sneak or Charge) */
+
+/* A compact card across the top of the canvas. The room stays visible and hoverable around it. */
+#approach-view {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 4; /* under the tooltip */
+  display: flex;
+  justify-content: center;
+  max-height: calc(100% - 24px);
+  pointer-events: none;
+}
+.ap-card {
+  pointer-events: auto;
+  width: min(480px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: #16120ff2;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px #000a;
+}
+.ap-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ap-title { margin: 0; font-size: 19px; color: var(--accent-2); overflow-wrap: anywhere; }
+.ap-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.ap-opt { display: grid; align-content: start; gap: 3px; padding: 9px 11px; }
+.ap-opt-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 20px; }
+.ap-odds { font-size: 12px; font-weight: 700; }
+.ap-check { font-size: 12px; color: var(--muted); }
+.ap-heroes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 3px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.ap-heroes li { display: flex; align-items: center; gap: 5px; min-width: 0; cursor: help; }
+.ap-heroes b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-pct { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ap-odds.good, .ap-pct.good { color: var(--good); }
+.ap-odds.warn, .ap-pct.warn { color: var(--warn); }
+.ap-odds.bad, .ap-pct.bad { color: #ff8c7a; }
+
 /* ---------------------------------------------------------------- small screens & motion */
 
 @media (max-width: 480px) {
+  #approach-view { top: 6px; left: 6px; right: 6px; max-height: calc(100% - 12px); }
+  .ap-card { gap: 6px; padding: 9px 10px; }
+  .ap-title { font-size: 16px; }
+  .ap-opt { padding: 7px 9px; }
   .rv-top { padding: 10px 12px 8px; }
   .rv-title { font-size: 16px; }
   .rv-notice { padding: 8px 10px; gap: 10px; }

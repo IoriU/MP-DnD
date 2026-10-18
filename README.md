@@ -51,6 +51,12 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - 🔮 **Spells** cost slots, which only come back with a Long Rest (or an act boss kill). Much stronger: save them for elites, bosses and emergencies.
   - 🔁 **Passives** are always on.
   - Each skill upgrades I → II → III, and tier III makes you choose one of two branches (Fire Bolt becomes *Inferno* or *Splitting Bolt*).
+- **Positioning:**
+  - Everyone faces the way they last moved or attacked; an arrow shows which way.
+  - Attacks from behind and flanking attacks (a friend directly across the target) have **advantage**. Hover a monster to see it before you attack.
+  - A monster turns to face whoever walks up to it or hits it in melee, so backstabs need teamwork: hit it from behind while it's busy with someone else, shoot it in the back, or Hide first.
+  - **Shove** (everyone, bonus action) knocks an enemy back.
+- **Sneak or Charge:** before most fights the party sees the room and votes. Sneaking is a group Stealth check: if at least half of you pass, the monsters lose their first turn; if not, you lose yours. Some fights are ambushes. The Rogue's **Hide** makes monsters ignore them and gives their next attack advantage.
 - **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Each level-up offers 3 cards (new skills, upgrades, passives, boons); pick one whenever you like, nobody has to wait.
 - **At 0 HP** you fall unconscious and roll death saves on your turn. Healing (a potion, Healing Word or Second Wind) gets you back up. If the party wins the fight, everyone gets back up, even the dead.
 - **Between rooms:** HP carries over. Drink potions, or heal a friend by picking a heal and clicking their party card.
@@ -87,6 +93,7 @@ To test multiplayer alone, open several browser tabs. Each new tab is a new play
 ```
 shared/rules.ts    classes, monsters, acts, dice, XP and balance numbers  ← start here to tweak the game
 shared/skills.ts   every skill and passive (tiers I/II/III-A/III-B), statuses, targeting, descriptions
+shared/tactics.ts  facing, back attacks, flanking: every reason a roll has advantage
 shared/grid.ts     line of sight, pathfinding
 shared/types.ts    the game state sent from server to clients
 server/game.ts     the "Dungeon Master": the run, voting, rooms, turns, combat, monster AI

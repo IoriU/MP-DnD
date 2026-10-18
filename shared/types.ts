@@ -30,6 +30,7 @@ interface EntityBase {
   ac: number;
   speed: number; // tiles per turn (1 tile = 5 ft)
   statuses: StatusInst[];
+  facing: Pos; // 8-way direction it looks: where it last moved or attacked (never 0,0). Attacks from behind have advantage.
 }
 
 /** A skill a hero knows. Tier 3 always has a branch. */
@@ -144,7 +145,7 @@ export interface RunInfo {
 }
 
 export interface VoteState {
-  kind: 'path' | 'event';
+  kind: 'path' | 'event' | 'approach'; // approach: 'sneak' or 'charge', before a fight starts
   options: string[]; // node ids or event choice ids that can be picked
   votes: Record<string, string>; // playerId -> option
   endsInMs: number | null; // countdown after the first vote, as of when the state was sent
@@ -197,6 +198,7 @@ export interface GameState {
   vote: VoteState | null;
   event: EventView | null;
   rest: RestState | null;
+  approach: { dc: number } | null; // the Sneak-or-Charge vote before a fight: the group Stealth DC
   notice: Notice | null; // result of the last rest/treasure/event, shown on the map
   roomKind: NodeType | null; // combat, elite or boss while a fight is on
   width: number; // current room; 0 when not in a room

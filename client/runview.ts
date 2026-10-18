@@ -1,7 +1,8 @@
-// The run screens over the canvas: the act map the party votes its path on, the ❓ event panel and the 🔥 rest site.
+// The run screens over the canvas: the act map the party votes its path on, the ❓ event panel, the 🔥 rest site,
+// and the 🤫 Sneak-or-Charge card that sits over the room before a fight.
 
 import './runview.css';
-import { CLASSES, NODE_INFO, REST_HEAL } from '../shared/rules.ts';
+import { CLASSES, NODE_INFO, REST_HEAL, stealthBonus } from '../shared/rules.ts';
 import { SKILLS, TIER_LABEL, describeSkill, ownedSkill, skillTitle, statsAt, trainOptions, type SkillId } from '../shared/skills.ts';
 import type { ActMap, EventView, GameState, MapNode, Notice, PlayerEntity, RestPick, RestState, RunInfo, VoteState } from '../shared/types.ts';
 import { send } from './net.ts';
@@ -41,6 +42,7 @@ type NodeState = 'visited' | 'current' | 'option' | 'ahead' | 'locked';
 let mapKey = '';
 let eventKey = '';
 let restKey = '';
+let approachKey = '';
 let scrollKey = ''; // act + position + options: a change means a new vote, so the options get scrolled into view
 let pendingScroll = false;
 let smoothScroll = false;
@@ -153,7 +155,7 @@ function updateCountdowns(selector: string, t: Timed | null | undefined) {
 }
 
 function tick() {
-  updateCountdowns('#map-view [data-countdown], #event-view [data-countdown]', store.state?.vote);
+  updateCountdowns('#map-view [data-countdown], #event-view [data-countdown], #approach-view [data-countdown]', store.state?.vote);
   updateCountdowns('#rest-view [data-countdown]', store.state?.rest);
   if (pendingScroll) scrollToFocus();
 }
@@ -197,6 +199,12 @@ export function initRunView(): void {
     if (b && !b.disabled && opt != null) castVote('event', opt);
   });
 
+  $('#approach-view').addEventListener('click', (e) => {
+    const b = (e.target as Element).closest<HTMLButtonElement>('button[data-vote]');
+    const opt = b?.getAttribute('data-vote');
+    if (b && !b.disabled && opt != null) castVote('approach', opt);
+  });
+
   $('#rest-view').addEventListener('click', (e) => {
     const b = (e.target as Element).closest<HTMLButtonElement>('button[data-rest]');
     if (b && !b.disabled) castRest(b);
@@ -235,6 +243,8 @@ export function renderRunView(s: GameState): void {
     restView.hidden = true;
     restKey = '';
   }
+
+  renderApproach($('#approach-view'), s);
 }
 
 /** Remembers which vote button had keyboard focus, so a rebuild doesn't drop it. */
@@ -644,5 +654,124 @@ function restHtml(s: GameState, rest: RestState, m: PlayerEntity | undefined): s
       <span class="rv-sub"><span class="rv-status${m && !mine ? ' go' : ''}">${m && !mine ? 'Pick how to rest' : 'Waiting for the party…'}</span><span class="rv-progress">${decided}/${total} decided</span></span>
       <span class="rv-stats">${timerHtml(rest, 'Time left. Anyone undecided takes a Long Rest.')}${s.run ? `<span class="rv-pill gold" title="Party gold">💰 ${s.run.gold}</span>` : ''}</span>
     </div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------- approach: Sneak or Charge
+
+/** One hero's chance to beat the group Stealth DC: d20 + bonus >= dc. */
+const stealthChance = (bonus: number, dc: number) => Math.min(0.95, Math.max(0.05, (21 + bonus - dc) / 20));
+
+/** The chance that at least `need` of the heroes pass, each with a chance of their own (a Poisson binomial). */
+function groupChance(chances: number[], need: number): number {
+  let exactly = [1]; // exactly[k]: the chance that k of the heroes counted so far passed
+  for (const p of chances) {
+    const next = new Array<number>(exactly.length + 1).fill(0);
+    exactly.forEach((q, k) => {
+      next[k] += q * (1 - p);
+      next[k + 1] += q * p;
+    });
+    exactly = next;
+  }
+  return exactly.slice(need).reduce((a, b) => a + b, 0);
+}
+
+const pct = (p: number) => `${Math.round(p * 100)}%`;
+const tone = (p: number) => (p >= 0.65 ? 'good' : p >= 0.35 ? 'warn' : 'bad');
+const signed = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+const hasAlert = (h: PlayerEntity) => h.skills.some((o) => o.id === 'alert');
+
+function renderApproach(view: HTMLElement, s: GameState) {
+  const vote = s.vote?.kind === 'approach' ? s.vote : null;
+  if (s.phase !== 'combat' || !vote || !s.approach) {
+    view.hidden = true;
+    approachKey = '';
+    return;
+  }
+  view.hidden = false;
+  const heroes = s.entities.filter((e): e is PlayerEntity => e.kind === 'player' && !e.dead && !e.downed); // the ones who roll
+  const key = JSON.stringify([
+    store.playerId,
+    s.approach.dc,
+    vote.options,
+    vote.votes,
+    vote.endsInMs === null,
+    heroes.map((h) => [h.id, h.name, h.color, h.classId, h.level, hasAlert(h)]),
+    s.players.map((p) => [p.id, p.name, p.color, p.connected, p.auto, p.bot]),
+  ]);
+  if (key === approachKey) return;
+  approachKey = key;
+  const focused = focusedVote(view);
+  const top = view.querySelector('.ap-card')?.scrollTop ?? 0;
+  view.innerHTML = approachHtml(s, vote, s.approach.dc, heroes);
+  const card = view.querySelector('.ap-card');
+  if (card) card.scrollTop = top;
+  refocus(view, focused);
+}
+
+function approachHtml(s: GameState, vote: VoteState, dc: number, heroes: PlayerEntity[]): string {
+  const voters = votersByOption(s, vote);
+  const mine = myVote(vote);
+  const chances = heroes.map((h) => stealthChance(stealthBonus(h), dc));
+  const need = Math.ceil(heroes.length / 2);
+  const group = heroes.length ? groupChance(chances, need) : 0;
+
+  // Auto-play follows the humans, so only they count toward "voted".
+  const humans = s.players.filter((p) => p.connected && !p.bot && !p.auto);
+  const pool = humans.length ? humans : s.players.filter((p) => p.connected);
+  const waiting = pool.filter((p) => vote.votes[p.id] === undefined).map((p) => p.name);
+  const waitTip = waiting.length ? ` title="${esc(`Waiting for ${waiting.join(', ')}`)}"` : '';
+  const progress = `<span class="rv-progress"${waitTip}>${pool.length - waiting.length}/${pool.length} voted</span>`;
+  const iFollow = humans.length > 0 && !humans.some((p) => p.id === store.playerId);
+  const status =
+    mine !== undefined
+      ? '<span class="rv-status">Waiting for the party…</span>'
+      : iFollow
+        ? '<span class="rv-status">🤖 Auto-play follows the humans (you can still vote).</span>'
+        : '<span class="rv-status go">Vote on how to start the fight</span>';
+
+  const option = (id: string, label: string, body: string) => {
+    const isMine = mine === id;
+    const dots = (voters.get(id) ?? [])
+      .map((v) => `<span class="rv-dot${v.me ? ' me' : ''}" style="background:${esc(v.color)}" title="${esc(v.me ? `${v.name} (you)` : v.name)}"></span>`)
+      .join('');
+    return `<button type="button" class="rv-choice ap-opt${isMine ? ' mine' : ''}" data-vote="${id}" aria-pressed="${isMine}">
+      <span class="ap-opt-head"><span class="rv-choice-label">${label}</span><span class="rv-voters">${isMine ? '<span class="rv-mine-tag">Your vote</span>' : ''}${dots}</span></span>
+      ${body}
+    </button>`;
+  };
+
+  const rows = heroes
+    .map((h, i) => {
+      const bonus = stealthBonus(h);
+      const alert = hasAlert(h);
+      const tip = `${h.name}: d20 ${signed(bonus)} against DC ${dc}, so a ${Math.max(1, dc - bonus)} or higher passes (${pct(chances[i])})${
+        alert ? "\nAlert: can't be surprised, even if the party is spotted." : ''
+      }`;
+      const alertTag = alert ? `<span>${SKILLS.alert.base.icon}</span>` : '';
+      return `<li title="${esc(tip)}"><span class="rv-dot" style="background:${esc(h.color)}"></span><b>${esc(h.name)}</b>${alertTag}<span class="muted">${signed(bonus)}</span><span class="ap-pct ${tone(chances[i])}">${pct(chances[i])}</span></li>`;
+    })
+    .join('');
+
+  const sneak = option(
+    'sneak',
+    '🤫 Sneak',
+    `<span class="rv-choice-hint">Group Stealth vs DC ${dc}; at least half the party must pass.</span>
+     <span class="rv-choice-hint">Success: they lose their first turn. Failure: you lose yours.</span>
+     ${heroes.length ? `<span class="ap-odds ${tone(group)}">${pct(group)} to succeed</span>` : ''}`,
+  );
+  const charge = option('charge', '⚔️ Charge', '<span class="rv-choice-hint">A normal start.</span>');
+  const check = heroes.length
+    ? `<div class="ap-check">🎲 Stealth: d20 + bonus vs DC ${dc}. Need ${need} of ${heroes.length} to pass.</div><ul class="ap-heroes">${rows}</ul>`
+    : '';
+
+  return `<div class="ap-card" role="dialog" aria-labelledby="ap-title">
+    <div class="ap-head">
+      <h2 id="ap-title" class="ap-title">🤫 Sneak or ⚔️ Charge?</h2>
+      <span class="rv-stats">${timerHtml(vote)}</span>
+    </div>
+    <div class="rv-sub">${status}${progress}</div>
+    <div class="ap-options">${sneak}${charge}</div>
+    ${check}
   </div>`;
 }

@@ -20,7 +20,9 @@ export type StatusId =
   | 'shielded'
   | 'blessed'
   | 'focused'
-  | 'riposte';
+  | 'riposte'
+  | 'hidden'
+  | 'surprised';
 
 export interface StatusDef {
   name: string;
@@ -46,6 +48,8 @@ export const STATUSES: Record<StatusId, StatusDef> = {
   blessed: { name: 'Blessed', icon: '🙏', good: true, desc: '+2 to attack rolls and saves. With power, hits also deal +1d4 radiant.' },
   focused: { name: 'Focused', icon: '👁️', good: true, desc: 'The next attack roll has advantage.' },
   riposte: { name: 'Riposte', icon: '🤺', good: true, desc: 'Strikes back when a melee attack misses it.' },
+  hidden: { name: 'Hidden', icon: '👤', good: true, desc: 'Enemies go for someone else if they can. The next attack has advantage and gives you away. With power, it also deals +power d6.' },
+  surprised: { name: 'Surprised', icon: '😱', good: false, desc: "Caught off guard: loses its first turn and can't react (no Sentinel, Riposte or Bodyguard)." },
 };
 
 export interface StatusApply {
@@ -56,7 +60,7 @@ export interface StatusApply {
 
 // ---------------------------------------------------------------- skill schema
 
-export type SkillKind = 'basic' | 'cantrip' | 'spell' | 'passive' | 'item';
+export type SkillKind = 'basic' | 'cantrip' | 'spell' | 'passive' | 'item' | 'action'; // action: everyone has it (Shove)
 export type Element = 'physical' | 'fire' | 'cold' | 'lightning' | 'poison' | 'radiant' | 'force';
 
 /**
@@ -91,7 +95,7 @@ export interface SkillStats {
   slots?: number; // spells: slot cost (default 1)
   stat?: Stat; // to-hit and damage stat; defaults to the class's casting stat
   // offense
-  roll?: 'attack' | 'save' | 'auto';
+  roll?: 'attack' | 'save' | 'auto' | 'contest'; // contest: your stat + proficiency vs its best of STR/DEX, no damage
   save?: 'dex' | 'str' | 'wis';
   half?: boolean; // a successful save still takes half damage
   dmg?: Dice;
@@ -108,6 +112,7 @@ export interface SkillStats {
   push?: number; // knock hit targets this many tiles away (from you, or from the area's center)
   pull?: number; // before hitting, drag enemies within this many tiles next to you
   teleport?: boolean;
+  stealth?: boolean; // can't be used with an enemy next to you (Hide)
   // support
   heal?: Dice;
   healMod?: boolean; // + casting stat modifier
@@ -154,6 +159,10 @@ const SKILL_DEFS = {
   // ---------------------------------------------- basic attacks (free, no tiers)
   longsword: { kind: 'basic', pool: 'fighter', base: { name: 'Longsword', icon: '⚔️', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, extraAttack: true } },
   rapier: { kind: 'basic', pool: 'rogue', base: { name: 'Rapier', icon: '🗡️', cost: 'action', target: 'enemy', range: 1, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true, sneak: true } },
+  shove: {
+    kind: 'action', pool: 'common',
+    base: { name: 'Shove', icon: '✋', cost: 'bonus', target: 'enemy', range: 1, stat: 'str', roll: 'contest', push: 1, note: 'Win by 5 or more and it flies 2 tiles.' },
+  },
   shortbow: { kind: 'basic', pool: 'rogue', base: { name: 'Shortbow', icon: '🏹', cost: 'action', target: 'enemy', range: 8, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true, sneak: true } },
   dagger: { kind: 'basic', pool: 'wizard', base: { name: 'Dagger', icon: '🔪', cost: 'action', target: 'enemy', range: 4, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, note: 'Stab, or throw it up to 4 tiles.' } },
   mace: { kind: 'basic', pool: 'cleric', base: { name: 'Mace', icon: '🔨', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 6), mod: true } },
@@ -227,6 +236,13 @@ const SKILL_DEFS = {
     t2: { cooldown: 2, range: 4 },
     a: { name: 'Mark for Death', selfStatus: undefined, onHit: [st('marked', 2)] },
     b: { name: 'Riposte', selfStatus: [st('focused', 1), st('riposte', 1)] },
+  },
+  hide: {
+    kind: 'cantrip', pool: 'rogue',
+    base: { name: 'Hide', icon: '👤', cost: 'bonus', target: 'self', range: 0, cooldown: 2, stealth: true, selfStatus: [st('hidden', 2)] },
+    t2: { cooldown: 1 },
+    a: { name: 'Shadow Strike', selfStatus: [st('hidden', 2, 2)] },
+    b: { name: 'Smoke and Mirrors', stealth: false },
   },
   throwing_knives: {
     kind: 'cantrip', pool: 'rogue',
@@ -382,10 +398,10 @@ const SKILL_DEFS = {
     { name: 'Colossus', value: 14, note: '+14 max HP.' },
     { name: 'Regeneration', value: 8, note: '+8 max HP, and regain 1 HP at the start of each of your turns.' }),
   alert: passive('common', '⏰', 'Alert',
-    { value: 3, note: '+3 initiative.' },
-    { value: 5, note: '+5 initiative.' },
-    { name: 'Quickstep', value: 5, note: '+5 initiative and +1 movement.' },
-    { name: 'First Strike', value: 5, note: '+5 initiative, and start every fight Focused (your first attack has advantage).' }),
+    { value: 3, note: "+3 initiative. You can't be surprised." },
+    { value: 5, note: "+5 initiative. You can't be surprised." },
+    { name: 'Quickstep', value: 5, note: "+5 initiative and +1 movement. You can't be surprised." },
+    { name: 'First Strike', value: 5, note: "+5 initiative, and start every fight Focused (your first attack has advantage). You can't be surprised." }),
   lucky: passive('common', '🍀', 'Lucky',
     { value: 1, note: 'Once per fight, reroll an attack that rolled a natural 1.' },
     { value: 2, note: 'Twice per fight, reroll an attack that rolled a natural 1.' },
@@ -436,9 +452,12 @@ export function skillTitle(o: Pick<OwnedSkill, 'id' | 'tier' | 'branch'>): strin
   return `${def.base.name} ${TIER_LABEL(o.tier)}`;
 }
 
-/** The hero's copy of a skill. The potion is something everyone carries. */
+/** Things every hero can do without learning them. */
+export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion'];
+
+/** The hero's copy of a skill. Shove and the potion are things everyone has. */
 export function ownedSkill(p: PlayerEntity, id: SkillId): OwnedSkill | undefined {
-  if (id === 'potion') return { id, tier: 1, cd: 0 };
+  if (COMMON_ACTIONS.includes(id)) return { id, tier: 1, cd: 0 };
   return p.skills.find((s) => s.id === id);
 }
 
@@ -455,10 +474,10 @@ export const hasBranch = (p: PlayerEntity, id: SkillId, branch: 'A' | 'B') => {
   return !!o && o.tier === 3 && o.branch === branch;
 };
 
-/** Usable skills in hotbar order: basic attacks, cantrips, spells, then the potion. Keys 1-9 follow this order. */
+/** Usable skills in hotbar order: basic attacks, cantrips, spells, then Shove and the potion. Keys 1-9, 0 follow this order. */
 export function hotbar(p: PlayerEntity): SkillId[] {
   const of = (k: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === k).map((s) => s.id);
-  return [...of('basic'), ...of('cantrip'), ...of('spell'), 'potion'];
+  return [...of('basic'), ...of('cantrip'), ...of('spell'), ...COMMON_ACTIONS];
 }
 
 export const skillsOfKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind);
@@ -488,6 +507,8 @@ const ELEMENT_WORD: Record<Element, string> = {
 };
 const STAT_WORD: Record<Stat, string> = { str: 'STR', dex: 'DEX', int: 'INT', wis: 'WIS' };
 
+const fmtBonus = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+
 function diceStr(x: Dice, extra = 0): string {
   const b = (x.bonus ?? 0) + extra;
   return `${x.n}d${x.d}${b > 0 ? `+${b}` : b < 0 ? `${b}` : ''}`;
@@ -495,7 +516,7 @@ function diceStr(x: Dice, extra = 0): string {
 
 const statusList = (list: StatusApply[]) =>
   list
-    .map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name}${x.id === 'shielded' && x.power ? ` +${x.power} AC` : ''}${x.id === 'blessed' && x.power ? ' (+1d4 radiant on hits)' : ''} ${x.turns} turn${x.turns === 1 ? '' : 's'}`)
+    .map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name}${x.id === 'shielded' && x.power ? ` +${x.power} AC` : ''}${x.id === 'blessed' && x.power ? ' (+1d4 radiant on hits)' : ''}${x.id === 'hidden' && x.power ? ` (+${x.power}d6 on the attack from hiding)` : ''} ${x.turns} turn${x.turns === 1 ? '' : 's'}`)
     .join(', ');
 
 /**
@@ -521,7 +542,10 @@ export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'l
     }
   })();
   const hits = hero ? hitsOf(hero, s) : (s.hits ?? 1);
-  if (s.dmg) {
+  if (s.roll === 'contest') {
+    const bonus = hero ? ` (${fmtBonus(attackBonus(hero, s))})` : '';
+    parts.push(`${who}: ${STAT_WORD[s.stat ?? 'str']}${bonus} contest against its STR or DEX; win and it's knocked back ${s.push ?? 1} tile${(s.push ?? 1) > 1 ? 's' : ''}`);
+  } else if (s.dmg) {
     const dmg = diceStr(s.dmg, hero ? damageMod(hero, s) : 0) + (s.mod && !hero ? ` + ${STAT_WORD[s.stat ?? 'str']}` : '') + ELEMENT_WORD[s.element ?? 'physical'];
     const times = hits > 1 ? `${hits}× ` : '';
     if (s.roll === 'save') {
@@ -542,7 +566,8 @@ export function describe(s: SkillStats, hero?: Pick<PlayerEntity, 'classId' | 'l
   }
   if (s.pull) parts.push(`First pulls enemies within ${s.pull} tiles next to you`);
   if (s.onHit?.length) parts.push(`${s.roll ? 'On a hit: ' : 'Target: '}${statusList(s.onHit)}`);
-  if (s.push) parts.push(`Knocks back ${s.push} tile${s.push > 1 ? 's' : ''}`);
+  if (s.push && s.roll !== 'contest') parts.push(`Knocks back ${s.push} tile${s.push > 1 ? 's' : ''}`);
+  if (s.stealth) parts.push("Can't be used with an enemy next to you");
   if (s.heal) {
     const bonus = hero ? healBonus(hero, s) - (s.heal.bonus ?? 0) : 0;
     const extra = !hero ? `${s.healMod ? ' + WIS/STAT' : ''}${s.healLevel ? ' + level' : ''}` : '';
@@ -632,6 +657,7 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
   const outOfRange = () => (dist(caster, byId ?? caster) > s.range ? `Out of range (${s.name} reaches ${s.range} tile${s.range === 1 ? '' : 's'}).` : 'No line of sight.');
   switch (s.target) {
     case 'self':
+      if (s.stealth && ctx.inCombat && ctx.entities.some((e) => e.kind === 'monster' && dist(e, caster) <= 1)) return "You can't hide with an enemy next to you.";
       return { center: caster, friends: [caster], foes: [] };
     case 'enemy': {
       if (!byId) return 'Pick a target.';

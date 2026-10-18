@@ -110,7 +110,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 1b | Auto-play (AFK mode, bot players, bot testing) | 🟢 |
 | 2 | XP, levels & skill system | 🟢 |
 | 3 | Save & resume | 🟢 |
-| 4 | Positioning & surprise | ⚪ |
+| 4 | Positioning & surprise | 🟢 |
 | 5 | Elements & surfaces (DOS2-style) | ⚪ |
 | 6 | Items, relics, shop & treasure | ⚪ |
 | 7 | Elites, blessings & NPC allies | ⚪ |
@@ -329,23 +329,35 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 4: Positioning & surprise ⚪
+## Phase 4: Positioning & surprise 🟢
 
 **Goal:** where you stand matters; the Rogue shines.
 
 **Tasks**
-- [x] Advantage/disadvantage (2d20, keep the higher/lower), shown in the log as "🎲 7 | 16" (done in Phase 2, for Feint, Marked and Blinded)
-- [ ] Auto-facing: units face whatever they last moved toward or attacked. Small facing arrow on each unit.
-- [ ] Back attack: attacking from the target's rear arc gives advantage
-- [ ] Flanking: an ally directly opposite the target gives advantage (applies to monsters too)
-- [ ] Approach choice before combat: **Sneak** (group Stealth check; success = surprise round, failure = monsters get surprise) or **Charge** (normal start)
-- [ ] Surprise round: surprised creatures skip their first turn
-- [ ] Rogue skill **Hide** (bonus action): hidden until they attack; the next attack has advantage + Sneak Attack
-- [ ] Ambush node variant: monsters start with surprise
-- [ ] **Shove** (bonus action): an opposed Athletics check pushes the target 1–2 tiles. It gets deadly once Phase 5 hazards exist.
-- [ ] Hover preview: shows "advantage (flanking)" before you attack
+- [x] Advantage/disadvantage (2d20, keep the higher/lower), shown in the log as "🎲7|16→16 (flanking)"
+- [x] Auto-facing: units face whatever they last moved toward or attacked. Small facing arrow on each unit.
+  - Added during testing: **an enemy stepping next to a creature, or hitting it in melee, makes it turn to face them** (unless it's surprised or stunned, or the mover is hidden). Without this, every hero could walk around any monster for a free backstab every turn, and the bots did exactly that.
+- [x] Back attack: attacking from the target's rear arc gives advantage. It also works at range, so archers behind the enemy line get it.
+- [x] Flanking: an ally directly opposite the target gives advantage (applies to monsters too)
+- [x] Approach choice before combat: **Sneak** (group Stealth check; success = surprise round, failure = monsters get surprise) or **Charge** (normal start). The party votes after seeing the room. Not before bosses or fights started by events.
+- [x] Surprise round: surprised creatures skip their first turn (and can't react)
+- [x] Rogue skill **Hide** (bonus action): hidden until they attack; the next attack has advantage + Sneak Attack. Can't hide next to an enemy (III-B *Smoke and Mirrors* can); III-A *Shadow Strike* adds +2d6 to the attack from hiding. Monsters ignore hidden heroes while anyone else is in the open.
+- [x] Ambush node variant: monsters start with surprise. A random 10% of regular fights past row 2 (hidden on the map); the Alert passive now prevents being surprised.
+- [x] **Shove** (bonus action): an opposed Athletics check pushes the target 1–2 tiles. It gets deadly once Phase 5 hazards exist.
+- [x] Hover preview: shows "advantage (flanking)" before you attack. Gold dots also mark the tiles you can reach that would flank a monster.
 
 **Done when:** players can set up a flank or backstab on purpose and see the advantage in the dice log.
+
+**Result (2026-10-18):** ✅ The log shows the reasons ("🎲4|17→17 (flanking, from behind)") and the hover preview shows them before you attack.
+- **Bot runs** (6 runs of 4 heroes, plus 2-hero and solo parties): 0 stalls, 0 errors and 0 rejected bot actions.
+  - In the 4-hero runs, the bots sneaked 88 times (64 successes, 24 spotted), hit 2 ambushes, and rolled with advantage 129 times from flanking and 335 from behind. Hide was used 43 times and Shove 8.
+- **Browser check:** the Sneak/Charge card with odds per hero, surprised monsters skipping their turn, facing arrows, the attack preview, and the Actions hotbar row.
+- **Tests:** 88 in total. New tests cover facing, the rear arc, flanking, turning to face, the advantage reasons, and the hero AI's flanks, Hide, Shove and approach votes.
+
+**Notes**
+- Charge never wins a bot vote: the AI sneaks whenever the group's odds are 50% or better. People may judge it differently, which is the point of the vote.
+- Monsters don't seek flanks or backstabs on purpose yet; that's the Phase 9 squad AI. Today they only get them by accident.
+- **Balance, parked for Phase 13:** solo heroes now often die in their first fight (a failed sneak means losing the first turn).
 
 ---
 

@@ -28,14 +28,14 @@ function hero(classId: PlayerEntity['classId'], x = 2, y = 3): PlayerEntity {
     id: `h-${classId}`, kind: 'player', playerId: `p-${classId}`, classId, name: classId, glyph: '', color: '#fff', x, y,
     hp: 0, maxHp: 0, ac: 10, speed: 6, statuses: [], level: 1, xp: 0, skills: startingSkills(classId), levelUps: 0, offer: null,
     bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0, potions: 2, kills: 0, steals: 0, slots: 0, maxSlots: 0,
-    downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [],
+    downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [], facing: { x: 1, y: 0 },
   };
   recalcHero(p);
   return p;
 }
 
 const goblin = (id: string, x: number, y: number): MonsterEntity => ({
-  id, kind: 'monster', type: 'goblin', name: 'Goblin', glyph: '', x, y, hp: 7, maxHp: 7, ac: 15, speed: 6, statuses: [], boss: false, elite: false, dmgBy: {},
+  id, kind: 'monster', type: 'goblin', name: 'Goblin', glyph: '', x, y, hp: 7, maxHp: 7, ac: 15, speed: 6, statuses: [], boss: false, elite: false, dmgBy: {}, facing: { x: -1, y: 0 },
 });
 
 const turn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false });
@@ -84,9 +84,9 @@ test('descriptions are generated for every skill at every tier without gaps', ()
   }
 });
 
-test('hotbar order: basic attacks, cantrips, spells, then the potion', () => {
+test('hotbar order: basic attacks, cantrips, spells, then Shove and the potion', () => {
   const r = hero('rogue');
-  assert.deepEqual(hotbar(r), ['rapier', 'shortbow', 'cunning_dash', 'shadow_step', 'potion']);
+  assert.deepEqual(hotbar(r), ['rapier', 'shortbow', 'cunning_dash', 'shadow_step', 'shove', 'potion']);
 });
 
 test('block reasons: cooldowns, slots, action economy, out of combat', () => {
