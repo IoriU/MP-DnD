@@ -10,6 +10,7 @@ import { Server } from 'socket.io';
 import { CLASSES } from '../shared/rules.ts';
 import type { ClassId, JoinRequest, JoinResult, PickRequest, Pos, RestPick } from '../shared/types.ts';
 import { Game } from './game.ts';
+import { archiveSave, hasSave, isSaveCode, listSaves, readSave, summarize } from './saves.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');
@@ -33,8 +34,22 @@ function newCode(): string {
   let code: string;
   do {
     code = Array.from({ length: 4 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
-  } while (games.has(code));
+  } while (games.has(code) || hasSave(code)); // a saved run keeps its code
   return code;
+}
+
+/** An open room, or a saved run brought back from disk. */
+function openGame(code: string): Game | undefined {
+  let g = games.get(code);
+  if (!g) {
+    const save = readSave(code);
+    if (save) {
+      g = Game.fromSave(io, save);
+      games.set(code, g);
+      console.log(`📜 Loaded saved run ${code} (act ${save.run.act})`);
+    }
+  }
+  return g;
 }
 
 io.on('connection', (socket) => {
@@ -51,7 +66,7 @@ io.on('connection', (socket) => {
 
     let g: Game | undefined;
     if (req.code) {
-      g = games.get(String(req.code).trim().toUpperCase());
+      g = openGame(String(req.code).trim().toUpperCase());
       if (!g) return ack({ ok: false, error: 'Room not found. Check the code?' });
     } else {
       g = new Game(io, newCode());
@@ -64,6 +79,32 @@ io.on('connection', (socket) => {
     void socket.join(g.code);
     void socket.join(`p:${playerId}`);
     ack({ ok: true, code: g.code, playerId });
+  });
+
+  // The home screen's "Continue a saved run" list. No room needed.
+  socket.on('listSaves', (ack: unknown) => {
+    if (typeof ack !== 'function') return;
+    try {
+      ack(listSaves().map((s) => summarize(s, games.get(s.code)?.online ?? 0)));
+    } catch (err) {
+      console.error('[listSaves]', err);
+      ack([]);
+    }
+  });
+  socket.on('deleteSave', (code: unknown, ack: unknown) => {
+    const reply = typeof ack === 'function' ? (ack as (r: { ok: boolean; error?: string }) => void) : () => {};
+    if (!isSaveCode(code) || !hasSave(code)) return reply({ ok: false, error: 'No such save.' });
+    const g = games.get(code);
+    if (g?.online) return reply({ ok: false, error: 'Someone is in that room right now.' });
+    try {
+      archiveSave(code, 'abandoned');
+      g?.dispose();
+      games.delete(code);
+      reply({ ok: true });
+    } catch (err) {
+      console.error('[deleteSave]', err);
+      reply({ ok: false, error: 'Could not archive it.' });
+    }
   });
 
   // Every other event needs the socket to be in a room first.
@@ -91,6 +132,7 @@ io.on('connection', (socket) => {
   on('setAuto', (g, pid, value: boolean) => g.handleSetAuto(pid, value === true));
   on('addBot', (g, pid) => g.addBot(pid));
   on('removeBot', (g, pid, botId: string) => g.removeBot(pid, String(botId)));
+  on('claimHero', (g, pid, heroPlayerId: string) => g.claimHero(pid, String(heroPlayerId)));
 
   socket.on('disconnect', () => {
     if (game && playerId) game.socketLeft(playerId);

@@ -29,7 +29,7 @@ The first time the server runs, Windows asks whether Node.js may use the network
 
 The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudflare.cloudflared`, then open a new terminal.
 
-**Always-on hosting (optional):** you can deploy to a free web-service tier such as [Render](https://render.com) (build command `npm install && npm run build`, start command `npm start`). Free tiers usually sleep when idle and take about a minute to wake up, and their terms change, so check the current limits.
+**Always-on hosting (optional):** you can deploy to a free web-service tier such as [Render](https://render.com) (build command `npm install && npm run build`, start command `npm start`). Free tiers usually sleep when idle and take about a minute to wake up, and their terms change, so check the current limits. Their disks are usually wiped on every restart, which deletes saved runs; hosting from your own PC keeps them.
 
 ## How to play
 
@@ -57,6 +57,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **Camera:** the mouse wheel zooms and right-drag pans.
 - **🤖 Auto-play:** press **P** (or the 🤖 Auto button) and the AI plays your hero until you switch it off. That's handy when you're AFK. Players who disconnect are auto-played until they come back. Auto heroes never vote while a human is at the keyboard; they follow the group.
 - **Bots:** the host can click **🤖 Add bot** in the tavern to fill empty seats with computer-controlled heroes.
+- **Saving:** runs save themselves at every step on the map (in the `saves/` folder next to the game). Close the server whenever you like. Next time, pick the run under **📜 Continue a saved run** on the home screen, or just reopen your old tab. Type the same name as your hero and you get them back; a friend who can't make it is auto-played until they return. A fight that was interrupted starts over from the beginning. Won and lost runs move to `saves/archive/`.
 - **Chat:** press Enter.
 
 | Class | Plays like |
@@ -74,6 +75,7 @@ npm run typecheck  # TypeScript checks
 npm test           # unit tests (map and room generators, events, skills, XP, hero AI)
 npm run smoke      # with a server running: a party of auto-played bots plays one run headlessly
 npm run balance    # many full bot runs in parallel: win rate, where parties die, kills, skills used
+npm run resume-check  # plays a few rooms, kills the server, restarts it and checks the party continues where it was
 ```
 
 For faster bot testing, start the server with `DELVERS_SPEED=10` (monster turns 10× faster) and `DELVERS_ROWS=4` (short acts).
@@ -93,6 +95,7 @@ server/room.ts     battle room generator
 server/events.ts   ❓ event scenes and their choices
 server/heroai.ts   auto-play brain for heroes (AFK players, bots, tests)
 server/progression.ts  XP shares, level-ups, level-up cards, training
+server/saves.ts    saved runs on disk (saves/<CODE>.json) and the archive
 server/rng.ts      seeded random numbers
 server/index.ts    HTTP + WebSocket server and room codes
 client/runview.ts  the act map and event screens

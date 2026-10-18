@@ -109,7 +109,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 1 | Run loop: act map, room battles, 3 acts | 🟢 |
 | 1b | Auto-play (AFK mode, bot players, bot testing) | 🟢 |
 | 2 | XP, levels & skill system | 🟢 |
-| 3 | Save & resume | ⚪ |
+| 3 | Save & resume | 🟢 |
 | 4 | Positioning & surprise | ⚪ |
 | 5 | Elements & surfaces (DOS2-style) | ⚪ |
 | 6 | Items, relics, shop & treasure | ⚪ |
@@ -308,18 +308,24 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 3: Save & resume ⚪
+## Phase 3: Save & resume 🟢
 
 **Goal:** a 3-act run can span several play sessions and survive a server restart.
 
 **Tasks**
-- [ ] Save the run to `saves/<code>.json` at every node transition (between fights, not mid-battle)
-- [ ] Lobby: "Continue a saved run" list (party, act, date)
-- [ ] Players reclaim their hero by name, or the host assigns them
-- [ ] Resuming mid-node restarts that node fresh
-- [ ] Old saves are cleaned up or archived after a win or loss
+- [x] Save the run to `saves/<code>.json` at every node transition (between fights, not mid-battle). It also saves after level-up picks and potions on the map. Writes are atomic (temp file + rename).
+- [x] Lobby: "Continue a saved run" list (party, act, date) on the home screen, with an archive ✕
+- [x] Players reclaim their hero by name, or the host assigns them. Open tabs reconnect to their hero on their own; typing your hero's name works from any device; a newcomer can **Play as** an away hero; anyone else joins as a new hero at the party's level. (Instead of the host assigning heroes, each player claims one; away heroes are auto-played until their player returns.)
+- [x] Resuming mid-node restarts that node fresh (the same event comes back; a fight is rolled again)
+- [x] Old saves are cleaned up or archived after a win or loss (`saves/archive/`, newest 30 kept)
 
 **Done when:** stop the server mid-act, restart it, and the party continues from the same map position with the same heroes.
+
+**Result (2026-10-18):** ✅ `npm run resume-check` plays a bot run, kills the server after 3, 8 or 12 rooms, starts a new one and compares: the same map spot, path choices, gold and heroes (level, XP, HP, skills and tiers, potions, kills, pending picks). It passed all three. Also checked in the browser: an open tab survived a server restart mid-fight and landed in the resumed tavern; the home-screen list, "new hero" joining and the fight replay all worked. 4 new unit tests (72 in total).
+
+**Notes**
+- A save holds the run, the heroes at the last safe point, the players, the events seen, and the last 30 log lines. A `version` field allows migrating old saves. Loaded heroes are rebuilt on today's rules (derived stats are recalculated and removed skills dropped), so saves survive most balance changes.
+- Anyone who can reach the server sees the save list and can continue or archive a run. Fine among friends; worth knowing before sharing a tunnel link publicly.
 
 ---
 
@@ -526,5 +532,4 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 ## Known issues / tech debt
 
 - Balance is deliberately untuned until the Balance pass (Phase 13).
-- Rooms live in memory (fixed by Phase 3).
 - `window.delvers` debug handle is exposed in the client (handy, harmless).

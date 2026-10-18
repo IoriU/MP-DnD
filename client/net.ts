@@ -1,7 +1,7 @@
 // Talks to the game server over Socket.IO. Reconnects (and rejoins your room) automatically.
 
 import { io } from 'socket.io-client';
-import type { ClassId, Fx, GameState, JoinRequest, JoinResult } from '../shared/types.ts';
+import type { ClassId, Fx, GameState, JoinRequest, JoinResult, SaveSummary } from '../shared/types.ts';
 import { emitFx, setState, store } from './store.ts';
 import { toast } from './util.ts';
 
@@ -45,6 +45,23 @@ export function join(req: JoinRequest): Promise<JoinResult> {
         saveSession({ code: res.code, playerId: res.playerId, name: req.name, classId: req.classId });
       }
       resolve(res);
+    });
+  });
+}
+
+/** The saved runs for the home screen, newest first; null if the server did not answer. */
+export function listSaves(): Promise<SaveSummary[] | null> {
+  return new Promise((resolve) => {
+    if (!socket.connected) return resolve(null);
+    socket.timeout(5000).emit('listSaves', (err: Error | null, list: SaveSummary[]) => resolve(err || !Array.isArray(list) ? null : list));
+  });
+}
+
+/** Archive a saved run. The server refuses while people are in that room. */
+export function deleteSave(code: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    socket.timeout(5000).emit('deleteSave', code, (err: Error | null, res: { ok: boolean; error?: string }) => {
+      resolve(err || !res ? { ok: false, error: 'The server did not answer. Is it running?' } : res);
     });
   });
 }

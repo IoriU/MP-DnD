@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.ts",
     "test": "node --test \"tests/*.test.ts\"",
-    "balance": "node scripts/balance.ts"
+    "balance": "node scripts/balance.ts",
+    "resume-check": "node scripts/resume-check.ts"
   },
   "engines": {
     "node": ">=22.18"

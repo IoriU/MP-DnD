@@ -28,6 +28,14 @@
             <button id="join-btn" class="btn">Join room</button>
           </form>
         </div>
+        <section id="saves" class="saves" hidden>
+          <div class="saves-head">
+            <h3>📜 Continue a saved run</h3>
+            <button id="saves-refresh" class="btn ghost small" type="button" title="Refresh the list">↻</button>
+          </div>
+          <p class="saves-tip muted">Type the same name as your hero and you take them back automatically.</p>
+          <ul id="saves-list" class="saves-list"></ul>
+        </section>
         <p class="resume-note muted">Reconnecting to your game…</p>
       </div>
     </main>
@@ -36,6 +44,7 @@
     <main id="screen-room" class="screen lobby" hidden>
       <div class="panel">
         <h2>🍺 The tavern</h2>
+        <div id="resume-banner" class="resume-banner" hidden></div>
         <div class="room-code"><span class="label">Room code</span><strong id="room-code"></strong></div>
         <div class="invite">
           <input id="invite-link" readonly />
@@ -43,8 +52,11 @@
         </div>
         <h3>Party</h3>
         <ul id="room-players" class="room-players"></ul>
-        <h3>Your class</h3>
-        <div id="room-classes" class="class-grid"></div>
+        <div id="room-class-section">
+          <h3>Your class</h3>
+          <p id="room-class-hint" class="muted" hidden>You are not one of the saved heroes. This class is used if you join the run as a new hero.</p>
+          <div id="room-classes" class="class-grid"></div>
+        </div>
         <div class="actions">
           <button id="start-btn" class="btn primary" type="button">Start the adventure</button>
           <button id="add-bot" class="btn" type="button" title="Fill a seat with a computer-controlled hero">🤖 Add bot</button>

@@ -97,6 +97,29 @@ input:focus { border-color: var(--accent); }
 .resume-note { display: none; margin-top: 16px; }
 body.resuming .resume-note { display: block; }
 
+/* Continue a saved run (home screen) and the resumed tavern */
+.saves { margin-top: 22px; padding-top: 2px; border-top: 1px solid var(--line); }
+.saves-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.saves-head h3 { margin: 14px 0 4px; }
+.saves-tip { margin: 0 0 8px; font-size: 12px; }
+.saves-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 320px; overflow-y: auto; }
+.save { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; background: var(--panel-2); border-radius: 8px; }
+.save-info { flex: 1 1 220px; min-width: 0; display: grid; gap: 3px; }
+.save-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.save-code { font: 700 16px var(--serif); letter-spacing: 3px; color: var(--accent-2); }
+.save-party { display: flex; flex-wrap: wrap; gap: 0 12px; font-size: 12px; color: var(--muted); }
+.save-hero .lv { color: var(--accent-2); }
+.save .btn { flex: none; }
+.resume-banner {
+  margin: 8px 0 4px;
+  padding: 10px 14px;
+  background: #2a1f12;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+}
+.resume-banner .muted { margin-top: 4px; font-size: 12px; }
+#room-class-hint { margin: 0 0 10px; font-size: 13px; }
+
 .class-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 .class-card {
   display: grid;
@@ -124,6 +147,7 @@ body.resuming .resume-note { display: block; }
 .room-players { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 .room-players li {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -131,7 +155,8 @@ body.resuming .resume-note { display: block; }
   border-radius: 8px;
 }
 .dot { width: 10px; height: 10px; border-radius: 50%; }
-.rp-remove { margin-left: auto; }
+.rp-remove, .rp-claim { margin-left: auto; }
+.room-players li.away > :not(.rp-claim) { opacity: 0.65; } /* away heroes fade, but their Play as button stays bright */
 #auto-btn.on { background: #17324a; border-color: #4fb3ff; color: #9fd3ff; }
 .rp-glyph { font-size: 18px; }
 .tag {
@@ -143,6 +168,7 @@ body.resuming .resume-note { display: block; }
   margin-left: 4px;
 }
 .tag.bad { background: #4a1a14; color: #ff9b8c; }
+.tag.away { background: #2a241e; color: var(--muted); }
 .tag.lvl { background: var(--accent); color: #1a1208; font-weight: 700; }
 button.tag { font-family: var(--sans); border: 0; cursor: pointer; }
 button.tag.lvl:hover { background: var(--accent-2); }

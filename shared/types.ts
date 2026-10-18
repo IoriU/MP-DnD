@@ -169,10 +169,30 @@ export interface Notice {
   text: string;
 }
 
+/** A saved run waiting in the tavern to be continued (phase 'lobby'). */
+export interface ResumeView {
+  act: number;
+  actName: string;
+  savedAt: number; // ms since epoch
+  // The saved party. A hero is claimed when a connected player has its playerId.
+  heroes: { playerId: string; name: string; classId: ClassId; level: number; bot: boolean }[];
+}
+
+/** One saved run in the home screen's "Continue a saved run" list. */
+export interface SaveSummary {
+  code: string;
+  act: number;
+  actName: string;
+  savedAt: number;
+  party: { name: string; classId: ClassId; level: number; bot: boolean }[];
+  online: number; // people in that room right now (0 = nobody has opened it since the server started)
+}
+
 export interface GameState {
   code: string;
   phase: Phase;
   hostId: string | null;
+  resume: ResumeView | null; // set while a loaded save waits in the tavern
   run: RunInfo | null;
   vote: VoteState | null;
   event: EventView | null;

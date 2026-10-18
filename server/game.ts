@@ -84,11 +84,12 @@ import type {
   TurnState,
 } from '../shared/types.ts';
 import { generateActMap } from './actmap.ts';
-import { pickEvent, type CheckResult, type EventDef, type EventEffect, type EventStat } from './events.ts';
+import { getEvent, pickEvent, type CheckResult, type EventDef, type EventEffect, type EventStat } from './events.ts';
 import { autoEventChoice, autoLevelPick, autoPathChoice, autoRestPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
 import { applyLevelUps, applyPick, killShares, makeOffer, recalcHero, startingSkills, upgrade, validRestPick } from './progression.ts';
 import { pick, randInt, rng } from './rng.ts';
 import { generateRoom } from './room.ts';
+import { SAVE_VERSION, archiveSave, writeSave, type SaveFile, type SavePoint } from './saves.ts';
 
 const BOT_NAMES = ['Brakka', 'Pip', 'Sister Wren', 'Old Tam', 'Vexa', 'Grimble', 'Lady Ash', 'Moss'];
 
@@ -170,10 +171,35 @@ export class Game {
   private walks = new Map<string, Walk>();
   private turnToken = 0; // bumps on every turn change so stale timers/AI loops stop
   private broadcastQueued = false;
+  private resumeFrom: SaveFile | null = null; // a loaded save waiting in the tavern
+  private savePoint: SavePoint = { kind: 'map' }; // where a restart would pick the run back up
+  private createdAt = Date.now();
 
   constructor(io: Server, code: string) {
     this.io = io;
     this.code = code;
+  }
+
+  /** A room rebuilt from a save: the party waits in the tavern until the host continues. */
+  static fromSave(io: Server, save: SaveFile): Game {
+    const g = new Game(io, save.code);
+    g.resumeFrom = save;
+    g.createdAt = save.createdAt;
+    // Bots come back on their own; everyone else is away until they rejoin.
+    g.players = save.players.map((p) => ({ ...p, connected: p.bot, auto: p.bot }));
+    g.log = save.log.slice(-30);
+    g.logId = Math.max(0, ...g.log.map((l) => l.id));
+    g.addLog('system', `📜 Saved run loaded: Act ${save.run.act}, ${save.run.actName}. Rejoin your hero, then the host continues.`);
+    return g;
+  }
+
+  /** People in the room right now (not bots). */
+  get online(): number {
+    return this.players.filter((p) => p.connected && !p.bot).length;
+  }
+
+  private savedHero(playerId: string) {
+    return this.resumeFrom?.heroes.find((h) => h.playerId === playerId);
   }
 
   // ------------------------------------------------------------ players & lobby
@@ -228,7 +254,22 @@ export class Game {
     const bot = this.players.find((p) => p.id === botId && p.bot);
     if (!bot) return;
     this.players = this.players.filter((p) => p !== bot);
+    if (this.resumeFrom) this.resumeFrom.heroes = this.resumeFrom.heroes.filter((h) => h.playerId !== bot.id);
     this.addLog('system', `🤖 ${bot.name} left the party.`);
+    this.broadcast();
+  }
+
+  /** In a resumed tavern, a newcomer takes over a saved hero whose player isn't here. */
+  claimHero(playerId: string, heroPlayerId: string) {
+    const me = this.players.find((p) => p.id === playerId);
+    const owner = this.players.find((p) => p.id === heroPlayerId);
+    const hero = this.savedHero(heroPlayerId);
+    if (this.phase !== 'lobby' || !me || !owner || !hero || this.savedHero(playerId)) return;
+    if (owner.connected || owner.bot) return this.whisper(playerId, `${owner.name} is already here.`);
+    hero.playerId = me.id;
+    Object.assign(me, { name: owner.name, classId: owner.classId, color: owner.color });
+    this.players = this.players.filter((p) => p !== owner);
+    this.addLog('system', `📜 ${me.name} is back in the party.`);
     this.broadcast();
   }
 
@@ -243,8 +284,10 @@ export class Game {
 
   join(playerId: string | undefined, name: string, classId: ClassId): { ok: true; playerId: string } | { ok: false; error: string } {
     let info = playerId ? this.players.find((p) => p.id === playerId) : undefined;
+    // Lost your session (new device, server restart)? Typing the same name gets you your hero back.
+    info ??= this.players.find((p) => !p.connected && !p.bot && p.name.toLowerCase() === name.toLowerCase());
     if (info) {
-      if (!info.connected && this.phase !== 'lobby') this.addLog('system', `${info.name} reconnected.`);
+      if (!info.connected && (this.phase !== 'lobby' || this.resumeFrom)) this.addLog('system', `${info.name} is back.`);
     } else {
       if (this.players.length >= MAX_PLAYERS) return { ok: false, error: `This room is full (max ${MAX_PLAYERS} players).` };
       const used = new Set(this.players.map((p) => p.color));
@@ -270,7 +313,7 @@ export class Game {
     if (open > 0) return;
     const info = this.players.find((p) => p.id === playerId);
     if (!info) return;
-    if (this.phase === 'lobby') {
+    if (this.phase === 'lobby' && !this.savedHero(playerId)) {
       this.players = this.players.filter((p) => p !== info);
       this.sockets.delete(playerId);
     } else {
@@ -295,12 +338,15 @@ export class Game {
   setClass(playerId: string, classId: ClassId) {
     const info = this.players.find((p) => p.id === playerId);
     if (!info || this.phase !== 'lobby' || typeof classId !== 'string' || !Object.hasOwn(CLASSES, classId)) return;
+    if (this.savedHero(playerId)) return this.whisper(playerId, 'Your saved hero keeps their class.');
     info.classId = classId;
     this.broadcast();
   }
 
   start(playerId: string) {
     if (this.phase !== 'lobby' || playerId !== this.hostId) return;
+    if (this.resumeFrom) return this.resumeRun(this.resumeFrom);
+    this.createdAt = Date.now();
     this.log = [];
     this.seenEvents = [];
     this.notice = null;
@@ -363,12 +409,61 @@ export class Game {
     return p;
   }
 
-  private spawnLatecomer(info: PlayerInfo) {
-    const level = Math.max(1, ...this.heroes().map((h) => h.level));
+  /** A hero joining a run in progress starts at the party's level, with the picks they missed. */
+  private newcomer(info: PlayerInfo, level: number): PlayerEntity {
     const e = this.makePlayer(info, level);
-    // They skipped the earlier level-ups, so they get those picks now.
     e.levelUps = level - 1;
     if (e.levelUps) e.offer = makeOffer(e, rng);
+    return e;
+  }
+
+  /** A saved hero back in play. Fight-only state is reset and derived stats follow the current rules. */
+  private restoreHero(saved: PlayerEntity, info: PlayerInfo): PlayerEntity {
+    const base = this.makePlayer(info, saved.level);
+    const p: PlayerEntity = {
+      ...base,
+      ...saved,
+      id: base.id, // fresh ids, so they can't clash with this room's monsters
+      playerId: info.id,
+      name: info.name,
+      color: info.color,
+      x: 0,
+      y: 0,
+      skills: (saved.skills ?? base.skills).filter((s) => isSkillId(s.id)).map((s) => ({ ...s, cd: 0 })),
+      statuses: [],
+      tempHp: 0,
+      used: [],
+      downed: false,
+      dead: false,
+      saves: { ok: 0, fail: 0 },
+    };
+    // Cards for skills that no longer exist are dealt again.
+    if (p.offer && !p.offer.every((c) => c.kind === 'boon' || isSkillId(c.skill))) p.offer = null;
+    if (p.levelUps > 0 && !p.offer) p.offer = makeOffer(p, rng);
+    recalcHero(p);
+    return p;
+  }
+
+  /** Continues a loaded save: same heroes, same map, the node in progress replayed from its start. */
+  private resumeRun(save: SaveFile) {
+    this.resumeFrom = null;
+    const level = Math.max(1, ...save.heroes.map((h) => h.level));
+    this.entities = this.players.map((info) => {
+      const saved = save.heroes.find((h) => h.playerId === info.id);
+      return saved ? this.restoreHero(saved, info) : this.newcomer(info, level);
+    });
+    this.run = save.run;
+    this.seenEvents = [...save.seenEvents];
+    this.notice = save.notice;
+    this.addLog('system', '📜 The party picks up right where they left off.');
+    if (save.at.kind === 'node' && this.node(save.at.nodeId)) this.enterNode(save.at.nodeId, save.at.eventId);
+    else this.toMap();
+    this.scheduleAutoPicks();
+  }
+
+  private spawnLatecomer(info: PlayerInfo) {
+    const level = Math.max(1, ...this.heroes().map((h) => h.level));
+    const e = this.newcomer(info, level); // they skipped the earlier level-ups, so they get those picks now
     if (this.phase === 'combat') {
       const anchor = this.heroes().find((p) => !p.dead);
       const path = anchor && findPath(this, anchor, () => false, (x, y) => !this.occupied(x, y));
@@ -380,6 +475,7 @@ export class Game {
       this.joinInitiative(e);
     } else {
       this.entities.push(e);
+      this.checkpoint();
     }
     this.scheduleAutoPicks();
   }
@@ -408,9 +504,38 @@ export class Game {
     this.clearRoom();
     const options = run.currentId ? (this.node(run.currentId)?.next ?? []) : run.map.nodes.filter((n) => n.row === 0).map((n) => n.id);
     this.openVote('path', options);
+    this.savePoint = { kind: 'map' };
+    this.checkpoint();
     this.scheduleUpkeep();
     this.scheduleAutoPicks();
     this.broadcast();
+  }
+
+  /**
+   * Saves the run at a safe point: on the map, or as the party enters a node (before it changes anything).
+   * Never mid-fight: a restart replays the node in progress from its start.
+   */
+  private checkpoint() {
+    const run = this.run;
+    if (!run || this.resumeFrom || this.phase === 'combat' || this.phase === 'victory' || this.phase === 'defeat') return;
+    const save: SaveFile = {
+      version: SAVE_VERSION,
+      code: this.code,
+      createdAt: this.createdAt,
+      savedAt: Date.now(),
+      players: this.players.map(({ id, name, classId, color, bot }) => ({ id, name, classId, color, bot })),
+      heroes: structuredClone(this.heroes()),
+      run: structuredClone(run),
+      seenEvents: [...this.seenEvents],
+      at: { ...this.savePoint },
+      notice: this.notice,
+      log: this.log.slice(-30),
+    };
+    try {
+      writeSave(save);
+    } catch (err) {
+      console.error(`[save ${this.code}] could not write the save:`, err);
+    }
   }
 
   private openVote(kind: Vote['kind'], options: string[]) {
@@ -494,12 +619,15 @@ export class Game {
     this.broadcast();
   }
 
-  private enterNode(id: string) {
+  private enterNode(id: string, eventId?: string) {
     const run = this.run;
     const node = this.node(id);
     if (!run || !node) return;
+    // Saved before anything changes, so a restart replays this node from its start.
+    this.savePoint = { kind: 'node', nodeId: id };
+    this.checkpoint();
     run.currentId = id;
-    run.visited.push(id);
+    if (run.visited.at(-1) !== id) run.visited.push(id); // a resumed node is already on the list
     this.notice = null;
     switch (node.type) {
       case 'combat':
@@ -517,7 +645,7 @@ export class Game {
         this.toMap();
         break;
       case 'event':
-        this.startEvent();
+        this.startEvent(eventId);
         break;
       case 'shop':
         this.notice = { glyph: NODE_INFO.shop.icon, title: 'Shop', text: 'The merchant hasn’t set up shop yet. (Coming in a later update.)' };
@@ -708,6 +836,7 @@ export class Game {
           this.addLog('level', `⬆️ ${p.name} ${res.text}.`);
         }
       }
+      this.checkpoint();
       this.broadcast();
     }, AUTO_DELAY_MS / SPEED);
   }
@@ -718,17 +847,21 @@ export class Game {
     const res = applyPick(p, { card: Number(req?.card), branch: req?.branch, forget: req?.forget }, rng);
     if (!res.ok) return this.whisper(playerId, res.error);
     this.addLog('level', `⬆️ ${p.name} ${res.text}.`);
+    this.checkpoint();
     this.broadcast();
   }
 
   // ------------------------------------------------------------ events
 
-  private startEvent() {
+  /** Opens an event: a fresh one, or the same one again when a save is resumed mid-event. */
+  private startEvent(eventId?: string) {
     const run = this.run!;
-    const def = pickEvent(run.act, this.seenEvents, rng);
-    this.seenEvents.push(def.id);
+    const def = (eventId && getEvent(eventId, run.act)) || pickEvent(run.act, this.seenEvents, rng);
+    if (!this.seenEvents.includes(def.id)) this.seenEvents.push(def.id);
+    if (this.savePoint.kind === 'node') this.savePoint.eventId = def.id;
     this.event = def;
     this.phase = 'event';
+    this.checkpoint(); // now with the event's id, so a restart reopens the same scene
     const options = def.choices.filter((c) => !c.cost || c.cost <= run.gold).map((c) => c.id);
     this.openVote('event', options);
     this.addLog('system', `${def.glyph} ${def.title}`);
@@ -1151,6 +1284,11 @@ export class Game {
   private endRun(victory: boolean) {
     this.dispose();
     this.phase = victory ? 'victory' : 'defeat';
+    try {
+      archiveSave(this.code, victory ? 'victory' : 'defeat');
+    } catch (err) {
+      console.error(`[save ${this.code}] could not archive the save:`, err);
+    }
     const run = this.run;
     const gold = run?.gold ?? 0;
     this.addLog(
@@ -1343,6 +1481,7 @@ export class Game {
     if (skillId === 'potion') p.potions--;
     this.useSkill(p, own, s, res);
     if (inCombat) this.checkEnd();
+    else this.checkpoint(); // a potion or heal between rooms
     this.broadcast();
     return true;
   }
@@ -1884,6 +2023,15 @@ export class Game {
       code: this.code,
       phase: this.phase,
       hostId: this.hostId,
+      resume: this.resumeFrom && {
+        act: this.resumeFrom.run.act,
+        actName: this.resumeFrom.run.actName,
+        savedAt: this.resumeFrom.savedAt,
+        heroes: this.resumeFrom.heroes.map((h) => ({
+          playerId: h.playerId, name: h.name, classId: h.classId, level: h.level,
+          bot: !!this.players.find((p) => p.id === h.playerId)?.bot,
+        })),
+      },
       run: this.run,
       vote: v && { kind: v.kind, options: v.options, votes: v.votes, endsInMs: v.deadline === null ? null : Math.max(0, v.deadline - Date.now()) },
       event: e && {

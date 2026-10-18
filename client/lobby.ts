@@ -1,8 +1,9 @@
 // Home screen (name, class, create/join) and the tavern lobby before a run starts.
 
 import { CLASSES, CLASS_IDS, MAX_PLAYERS } from '../shared/rules.ts';
-import type { ClassId, GameState } from '../shared/types.ts';
+import type { ClassId, GameState, PlayerInfo, ResumeView } from '../shared/types.ts';
 import { join, leave, send } from './net.ts';
+import { ago, initSaves } from './saves.ts';
 import { store } from './store.ts';
 import { $, esc, loadPref, savePref, toast } from './util.ts';
 
@@ -65,6 +66,7 @@ export function initLobby() {
     if (code.length !== 4) return toast('Room codes are 4 letters.');
     void go(code);
   });
+  initSaves(go);
 
   onClassClick($('#room-classes'), (id) => {
     savePref('class', id);
@@ -73,8 +75,11 @@ export function initLobby() {
   $('#start-btn').addEventListener('click', () => send('start'));
   $('#add-bot').addEventListener('click', () => send('addBot'));
   $('#room-players').addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-remove-bot]');
-    if (btn) send('removeBot', btn.dataset.removeBot);
+    const target = e.target as HTMLElement;
+    const bot = target.closest<HTMLElement>('[data-remove-bot]');
+    if (bot) return send('removeBot', bot.dataset.removeBot);
+    const claim = target.closest<HTMLElement>('[data-claim]');
+    if (claim) send('claimHero', claim.dataset.claim);
   });
   $('#leave-room').addEventListener('click', leave);
   $('#copy-link').addEventListener('click', async () => {
@@ -90,21 +95,74 @@ export function initLobby() {
   });
 }
 
+type SavedHero = ResumeView['heroes'][number];
+
+const tagList = (tags: string[]) =>
+  tags
+    .filter(Boolean)
+    .map((t) => `<span class="tag${t === 'away' ? ' away' : ''}">${t}</span>`)
+    .join('');
+
+const removeBotBtn = (p: PlayerInfo | undefined, isHost: boolean) =>
+  p?.bot && isHost ? `<button type="button" class="btn ghost small rp-remove" data-remove-bot="${p.id}" title="Remove bot">✕</button>` : '';
+
+function playerRow(s: GameState, p: PlayerInfo, isHost: boolean, extra: string[] = []): string {
+  const c = CLASSES[p.classId];
+  const tags = [p.id === s.hostId ? 'host' : '', p.id === store.playerId ? 'you' : '', p.bot ? '🤖 bot' : '', ...extra];
+  return `<li><span class="dot" style="background:${p.color}"></span><span class="rp-glyph">${c.glyph}</span>
+    <b>${esc(p.name)}</b><span class="muted">${c.name}</span>${tagList(tags)}${removeBotBtn(p, isHost)}</li>`;
+}
+
+/** A hero from the saved party: you, here, away (claimable by an unassigned player) or a bot. */
+function heroRow(s: GameState, h: SavedHero, isHost: boolean, unassigned: boolean): string {
+  const c = CLASSES[h.classId];
+  const p = s.players.find((x) => x.id === h.playerId);
+  const here = h.bot || !!p?.connected;
+  const status = h.playerId === store.playerId ? 'you' : h.bot ? '🤖 bot' : here ? 'here' : 'away';
+  const claim = !here && unassigned ? `<button type="button" class="btn small rp-claim" data-claim="${h.playerId}">Play as ${esc(h.name)}</button>` : '';
+  return `<li${here ? '' : ' class="away"'}><span class="dot" style="background:${p?.color ?? '#6b5434'}"></span><span class="rp-glyph">${c.glyph}</span>
+    <b>${esc(h.name)}</b><span class="muted">${c.name} · Lv ${h.level}</span>${tagList([p?.id === s.hostId ? 'host' : '', status])}${claim}${removeBotBtn(p, isHost)}</li>`;
+}
+
+const awayHeroes = (s: GameState, r: ResumeView) => r.heroes.some((h) => !h.bot && !s.players.find((p) => p.id === h.playerId)?.connected);
+
+/** The "Continuing a saved run" banner, with a hint that fits who is looking. */
+function resumeBanner(r: ResumeView, unassigned: boolean, away: boolean, joinLevel: number): string {
+  let hint = '';
+  if (unassigned) {
+    hint = away
+      ? `You are not one of the saved heroes. Take over an away hero with “Play as”, or just start and join as a new hero at level ${joinLevel}.`
+      : `You are not one of the saved heroes. You will join as a new hero at level ${joinLevel}.`;
+  } else if (away) {
+    hint = 'Heroes who are away are played by the computer until their player comes back with the same name.';
+  }
+  return `<b>📜 Continuing a saved run:</b> Act ${r.act} · ${esc(r.actName)} · saved ${ago(r.savedAt)}${hint ? `<div class="muted">${hint}</div>` : ''}`;
+}
+
 export function renderRoom(s: GameState) {
   $('#room-code').textContent = s.code;
   $<HTMLInputElement>('#invite-link').value = `${location.origin}${location.pathname}?room=${s.code}`;
   const isHost = s.hostId === store.playerId;
-  $('#room-players').innerHTML = s.players
-    .map((p) => {
-      const c = CLASSES[p.classId];
-      const tags = [p.id === s.hostId ? 'host' : '', p.id === store.playerId ? 'you' : '', p.bot ? '🤖 bot' : ''].filter(Boolean);
-      const remove = p.bot && isHost ? `<button type="button" class="btn ghost small rp-remove" data-remove-bot="${p.id}" title="Remove bot">✕</button>` : '';
-      return `<li><span class="dot" style="background:${p.color}"></span><span class="rp-glyph">${c.glyph}</span>
-        <b>${esc(p.name)}</b><span class="muted">${c.name}</span>${tags.map((t) => `<span class="tag">${t}</span>`).join('')}${remove}</li>`;
-    })
-    .join('');
+  const r = s.resume;
+  const heroIds = new Set((r?.heroes ?? []).map((h) => h.playerId));
+  const unassigned = !!r && !heroIds.has(store.playerId ?? '');
+  const joinLevel = r ? Math.max(1, ...r.heroes.map((h) => h.level)) : 1;
+
+  $('#resume-banner').hidden = !r;
+  if (r) $('#resume-banner').innerHTML = resumeBanner(r, unassigned, awayHeroes(s, r), joinLevel);
+  $('#room-players').innerHTML = r
+    ? [
+        ...r.heroes.map((h) => heroRow(s, h, isHost, unassigned)),
+        ...s.players.filter((p) => !heroIds.has(p.id)).map((p) => playerRow(s, p, isHost, [`new hero (joins at level ${joinLevel})`])),
+      ].join('')
+    : s.players.map((p) => playerRow(s, p, isHost)).join('');
+
+  // Saved heroes keep their class; only players who join as a new hero choose one.
+  $('#room-class-section').hidden = !!r && !unassigned;
+  $('#room-class-hint').hidden = !unassigned;
   const mine = s.players.find((p) => p.id === store.playerId);
   $('#room-classes').innerHTML = classCards(mine?.classId ?? chosen);
+  $('#start-btn').textContent = r ? 'Continue the adventure' : 'Start the adventure';
   $('#start-btn').hidden = !isHost;
   $('#add-bot').hidden = !isHost || s.players.length >= MAX_PLAYERS;
   $('#wait-host').hidden = isHost;
