@@ -1,17 +1,19 @@
 // The level-up panel: a floating card stack in the corner of the canvas (#levelup) for picking 1 of 3 cards.
 // Victory spoils (one pick after every won fight: two skills and an item) use it too, titled "Victory spoils".
 // Elite spoils (one pick per elite beaten) use the same panel, titled "Elite spoils", and can offer a piece of gear.
-// At level 3 the whole offer is the hero's two subclasses ("choose your path"): a signature skill now, more skills later.
+// Skill cards show their rarity and build engine (shared/engines.ts) and how many of that engine's cards you own.
+// An old save can still have a subclass pick waiting: that offer is drawn too ("choose your path").
 // It never blocks play: it collapses to a "Level up!" button, and it starts collapsed during fights.
 
 import './levelup.css';
+import { ENGINES, type CardRarity } from '../shared/engines.ts';
 import { RARITY_COLOR, SLOT_NAME, bagRoom, describeStats, gearDef, isItemId } from '../shared/items.ts';
 import { BOONS, CLASSES } from '../shared/rules.ts';
 import {
-  SKILLS, SKILL_IDS, TIER_LABEL, countKind, describeSkill, isSignature, itemInfo, limitFor, ownedSkill, skillTitle, skillsOfKind, statsAt,
+  SKILLS, TIER_LABEL, cardRarity, countKind, describeSkill, engineCount, engineOf, isSignature, itemInfo, limitFor, ownedSkill, skillTitle, skillsOfKind, statsAt,
   type SkillId, type SkillKind,
 } from '../shared/skills.ts';
-import { SUBCLASSES, SUBCLASS_LEVEL } from '../shared/subclasses.ts';
+import { SUBCLASSES } from '../shared/subclasses.ts';
 import type { GameState, OfferCard, PickRequest, PlayerEntity } from '../shared/types.ts';
 import { itemIcon } from './inventory.ts';
 import { send } from './net.ts';
@@ -38,13 +40,14 @@ interface CardView {
   kind: string; // css hook for the accent color
   body: string; // html
   color?: string; // overrides the accent (gear takes its rarity color)
+  skill?: SkillId; // a skill card: it shows its rarity and engine under the title
 }
 
-/** Picks still to make: level-ups (the subclass), victory spoils and elite spoils. */
+/** Picks still to make: victory spoils, elite spoils and (old saves) level-ups. */
 const picksLeft = (m: PlayerEntity) => m.levelUps + m.elitePicks + (m.rewardPicks ?? 0);
 const isElite = (m: PlayerEntity) => m.offerKind === 'elite';
 const isReward = (m: PlayerEntity) => m.offerKind === 'reward';
-/** The offer is the choice of subclass (all of it: the two cards of the hero's class). */
+/** The offer is the choice of subclass (an old save's level-up: the two cards of the hero's class). */
 const isPath = (m: PlayerEntity) => !!m.offer?.some((c) => c.kind === 'subclass');
 
 /** "Techniques" -> "Technique": every class flavor name is the plural of its singular. */
@@ -53,11 +56,24 @@ const singular = (plural: string) => plural.replace(/s$/, '');
 /** The player-facing (plural) name of a skill kind for this hero's class. */
 function kindPlural(m: PlayerEntity, kind: SkillKind): string {
   const names = CLASSES[m.classId].names;
-  return kind === 'cantrip' ? names.cantrip : kind === 'spell' ? names.spell : kind === 'passive' ? 'Passives' : 'Skills';
+  return kind === 'cantrip' ? names.cantrip : kind === 'spell' ? names.spell : kind === 'passive' ? 'Passives' : kind === 'basic' ? 'Attacks' : 'Skills';
 }
 const kindName = (m: PlayerEntity, kind: SkillKind) => singular(kindPlural(m, kind));
 
 const desc = (text: string) => `<div class="lu-desc">${esc(text)}</div>`;
+
+const RARITY_LABEL: Record<CardRarity, string> = { common: 'Common', uncommon: 'Uncommon', rare: 'Rare', epic: 'Epic capstone' };
+
+/** A skill card's rarity, and its engine with how many of that engine's cards you own: "Rare · ⚔️ Weapon Master · you have 2". */
+function metaHtml(m: PlayerEntity, id: SkillId): string {
+  const rarity = cardRarity(id);
+  const engine = engineOf(id);
+  const e = engine && ENGINES[engine];
+  const have = engine ? engineCount(m, engine) : 0;
+  return `<div class="lu-meta"><b class="lu-rarity" style="color:${RARITY_COLOR[rarity]}">${RARITY_LABEL[rarity]}</b>${
+    e ? `<span class="lu-engine" title="${esc(e.desc)}">${e.icon} ${esc(e.name)} · you have ${have}</span>` : ''
+  }</div>`;
+}
 
 function cardView(m: PlayerEntity, c: OfferCard): CardView {
   if (c.kind === 'boon') {
@@ -83,12 +99,9 @@ function cardView(m: PlayerEntity, c: OfferCard): CardView {
   if (c.kind === 'subclass') {
     const sub = SUBCLASSES[c.sub];
     const sig = statsAt(sub.signature, 1);
-    const more = SKILL_IDS.filter((id) => SKILLS[id].sub === c.sub && id !== sub.signature)
-      .map((id) => { const st = statsAt(id, 1); return `${st.icon} ${esc(st.name)}`; })
-      .join(' · ');
     return {
       icon: sub.icon, title: sub.name, badge: 'Subclass', kind: 'subclass',
-      body: `${desc(sub.blurb)}<div class="lu-tier up">Learn now · takes no slot</div><b class="lu-sig">${sig.icon} ${esc(sig.name)}</b>${desc(describeSkill(sub.signature, 1, undefined, m))}${more ? `<div class="lu-note">Later picks: ${more}</div>` : ''}`,
+      body: `${desc(sub.blurb)}<div class="lu-tier up">Learn now · takes no slot</div><b class="lu-sig">${sig.icon} ${esc(sig.name)}</b>${desc(describeSkill(sub.signature, 1, undefined, m))}`,
     };
   }
   const def = SKILLS[c.skill];
@@ -96,7 +109,7 @@ function cardView(m: PlayerEntity, c: OfferCard): CardView {
   const kn = kindName(m, def.kind);
   if (c.kind === 'learn') {
     return {
-      icon: base.icon, title: base.name, badge: `New ${kn}`, kind: def.kind,
+      icon: base.icon, title: base.name, badge: `New ${kn}`, kind: def.kind, skill: c.skill,
       body: `<div class="lu-tier">New · tier I</div>${desc(describeSkill(c.skill, 1, undefined, m))}`,
     };
   }
@@ -104,12 +117,12 @@ function cardView(m: PlayerEntity, c: OfferCard): CardView {
   const badge = `Upgrade · ${kn}`;
   if (c.tier === 2) {
     return {
-      icon: base.icon, title: `${skillTitle({ id: c.skill, tier: 2 })}`, badge, kind: def.kind,
+      icon: base.icon, title: `${skillTitle({ id: c.skill, tier: 2 })}`, badge, kind: def.kind, skill: c.skill,
       body: `<div class="lu-tier">Now · tier I</div><div class="lu-now">${desc(describeSkill(c.skill, own?.tier ?? 1, own?.branch, m))}</div>
         <div class="lu-tier up">Next · tier II</div>${desc(describeSkill(c.skill, 2, undefined, m))}`,
     };
   }
-  return { icon: base.icon, title: `${own ? skillTitle(own) : base.name} → tier III`, badge, kind: def.kind, body: '' }; // branches are drawn as two buttons
+  return { icon: base.icon, title: `${own ? skillTitle(own) : base.name} → tier III`, badge, kind: def.kind, skill: c.skill, body: '' }; // branches are drawn as two buttons
 }
 
 function branchButton(m: PlayerEntity, card: number, skill: SkillId, branch: 'A' | 'B'): string {
@@ -122,17 +135,20 @@ function branchButton(m: PlayerEntity, card: number, skill: SkillId, branch: 'A'
 
 function cardHtml(m: PlayerEntity, c: OfferCard, i: number): string {
   const v = cardView(m, c);
-  const style = v.color ? ` style="--k:${v.color}"` : '';
+  const rarity = v.skill ? cardRarity(v.skill) : null; // skill cards: an outline in the rarity's color, a glow for epic
+  const style = v.color ? ` style="--k:${v.color}"` : rarity ? ` style="--r:${RARITY_COLOR[rarity]}"` : '';
+  const rcls = rarity ? ` r r-${rarity}` : '';
+  const meta = v.skill ? metaHtml(m, v.skill) : '';
   const head = `<span class="lu-head2"><span class="lu-icon">${v.icon}</span><b class="lu-title"${v.color ? ` style="color:${v.color}"` : ''}>${esc(v.title)}</b><span class="lu-badge">${esc(v.badge)}</span></span>`;
   if (c.kind === 'upgrade' && c.tier === 3) {
-    return `<div class="lu-card k-${v.kind}">${head}<div class="lu-tier up">Pick a branch</div>${branchButton(m, i, c.skill, 'A')}${branchButton(m, i, c.skill, 'B')}</div>`;
+    return `<div class="lu-card k-${v.kind}${rcls}"${style}>${head}${meta}<div class="lu-tier up">Pick a branch</div>${branchButton(m, i, c.skill, 'A')}${branchButton(m, i, c.skill, 'B')}</div>`;
   }
   // Gear needs room in the bag (and the bag is read-only in a fight, so say so).
   if ((c.kind === 'gear' || c.kind === 'item') && bagRoom(m) <= 0) {
     const why = store.state?.phase === 'combat' ? `${BAG_FULL} (not during a fight)` : BAG_FULL;
     return `<button type="button" class="lu-card k-${v.kind} off" disabled${style}>${head}${v.body}<span class="lu-why">⛔ ${esc(why)}</span></button>`;
   }
-  return `<button type="button" class="lu-card k-${v.kind}"${style} data-pick="${i}">${head}${v.body}<span class="lu-go">Choose</span></button>`;
+  return `<button type="button" class="lu-card k-${v.kind}${rcls}"${style} data-pick="${i}">${head}${meta}${v.body}<span class="lu-go">Choose</span></button>`;
 }
 
 function forgetHtml(m: PlayerEntity, i: number): string {
@@ -169,11 +185,11 @@ function panelHtml(m: PlayerEntity, isOpen: boolean): string {
     forgetCard !== null ? forgetHtml(m, forgetCard) : offer.map((c, i) => cardHtml(m, c, i)).join('');
   return `<div class="lu-panel${elite ? ' elite' : ''}" role="dialog" aria-label="${elite ? 'Elite spoils' : reward ? 'Victory spoils' : 'Level up'}">
     <div class="lu-top">
-      <b>${elite ? '💀 Elite spoils' : reward ? '🏆 Victory spoils: pick one' : path ? `⬆️ Level ${SUBCLASS_LEVEL}: choose your path` : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : reward ? '' : 'pick 1 of ' + offer.length}</span></b>
+      <b>${elite ? '💀 Elite spoils' : reward ? '🏆 Victory spoils: pick one' : path ? '⬆️ Choose your path' : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : reward ? '' : 'pick 1 of ' + offer.length}</span></b>
       <button type="button" class="lu-min" data-lu="toggle" title="Collapse (L)" aria-label="Collapse">–</button>
     </div>
     ${elite ? '<div class="lu-explain">Pick one reward for beating the elite.</div>' : ''}
-    ${path ? '<div class="lu-explain">Pick a subclass. Its signature skill is yours now (no slot needed), and its other skills join your future level-up picks.</div>' : ''}
+    ${path ? '<div class="lu-explain">Your old save still has a subclass pick waiting. Its signature skill is yours now (no slot needed).</div>' : ''}
     <div class="lu-cards">${body}</div>
   </div>`;
 }

@@ -17,8 +17,13 @@ import {
   SKIP_TURN,
   SLOWED,
   STATUSES,
+  apOf,
   atEdge,
   attackBonus,
+  debuffsOn,
+  engineOf,
+  enginePicks,
+  stacksOf,
   avgDice,
   blockOf,
   canHitProps,
@@ -124,7 +129,7 @@ const without = <T extends Entity>(e: T, id: StatusId): T => (hasStatus(e, id) ?
 const skipsTurn = (e: Entity) => SKIP_TURN.some((id) => hasStatus(e, id));
 const isOffensive = (s: SkillStats) => s.target === 'enemy' || s.target === 'area' || s.target === 'around';
 /** Grease, Create Water: no damage, they only leave something on the ground (and may have no foe in them). */
-const isSetup = (s: SkillStats) => (!!s.surface && s.surface.at !== 'self' && !s.dmg) || !!s.trap; // ...or a snare
+const isSetup = (s: SkillStats) => (!!s.surface && s.surface.at !== 'self' && !s.dmg) || !!s.trap || (!!s.raise && !s.raise.ring); // ...or a snare, or raised cover
 
 // ---------------------------------------------------------------- numbers about monsters
 
@@ -393,6 +398,19 @@ function passiveDamage(me: PlayerEntity, id: SkillId, s: SkillStats, m: Entity):
   if (SKILLS[id].kind === 'spell') b += passiveOf(me, 'empowered_evocation')?.value ?? 0;
   if (s.target === 'area') b += passiveOf(me, 'sculpt_spells')?.value ?? 0;
   if (hasBranch(me, 'catalyst', 'B') && (s.element === 'fire' || s.element === 'cold' || s.element === 'lightning')) b += 2;
+  // Build engines (server/game.ts engineDamage).
+  if (SKILLS[id].kind === 'spell') b += stacksOf(me, 'charged') * (hasBranch(me, 'arcane_charge', 'A') ? 2 : 1) + stacksOf(me, 'unleashed') * 3.5;
+  if (s.per) {
+    const n = { poison: stacksOf(m, 'poisoned'), radiance: stacksOf(m, 'seared'), debuffs: debuffsOn(m), focus: stacksOf(me, 'aiming'), block: blockOf(me), verses: stacksOf(me, 'verse') }[s.per.of];
+    b += n * ((s.per.dice ? avgDice(s.per.dice) : 0) + (s.per.flat ?? 0));
+  }
+  if (s.element === 'lightning' && hasStatus(m, 'wet') && passiveOf(me, 'conductor') && s.dmg) b += (s.dmg.n * (s.dmg.d + 1)) / 2;
+  if (hasStatus(m, 'frozen')) b += (passiveOf(me, 'shatter_point')?.value ?? 0) * 3.5;
+  if (hasStatus(m, 'prone')) b += (passiveOf(me, 'stomp')?.value ?? 0) * 3.5;
+  const fury = passiveOf(me, 'blood_fury');
+  if (fury && s.range <= 1) b += fury.value * Math.floor((10 * (me.maxHp - me.hp)) / me.maxHp);
+  if (s.element === 'radiant') b += stacksOf(m, 'seared');
+  b += stacksOf(me, 'inspired') * 3.5;
   if (s.roll !== 'attack') return b;
   const die = SKILLS[id].kind === 'basic' ? (passiveOf(me, 'divine_strike')?.value ?? 0) : 0;
   if (die) b += (die + 1) / 2;
@@ -877,6 +895,33 @@ function blockWorth(sim: Sim, f: PlayerEntity, n: number): number {
 }
 
 /**
+ * The engines' active cards that aren't plain damage, heals or statuses: Toxic Catalyst (more Poison over the next
+ * turns), Entrench (your Block again), Unleash (Charges into dice), raised cover and walls, Finale (heals and Block per
+ * Verse on every friend). Rough prices: these are the setups the hit math doesn't see.
+ */
+function engineValue(sim: Sim, s: SkillStats, res: AimResult): number {
+  const me = sim.me;
+  let v = 0;
+  if (s.poisonMult) for (const m of res.foes) v += Math.min(stacksOf(m, 'poisoned') * (s.poisonMult - 1), 10) * 2.5 * 1.5;
+  if (s.doubleBlock) v += blockWorth(sim, me, me.block?.[me.id] ?? 0);
+  if (s.unleash) v += stacksOf(me, 'charged') * 3.5 * (me.slots > 0 ? 0.8 : 0.2) - 0.5;
+  if (s.raise) {
+    const shooters = sim.monsters.filter((m) => !isMelee(m)).length;
+    const near = sim.monsters.filter((m) => dist(m, res.center) <= 2).length;
+    if (s.raise.ring) v += res.main && isMelee(res.main as MonsterEntity) && !sim.heroes.some((h) => standing(h) && dist(h, res.main!) <= 1) ? 2 + threat(res.main as MonsterEntity) : 0;
+    else if (s.raise.cover === 'wall') v += near ? 1.5 * near : 0;
+    else v += sim.heroes.some((h) => standing(h) && dist(h, res.center) <= 1) ? 0.8 * shooters : 0;
+  }
+  if (s.rubble) v += 0.3 * s.rubble;
+  if (s.finale) {
+    const verses = stacksOf(me, 'verse');
+    for (const f of res.friends) if (standing(f)) v += Math.min(s.finale.heal * verses, f.maxHp - f.hp) * healWeight(f) + blockWorth(sim, f, s.finale.block * verses);
+    if (verses < 3) v -= 3; // wait for more Verses
+  }
+  return v;
+}
+
+/**
  * Snare Trap: a melee monster on its way to someone walks into the tiles between it and its target, so a snare there is
  * likely to catch it (about 35% if it's right next to it and still has to walk). Worth what Netted and the damage are.
  */
@@ -1346,6 +1391,7 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
   if (s.taunt) score += tauntValue(sim, s.taunt.radius, s.taunt.turns);
   if (s.hpCost) score -= heroLoss(me, hpCostOf(me, s), 0); // Blood Price: your own HP
   if (s.trap) score += trapValue(sim, s, res.center);
+  score += engineValue(sim, s, res);
   if (s.healSelf && s.heal) {
     const healed = res.friends.filter((f) => f.id !== me.id).reduce((n, f) => n + Math.min(avgDice(s.heal!) + healBonus(me, s), f.maxHp - f.hp), 0);
     score += Math.min(healed * s.healSelf, me.maxHp - me.hp) * healWeight(me);
@@ -1404,7 +1450,7 @@ function plansFrom(sim: Sim, setup: boolean): Plan[] {
       const res = resolveAim(s, sim.me, target, sim.ctx);
       if (typeof res === 'string') continue;
       const r = scorePlan(sim, id, s, res, setup);
-      if (r && (!top || r.score > top.score)) top = { skill: id, target, ap: s.ap, repeat: SKILLS[id].kind === 'basic', ...r };
+      if (r && (!top || r.score > top.score)) top = { skill: id, target, ap: apOf(sim.me, id, s), repeat: SKILLS[id].kind === 'basic', ...r };
     }
     if (top) out.push(top);
   }
@@ -1652,20 +1698,26 @@ export function autoApproachChoice(heroes: PlayerEntity[], dc: number): 'sneak' 
 
 const randomBranch = (): 'A' | 'B' => (Math.random() < 0.5 ? 'A' : 'B');
 /** How much a hero has invested in a skill (healing skills are kept a little longer). */
-const skillWorth = (o: OwnedSkill) => o.tier + (statsOf(o).heal ? 0.5 : 0);
+const skillWorth = (o: OwnedSkill) => o.tier + (statsOf(o).heal ? 0.5 : 0) + (engineOf(o.id) ? 0.5 : 0);
+/** Bots build engines: a card of an engine they already picked cards of is worth more (up to 4 cards). */
+const leanIn = (p: PlayerEntity, id: SkillId) => {
+  const e = engineOf(id);
+  return e ? 0.8 * Math.min(4, enginePicks(p, e)) : 0;
+};
 const ownedOfKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind && !isSignature(p, s.id)); // the signature can't be forgotten
 
 /** How much an auto hero wants a level-up card. */
 function cardValue(p: PlayerEntity, c: OfferCard): number {
   switch (c.kind) {
     case 'upgrade':
-      return nextTier(p, c.skill) === c.tier ? (c.tier === 3 ? 9 : 7) : -Infinity;
+      return nextTier(p, c.skill) === c.tier ? (c.tier === 3 ? 9 : 7) + 0.4 * leanIn(p, c.skill) : -Infinity;
     case 'learn': {
       if (p.skills.some((s) => s.id === c.skill)) return -Infinity;
       const kind = SKILLS[c.skill].kind;
+      if (kind === 'basic') return 6 + leanIn(p, c.skill); // Quick Stab: no slot needed
       // An empty passive slot is free power (and bot runs need passives exercised), so fill it early.
-      if (countKind(p, kind) < limitFor(p, kind)) return kind === 'passive' ? (countKind(p, 'passive') === 0 ? 7.5 : 6.5) : 8;
-      return 3 - Math.min(...ownedOfKind(p, kind).map(skillWorth)); // a swap: only worth it for a weak skill
+      if (countKind(p, kind) < limitFor(p, kind)) return (kind === 'passive' ? (countKind(p, 'passive') === 0 ? 7.5 : 6.5) : 8) + leanIn(p, c.skill);
+      return 3 + leanIn(p, c.skill) - Math.min(...ownedOfKind(p, kind).map(skillWorth)); // a swap: only worth it for a weak skill
     }
     case 'boon':
       if (c.boon === 'ac') return p.bonusAc < MAX_BONUS_AC ? 4 : -Infinity;

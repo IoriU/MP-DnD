@@ -1,6 +1,7 @@
 // Pool checks: broken references (errors), content that goes unused (warnings) and coverage goals (info).
 // Pure functions of the data, so they run under Node (tests/codex.test.ts) as well as in the codex page.
 
+import { CARD_RARITIES, type EngineDef } from '../../shared/engines.ts';
 import { MAX_CANTRIPS, MAX_SPELLS, passiveSlots } from '../../shared/rules.ts';
 import { liveData, monsterUsage, statusUsage, usedAsFoe, type CodexData } from './data.ts';
 
@@ -13,7 +14,7 @@ export interface Check {
   text: string;
 }
 
-export const POOLS = ['acts', 'encounters', 'monsters', 'allies', 'classes', 'subclasses', 'skills', 'items', 'statuses', 'events', 'sprites'];
+export const POOLS = ['acts', 'encounters', 'monsters', 'allies', 'classes', 'engines', 'skills', 'items', 'statuses', 'events', 'sprites'];
 
 /** Coverage goals from PLAN.md Phase 12. */
 export const GOALS = { events: 15, encounters: 8, classes: 8 };
@@ -40,19 +41,28 @@ export function coverage(d: CodexData): Coverage[] {
   return out;
 }
 
-/** The skills in a class's pool, by kind (`sub`: the subclass-only skills of that class, which are not in the pool counts). */
+/** Every card of an engine, rarest last. */
+export const engineCards = (e: EngineDef): string[] => CARD_RARITIES.flatMap((r) => e.cards[r] ?? []);
+
+/** The engines of a class. */
+export const enginesIn = (d: CodexData, classId: string): [id: string, def: EngineDef][] => Object.entries(d.engines).filter(([, e]) => e.classId === classId);
+
+/** Every class has this many build engines. */
+export const ENGINES_PER_CLASS = 3;
+
+/** The skills in a class's pool, by kind, and how many of them belong to an engine. */
 export function poolCounts(d: CodexData, pool: string) {
-  const all = Object.values(d.skills).filter((s) => s.pool === pool);
-  const defs = all.filter((s) => !s.sub);
+  const defs = Object.values(d.skills).filter((s) => s.pool === pool);
   const n = (kind: string) => defs.filter((s) => s.kind === kind).length;
-  return { cantrip: n('cantrip'), spell: n('spell'), passive: n('passive'), basic: n('basic'), sub: all.length - defs.length };
+  const inEngine = new Set(enginesIn(d, pool).flatMap(([, e]) => engineCards(e)));
+  return { cantrip: n('cantrip'), spell: n('spell'), passive: n('passive'), basic: n('basic'), engine: inEngine.size };
 }
 
-/** Skills a subclass adds to its class (its signature is one of them). */
-export const subclassSkills = (d: CodexData, sub: string): string[] => Object.keys(d.skills).filter((id) => d.skills[id].sub === sub);
-
-/** Fewest skills a subclass should have (its signature and two more). */
-export const MIN_SUBCLASS_SKILLS = 3;
+/** The class's cards (cantrips, spells and passives of its pool) that sit in no engine: general on purpose, or still to place. */
+export const looseCards = (d: CodexData, classId: string): string[] => {
+  const inEngine = new Set(enginesIn(d, classId).flatMap(([, e]) => engineCards(e)));
+  return Object.keys(d.skills).filter((id) => d.skills[id].pool === classId && ['cantrip', 'spell', 'passive'].includes(d.skills[id].kind) && !inEngine.has(id));
+};
 
 const ORDER: Record<Level, number> = { error: 0, warn: 1, info: 2 };
 
@@ -116,25 +126,28 @@ export function checks(d: CodexData = liveData()): Check[] {
     if ((def.a || def.b) && !def.t2) add('error', 'skills', `${def.base.name}: has a tier III branch but no tier II`, id);
     if ((def.kind === 'cantrip' || def.kind === 'spell' || def.kind === 'passive') && !def.t2) add('warn', 'skills', `${def.base.name}: ${def.kind} with no tier II (it can't be upgraded)`, id);
     if (def.kind === 'item' && id !== 'potion' && !d.items[id]) add('warn', 'items', `${def.base.name}: item skill with no ITEMS entry`, id);
-    if (def.sub) {
-      const sc = d.subclasses[def.sub];
-      if (!Object.hasOwn(d.subclasses, def.sub)) add('error', 'skills', `${def.base.name}: sub "${def.sub}" is not a subclass`, id);
-      else if (sc.classId !== def.pool) add('error', 'skills', `${def.base.name}: it is in the ${def.pool} pool, but ${sc.name} is a ${sc.classId} subclass`, id);
-    }
   }
   for (const [id, it] of Object.entries(d.items)) {
     if (it.kind === 'consumable' && !d.skills[id]) add('error', 'items', `Consumable "${id}" has no skill of the same id (its rules)`, id);
   }
 
-  // ---- subclasses
-  for (const [id, sc] of Object.entries(d.subclasses)) {
-    if (!Object.hasOwn(d.classes, sc.classId)) add('error', 'subclasses', `${sc.name}: class "${sc.classId}" does not exist`, id);
-    const sig = Object.hasOwn(d.skills, sc.signature) ? d.skills[sc.signature] : undefined;
-    if (!sig) add('error', 'subclasses', `${sc.name}: signature "${sc.signature}" is not in SKILLS`, id);
-    else if (sig.pool !== sc.classId) add('error', 'subclasses', `${sc.name}: signature ${sig.base.name} is in the ${sig.pool} pool, not ${sc.classId}`, id);
-    else if (sig.sub !== id) add('error', 'subclasses', `${sc.name}: signature ${sig.base.name} has sub ${sig.sub ? `"${sig.sub}"` : 'unset'}, not "${id}"`, id);
-    const n = subclassSkills(d, id).length;
-    if (n < MIN_SUBCLASS_SKILLS) add('warn', 'subclasses', `${sc.name} has ${n} skill${n === 1 ? '' : 's'}: a subclass wants at least ${MIN_SUBCLASS_SKILLS} (its signature and two more)`, id);
+  // ---- engines: three per class, each a set of class cards by rarity with an epic capstone
+  const owner = new Map<string, string>(); // card -> the engine that has it
+  for (const [id, e] of Object.entries(d.engines)) {
+    if (!Object.hasOwn(d.classes, e.classId)) add('error', 'engines', `${e.name}: class "${e.classId}" does not exist`, id);
+    if (!e.cards.epic?.length) add('error', 'engines', `${e.name} has no epic capstone`, id);
+    for (const card of engineCards(e)) {
+      const def = Object.hasOwn(d.skills, card) ? d.skills[card] : undefined;
+      if (!def) add('error', 'engines', `${e.name}: card "${card}" is not in SKILLS`, id);
+      else if (def.pool !== e.classId) add('error', 'engines', `${e.name}: card ${def.base.name} is in the ${def.pool} pool, not ${e.classId}`, id);
+      const other = owner.get(card);
+      if (other) add('error', 'engines', `${def?.base.name ?? card} is a card of both ${d.engines[other].name} and ${e.name}`, id);
+      else owner.set(card, id);
+    }
+  }
+  for (const [id, c] of Object.entries(d.classes)) {
+    const n = enginesIn(d, id).length;
+    if (n !== ENGINES_PER_CLASS) add('error', 'classes', `${c.name} has ${n} build engine${n === 1 ? '' : 's'}, not ${ENGINES_PER_CLASS}`, id);
   }
 
   // ---- statuses
@@ -161,7 +174,9 @@ export function checks(d: CodexData = liveData()): Check[] {
   }
   for (const [id, c] of Object.entries(d.classes)) {
     const n = poolCounts(d, id);
-    add('info', 'skills', `${c.name} pool: ${n.cantrip} cantrips, ${n.spell} spells, ${n.passive} passives, plus ${n.sub} subclass skills (a hero holds ${MAX_CANTRIPS} cantrips, ${MAX_SPELLS} spells and ${passiveSlots(1)}-${passiveSlots(8)} passives)`, id);
+    add('info', 'skills', `${c.name} pool: ${n.cantrip} cantrips, ${n.spell} spells, ${n.passive} passives, ${n.engine} of its cards in an engine (a hero holds ${MAX_CANTRIPS} cantrips, ${MAX_SPELLS} spells and ${passiveSlots(1)}-${passiveSlots(8)} passives)`, id);
+    const loose = looseCards(d, id);
+    if (loose.length) add('info', 'engines', `${c.name}: ${loose.length} class card${loose.length === 1 ? ' is' : 's are'} in no engine (some are general on purpose): ${loose.map((s) => d.skills[s].base.name).join(', ')}`, id);
   }
 
   return out.sort((a, b) => ORDER[a.level] - ORDER[b.level]);

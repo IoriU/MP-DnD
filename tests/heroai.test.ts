@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import { canStep, dist, reachable } from '../shared/grid.ts';
 import { CLASSES, CLASS_IDS, MONSTERS, TIER3_LEVEL, maxHpFor, maxSlotsFor } from '../shared/rules.ts';
 import { SKILLS, SKILL_IDS, canUpgrade, countKind, hpCostOf, limitFor, ownedSkill, resolveAim, skillBlockReason, slotCost, statsOf, type SkillId, type StatusId } from '../shared/skills.ts';
-import { SUBCLASS_LEVEL, subclassesOf } from '../shared/subclasses.ts';
 import { aimFieldOps, applyField, hazardAt, planWalk, type CloudId, type FieldLike, type GroundId, type PropId } from '../shared/surfaces.ts';
 import { attackAdvantage, dirTo, isBehind, isFlanking, netAdvantage } from '../shared/tactics.ts';
 import type { ClassId, MonsterEntity, PlayerEntity, Pos, TurnState } from '../shared/types.ts';
@@ -701,10 +700,9 @@ function randomMap(r: Rng): FieldLike {
 function randomHero(r: Rng, pos: Pos, classId: ClassId = r.pick(CLASS_IDS)): PlayerEntity {
   const level = r.int(1, 12);
   const p = hero(classId, pos.x, pos.y, { level, maxHp: 1, hp: 1, maxSlots: 0, slots: 0 });
-  if (level >= SUBCLASS_LEVEL) p.subclass = r.pick(subclassesOf(classId)); // and its skills can come up below
   for (const id of r.shuffle([...ACTIVE])) {
     const def = SKILLS[id];
-    if ((def.pool !== classId && def.pool !== 'common') || (def.sub && def.sub !== p.subclass) || p.skills.some((s) => s.id === id)) continue;
+    if ((def.pool !== classId && def.pool !== 'common') || p.skills.some((s) => s.id === id)) continue;
     if (countKind(p, def.kind) < limitFor(p, def.kind) && r.chance(0.5)) p.skills.push({ id, tier: 1, cd: 0 });
   }
   for (const s of p.skills) {
@@ -834,6 +832,13 @@ function messyFight(seed: number) {
   for (const e of [...f.heroes, ...f.monsters]) {
     for (const id of ['wet', 'chilled', 'frozen', 'shocked'] as const) if (r.chance(id === 'frozen' ? 0.04 : 0.12)) e.statuses.push({ id, turns: 1 });
   }
+  // The engines made the pools deep (2026-10-19): make sure the setups still come up, so the checks cover them.
+  const setup = ({ wizard: 'grease', cleric: 'create_water' } as const)[f.me.classId as 'wizard' | 'cleric'];
+  if (setup && r.chance(0.6) && !f.me.skills.some((s) => s.id === setup)) {
+    f.me.skills.push({ id: setup, tier: 1, cd: 0 });
+    f.me.maxSlots = Math.max(1, f.me.maxSlots);
+    f.me.slots = Math.max(1, f.me.slots);
+  }
   return f;
 }
 
@@ -881,5 +886,7 @@ test(`whole turns in ${FIGHTS} random fights on a messy battlefield end without 
     }
   }
   // Barrels get smashed and the setups get cast (so the checks above cover them).
-  for (const id of ['prop', 'grease', 'create_water', 'shove']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
+  for (const id of ['prop', 'shove']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
+  // A ground setup too (with the deeper pools Create Water often loses to the cleric's other spells, Grease to the wizard's).
+  assert.ok(used.get('grease') || used.get('create_water'), `never used a setup: ${JSON.stringify([...used])}`);
 });

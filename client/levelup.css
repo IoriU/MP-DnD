@@ -122,6 +122,20 @@ button.lu-card:focus-visible,
 .lu-note { font-size: 11px; color: var(--muted); }
 .lu-sig { font-size: 13px; }
 
+/* A skill card's rarity (--r): an outline in its color, and a glow for an epic capstone. Common keeps the plain outline. */
+.lu-card.r-uncommon, .lu-card.r-rare, .lu-card.r-epic { border-color: var(--r) var(--r) var(--r) var(--k); }
+button.lu-card.r-uncommon:hover, button.lu-card.r-rare:hover, button.lu-card.r-epic:hover { border-color: var(--r) var(--r) var(--r) var(--k); box-shadow: 0 0 10px -3px var(--r); }
+.lu-card.r-epic {
+  border-width: 2px 2px 2px 4px;
+  background: linear-gradient(135deg, #2b1a45, var(--panel-2) 65%);
+  box-shadow: 0 0 14px -3px var(--r), inset 0 0 20px -12px var(--r);
+}
+button.lu-card.r-epic:hover { background: linear-gradient(135deg, #38205a, #2a2018 65%); box-shadow: 0 0 18px -2px var(--r), inset 0 0 20px -12px var(--r); }
+.lu-card.r-epic .lu-title { color: var(--r); }
+.lu-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 1px 8px; font-size: 11px; }
+.lu-rarity { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; }
+.lu-engine { color: var(--muted); cursor: help; }
+
 .lu-head2 { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .lu-icon { flex: none; font-size: 20px; }
 .lu-title { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }

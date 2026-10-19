@@ -1,6 +1,6 @@
 // Rewards after every win (decided 2026-10-19): each hero picks one of three cards after every won fight (two skill
-// cards and an item card), levels give HP and power (and the subclass pick at level 3), and potions drop with Slay the
-// Spire's odds. Progression is tested as pure functions; the potion odds through the real Game class.
+// cards and an item card), levels give HP and power (no pick: builds are engines now, tests/engines.test.ts), and potions
+// drop with Slay the Spire's odds. Progression is tested as pure functions; the potion odds through the real Game class.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -96,21 +96,22 @@ test('picking a victory card uses up a victory pick; the item goes in the bag; b
   assert.equal(picksLeft(p), 0);
 });
 
-test('levels give stats, not picks: the only level-up pick is the subclass at level 3', () => {
+test('levels give stats, not picks: no level-up pick is owed at level 2 or 3 (the subclass pick is gone)', () => {
   const p = hero('ranger');
   p.xp = xpToNext(1);
   assert.equal(applyLevelUps(p), 1);
   assert.equal(p.levelUps, 0, 'level 2: nothing to pick');
   p.xp = xpToNext(2);
-  applyLevelUps(p);
-  assert.equal(p.levelUps, 1, 'level 3: the subclass');
+  assert.equal(applyLevelUps(p), 1);
+  assert.equal(p.level, 3);
+  assert.equal(p.levelUps, 0, 'level 3: nothing to pick either');
   dealOffer(p, makeRng(1), 1);
-  assert.deepEqual(p.offer?.map((c) => c.kind), ['subclass', 'subclass']);
+  assert.equal(p.offer, null, 'so no offer is dealt');
 });
 
-test('elite spoils come first, then the subclass, then the victory picks', () => {
+test('elite spoils come first, then the victory picks', () => {
   const p = hero('paladin', 3);
-  Object.assign(p, { elitePicks: 1, levelUps: 1, rewardPicks: 1 });
+  Object.assign(p, { elitePicks: 1, levelUps: 0, rewardPicks: 2 });
   const order: string[] = [];
   const r = makeRng(9);
   dealOffer(p, r, 1);
@@ -118,8 +119,7 @@ test('elite spoils come first, then the subclass, then the victory picks', () =>
     order.push(p.offerKind!);
     assert.equal(applyPick(p, autoLevelPick(p), r, 1).ok, true);
   }
-  assert.deepEqual(order, ['elite', 'level', 'reward']);
-  assert.ok(p.subclass);
+  assert.deepEqual(order, ['elite', 'reward', 'reward']);
 });
 
 // ---------------------------------------------------------------- potions and the spoils pick in the Game class

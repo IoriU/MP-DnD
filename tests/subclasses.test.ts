@@ -10,13 +10,14 @@ import { nextHeroIntent, type HeroView } from '../server/heroai.ts';
 import { applyPick, dealOffer, makeOffer, recalcHero, startingSkills } from '../server/progression.ts';
 import { makeRng } from '../server/rng.ts';
 import { AP_GAIN } from '../shared/rules.ts';
-import { SKILLS, blockOf, countKind, hpCostOf, isSignature, limitFor, resolveAim, skillBlockReason, statsAt, type AimResult } from '../shared/skills.ts';
-import { subclassesOf } from '../shared/subclasses.ts';
+import { SKILLS, blockOf, countKind, engineOf, hpCostOf, isSignature, limitFor, resolveAim, skillBlockReason, statsAt, type AimResult } from '../shared/skills.ts';
 import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
 
-// Subclasses (decided 2026-10-19): at level 3 each hero picks one of their class's two subclasses as a level-up pick. The
-// signature skill comes at once (no slot, can't be forgotten), and later offers draw the subclass's own skills. These
-// tests drive the subclass rules through the real Game class (private members reached with `any`, as in tests/block.test.ts)
+// Subclasses, old style. Since 2026-10-19 there is no subclass pick (builds are engines, shared/engines.ts, tested in
+// tests/engines.test.ts): levels and victories give skill cards, and no offer has a subclass card. What's left here is
+// the rules for a save made before that change, where a hero still has `subclass` set: its signature skill is learned at
+// once, takes no slot and can't be forgotten, and the subclass's own rules (Blood Price, Snare Trap, ...) still work.
+// These tests drive those rules through the real Game class (private members reached with `any`, as in tests/block.test.ts)
 // and the level-up offers on hand-made heroes (as in tests/progression.test.ts).
 
 const saves = fs.mkdtempSync(path.join(os.tmpdir(), 'delvers-subclasses-'));
@@ -117,30 +118,34 @@ const turn = (ap: number): TurnState => ({ order: [], init: {}, index: 0, round:
 
 // ---------------------------------------------------------------- picking a subclass
 
-test('a level-3 fighter with a level-up pick and no subclass is dealt the two Fighter subclass cards', () => {
+test('no subclass pick any more: a level-3 fighter\'s level-up pick is skill cards, never a subclass', () => {
   const f = progHero('fighter', 3);
   f.levelUps = 1;
   dealOffer(f, makeRng(1), 1);
-  assert.deepEqual(f.offer, [
-    { kind: 'subclass', sub: 'weapon_master' },
-    { kind: 'subclass', sub: 'guardian' },
-  ]);
-  assert.deepEqual(f.offer, subclassesOf('fighter').map((sub) => ({ kind: 'subclass', sub })));
   assert.equal(f.offerKind, 'level');
+  assert.ok(f.offer && f.offer.length === 3, 'three cards');
+  assert.deepEqual(
+    f.offer?.map((c) => c.kind).filter((k) => k === 'subclass'),
+    [],
+    'no subclass card',
+  );
 });
 
-test('picking card 0 sets the subclass and teaches its signature, which takes no slot and cannot be forgotten', () => {
+test('a save from before engines: a hero with a subclass keeps its signature, which takes no slot and cannot be forgotten', () => {
   const f = progHero('fighter', 3);
-  f.levelUps = 1;
-  dealOffer(f, makeRng(1), 1);
-  const res = applyPick(f, { card: 0 }, makeRng(2), 1);
-  assert.equal(res.ok, true);
-  assert.equal(f.subclass, 'weapon_master');
-  assert.ok(f.skills.some((s) => s.id === 'cleave'), 'Cleave is learned');
+  const plain = countKind(f, 'cantrip');
+  f.subclass = 'weapon_master';
+  f.skills.push(own('cleave'));
   assert.ok(isSignature(f, 'cleave'));
-  assert.equal(countKind(f, 'cantrip'), 1, 'only Shield Bash counts toward the cantrip bar, not Cleave');
-  assert.equal(f.skills.filter((s) => SKILLS[s.id].kind === 'cantrip').length, 2);
-  assert.equal(f.offer, null, 'no more picks waiting');
+  assert.equal(countKind(f, 'cantrip'), plain, 'Cleave takes no slot on the cantrip bar');
+  assert.equal(f.skills.filter((s) => SKILLS[s.id].kind === 'cantrip').length, plain + 1, 'but it is a cantrip');
+  // It can't be forgotten to make room: with the bar full, only a plain cantrip can go.
+  f.skills.push(own('heavy_strike'), own('battle_cry'));
+  assert.equal(countKind(f, 'cantrip'), limitFor(f, 'cantrip'));
+  f.levelUps = 1;
+  f.offer = [{ kind: 'learn', skill: 'trip_attack' }];
+  assert.equal(applyPick(f, { card: 0, forget: 'cleave' }, makeRng(1)).ok, false, 'the signature cannot be forgotten');
+  assert.ok(f.skills.some((s) => s.id === 'cleave'));
 });
 
 test('with the cantrip bar full, learning a cantrip cannot forget the signature (but forgetting another one works)', () => {
@@ -164,20 +169,20 @@ test('with the cantrip bar full, learning a cantrip cannot forget the signature 
 
 // ---------------------------------------------------------------- offers after the pick
 
-test("after picking a subclass, level-up offers never draw another subclass's skills, and do draw its own", () => {
+test('a fighter with an old subclass is still offered only fighter and common skills, and its engine\'s cards come up', () => {
   const f = progHero('fighter', 4);
   f.subclass = 'guardian';
   f.skills.push(own('shield_wall'));
-  let sawOwn = false;
+  let sawGuardian = false;
   for (let seed = 1; seed <= 200; seed++) {
     for (const card of makeOffer(f, makeRng(seed))) {
       if (card.kind !== 'learn' && card.kind !== 'upgrade') continue;
-      const sub = SKILLS[card.skill].sub;
-      assert.ok(!sub || sub === 'guardian', `seed ${seed}: offered ${card.skill}, which is ${sub}'s`);
-      if (sub === 'guardian') sawOwn = true;
+      const pool = SKILLS[card.skill].pool;
+      assert.ok(pool === 'fighter' || pool === 'common', `seed ${seed}: offered ${card.skill}, which is ${pool}'s`);
+      if (engineOf(card.skill) === 'guardian') sawGuardian = true;
     }
   }
-  assert.ok(sawOwn, 'a Guardian skill (Shield Wall upgrades, Iron Recovery, Spiked Shield) shows up in some offer');
+  assert.ok(sawGuardian, 'a Guardian (engine) card shows up in some offer');
 });
 
 // ---------------------------------------------------------------- Berserker: Blood Price

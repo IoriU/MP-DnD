@@ -22,7 +22,7 @@ import {
   aimAt, attackProblem, bestAttack, bestPropAttack, currentEntity, huntedIds, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, refresh, select, store,
   subscribe, validTarget,
 } from './store.ts';
-import { $, esc, toast } from './util.ts';
+import { $, esc, stacksShown, toast } from './util.ts';
 
 const T = 32; // tile size in pixels
 const ART = T / SPRITE_PX; // DawnLike sprites are 16x16, drawn at 2x so one fills a tile
@@ -969,7 +969,7 @@ class DungeonScene extends Phaser.Scene {
     const down = e.kind === 'player' && e.downed;
     const soak = blockOf(e) + (e.kind === 'player' ? e.tempHp : (e.ward ?? 0)); // damage Block, a hero's temp HP or a Shielded elite's ward still soaks
     const shown = dead ? [] : e.statuses.slice(0, MAX_TAGS);
-    const key = `${e.hp}/${e.maxHp}/${soak}/${dead}/${down}/${e.facing?.x},${e.facing?.y}/${e.statuses.map((x) => x.id).join(',')}`;
+    const key = `${e.hp}/${e.maxHp}/${soak}/${dead}/${down}/${e.facing?.x},${e.facing?.y}/${e.statuses.map((x) => `${x.id}${stacksShown(x)}`).join(',')}`;
     if (sp.key === key) return;
     sp.key = key;
     const big = e.kind === 'monster' && (e.boss || e.elite);
@@ -1012,7 +1012,7 @@ class DungeonScene extends Phaser.Scene {
       if (soak > 0) sp.bar.fillStyle(0x6fd3ff, 0.95).fillRect(-w / 2, r - 4, w * Math.min(1, soak / e.maxHp), 2);
     }
     // Status icons across the top of the token, on a dark pill so they read over the emoji.
-    const icons = shown.map((x) => STATUSES[x.id].icon).join('') + (!dead && e.statuses.length > MAX_TAGS ? '+' : '');
+    const icons = shown.map((x) => STATUSES[x.id].icon + (stacksShown(x) || '')).join('') + (!dead && e.statuses.length > MAX_TAGS ? '+' : '');
     const top = art && big ? -r - 1 : -T / 2; // a big sprite sticks out above the tile: the pill goes above it
     sp.tags.setText(icons).setPosition(0, top + 1);
     sp.tagBg.clear();
@@ -1232,7 +1232,7 @@ class DungeonScene extends Phaser.Scene {
     const block = blockOf(e) > 0 ? ` (+${blockOf(e)} 🧱 Block)` : '';
     const soak = block + (e.kind === 'player' ? (e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '') : mon?.ward ? ` (+${mon.ward} 🔰 ward)` : '');
     const lines = [`<b>${esc(e.name)}</b>${tag} ${traitIcons(e)}`.trim(), `${e.hp} / ${e.maxHp} HP${soak} · AC ${e.ac}`];
-    if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name} ${x.turns}`).join(' · '));
+    if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name}${stacksShown(x) ? ` ×${stacksShown(x)}` : ''} ${x.turns}`).join(' · '));
     const resist = this.resistLine(e);
     if (resist) lines.push(resist);
     // Who the monsters (or the NPC allies) have picked: the red reticle on the map.

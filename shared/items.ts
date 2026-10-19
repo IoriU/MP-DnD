@@ -36,6 +36,14 @@ export interface GearStats {
   resist?: Partial<Record<Element, Resist>>;
   alert?: boolean; // can't be surprised
   lucky?: number; // rerolls of a natural 1 on an attack, per fight
+  // build engines (shared/engines.ts)
+  crit?: number; // your attacks crit this much sooner (19-20 for 1)
+  thorns?: number; // melee attackers that hit you take this much
+  lifesteal?: number; // percent of your melee damage you heal
+  poison?: number; // basic weapon hits add this much Poison
+  charges?: number; // Arcane Charges you start every fight with
+  verses?: number; // Verses you start every fight with
+  radiance?: number; // your radiant hits add this much Radiance
 }
 
 export interface GearDef {
@@ -89,6 +97,16 @@ const ITEM_DEFS = {
   ember_ring: gear('trinket', 'Ring of Warmth', '🔆', 'common', { resist: { fire: 'resist', cold: 'resist' } }),
   buckler: gear('trinket', 'Buckler', '🥏', 'common', { block: 2 }),
   tower_shield: gear('trinket', 'Tower Shield', '🧱', 'epic', { block: 5, speed: -1 }),
+  // ---------------------------------------------- engine gear (decided 2026-10-19): each one feeds a build
+  keen_whetstone: gear('trinket', 'Keen Whetstone', '🔹', 'rare', { crit: 1 }),
+  venom_vial: gear('trinket', 'Venom Vial', '🧪', 'uncommon', { poison: 1 }),
+  spiked_pauldrons: gear('armor', 'Spiked Pauldrons', '🦔', 'rare', { ac: 1, thorns: 2 }),
+  bloodstone: gear('trinket', 'Bloodstone', '🩸', 'rare', { lifesteal: 10 }),
+  charged_orb: gear('weapon', 'Charged Orb', '🔮', 'epic', { power: 1, charges: 2 }, 'For spellcasters: it hums with stored power.'),
+  lute_of_echoes: gear('trinket', 'Lute of Echoes', '🪕', 'rare', { verses: 2 }),
+  sunstone: gear('trinket', 'Sunstone', '🌞', 'uncommon', { radiance: 1 }),
+  vorpal_blade: gear('weapon', 'Vorpal Blade', '⚔️', 'legendary', { crit: 2, dmg: 2 }, 'So sharp it finds the gaps in anything.'),
+  ancient_aegis: gear('armor', 'Aegis of the Ancients', '🛡️', 'legendary', { ac: 2, block: 4 }),
   // ---------------------------------------------- consumables (their skills are in shared/skills.ts)
   greater_potion: use('uncommon'),
   ether: use('uncommon'),
@@ -142,6 +160,8 @@ const RELIC_DEFS = {
   lodestone: { name: 'Lodestone', icon: '🧲', rarity: 'common', desc: 'Shoves push 1 tile further.' },
   vampire_fang: { name: 'Vampire Fang', icon: '🦷', rarity: 'rare', desc: 'Killing blows heal 3 HP.' },
   smelling_salts: { name: 'Smelling Salts', icon: '👃', rarity: 'common', desc: 'A hero healed back up from 0 HP gets 5 HP more.' },
+  storm_coil: { name: 'Storm Coil', icon: '🌀', rarity: 'uncommon', desc: 'Lightning hits on the Wet deal +3.' },
+  plague_censer: { name: 'Plague Censer', icon: '🏺', rarity: 'rare', desc: 'Every Poison a hero puts on a monster is 1 stronger.' },
   // act bosses drop these
   phoenix_feather: { name: 'Phoenix Feather', icon: '🪶', rarity: 'boss', desc: 'Once per fight, the first hero to drop to 0 HP rises again with half their HP.' },
   loaded_dice: { name: 'Loaded Dice', icon: '🎲', rarity: 'boss', desc: 'Every hero crits on a 19 or 20.' },
@@ -295,7 +315,9 @@ export function statBlocks(p: Geared): GearStats[] {
   return out;
 }
 
-type NumKey = 'ac' | 'hp' | 'speed' | 'init' | 'saves' | 'slots' | 'stealth' | 'hit' | 'dmg' | 'power' | 'heal' | 'shove' | 'lucky' | 'block';
+type NumKey =
+  | 'ac' | 'hp' | 'speed' | 'init' | 'saves' | 'slots' | 'stealth' | 'hit' | 'dmg' | 'power' | 'heal' | 'shove' | 'lucky' | 'block'
+  | 'crit' | 'thorns' | 'lifesteal' | 'poison' | 'charges' | 'verses' | 'radiance';
 
 /** The sum of one number over a hero's equipment and the party's relics and blessings. */
 export const gearBonus = (p: Geared, key: NumKey): number => statBlocks(p).reduce((s, st) => s + (st[key] ?? 0), 0);
@@ -352,6 +374,13 @@ export function describeStats(st: GearStats): string {
   }
   if (st.alert) parts.push("can't be surprised");
   if (st.lucky) parts.push(`reroll ${st.lucky === 1 ? 'a natural 1' : `${st.lucky} natural 1s`} on attacks per fight`);
+  if (st.crit) parts.push(`your attacks crit on ${20 - st.crit} or higher`);
+  if (st.thorns) parts.push(`melee attackers that hit you take ${st.thorns}`);
+  if (st.lifesteal) parts.push(`your melee hits heal you ${st.lifesteal}% of the damage`);
+  if (st.poison) parts.push(`basic attacks add ${st.poison} Poison`);
+  if (st.charges) parts.push(`start every fight with ${st.charges} Arcane Charges`);
+  if (st.verses) parts.push(`start every fight with ${st.verses} Verses`);
+  if (st.radiance) parts.push(`your radiant hits add ${st.radiance} Radiance`);
   const text = parts.join(', ');
   return text ? text[0].toUpperCase() + text.slice(1) + '.' : '';
 }

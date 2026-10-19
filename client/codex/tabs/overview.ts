@@ -1,5 +1,6 @@
 // Overview: counts per pool, coverage goals, the pool checks and the key numbers (difficulty, party scaling, XP, budgets).
 
+import { ENGINE_IDS } from '../../../shared/engines.ts';
 import { GEAR_IDS, CONSUMABLE_IDS, BLESSING_IDS, RELIC_IDS } from '../../../shared/items.ts';
 import { ALLY_IDS, TRAIT_IDS } from '../../../shared/elites.ts';
 import {
@@ -9,10 +10,9 @@ import {
   partyScaling, passiveSlots, profBonus, roomGold, scaledHp, xpToNext,
 } from '../../../shared/rules.ts';
 import { SKILL_IDS, SKILLS, STATUSES } from '../../../shared/skills.ts';
-import { SUBCLASS_IDS, SUBCLASS_LEVEL } from '../../../shared/subclasses.ts';
 import { CLOUDS, GROUNDS, PROPS } from '../../../shared/surfaces.ts';
 import { EVENTS } from '../../../server/events.ts';
-import { checks, coverage, POOLS, type Check } from '../checks.ts';
+import { checks, coverage, engineCards, POOLS, type Check } from '../checks.ts';
 import { ALLY_MONSTERS, DATA } from '../model.ts';
 import { srcConst, srcTag } from '../sources.ts';
 import { chip, esc, fmtNum, group, kv, link, plural, q, td, th, wrapTable, type TabDef } from '../ui.ts';
@@ -20,9 +20,9 @@ import { chip, esc, fmtNum, group, kv, link, plural, q, td, th, wrapTable, type 
 /** Which tab an entry id of a check's pool opens (the entries carry data-id), if any. */
 function idLink(c: Check): string {
   if (!c.id) return '';
-  const tab: Record<string, string> = { acts: 'monsters', encounters: 'monsters', monsters: 'monsters', allies: 'elites', classes: 'heroes', subclasses: 'heroes', skills: 'skills', items: 'items', statuses: 'rules', events: 'events' };
+  const tab: Record<string, string> = { acts: 'monsters', encounters: 'monsters', monsters: 'monsters', allies: 'elites', classes: 'heroes', engines: 'heroes', skills: 'skills', items: 'items', statuses: 'rules', events: 'events' };
   const to = c.pool === 'sprites' ? (Object.hasOwn(MONSTERS, c.id) ? 'monsters' : 'heroes') : tab[c.pool];
-  const id = c.pool === 'subclasses' ? DATA.subclasses[c.id]?.classId ?? c.id : c.id; // a subclass lives on its class's card
+  const id = c.pool === 'engines' ? DATA.engines[c.id]?.classId ?? c.id : c.id; // an engine lives on its class's card
   return to ? link(`${to}?id=${id}`, `<code>${esc(c.id)}</code>`) : `<code>${esc(c.id)}</code>`;
 }
 
@@ -31,7 +31,7 @@ function counts(): string {
   const npc = ALLY_IDS.length;
   const cards: [number, string, string, string][] = [
     [CLASS_IDS.length, 'Classes', 'heroes', ''],
-    [SUBCLASS_IDS.length, 'Subclasses', 'heroes', `picked at Lv ${SUBCLASS_LEVEL}`],
+    [ENGINE_IDS.length, 'Engines', 'heroes', `${ENGINE_IDS.length / CLASS_IDS.length} per class · ${ENGINE_IDS.reduce((n, id) => n + engineCards(DATA.engines[id]).length, 0)} cards`],
     [SKILL_IDS.length, 'Skills', 'skills', `${kinds('cantrip')} cantrips · ${kinds('spell')} spells · ${kinds('passive')} passives · ${kinds('item')} consumables`],
     [GEAR_IDS.length, 'Gear', 'items', 'weapons, armor, trinkets'],
     [CONSUMABLE_IDS.length, 'Consumables', 'items', ''],
@@ -106,18 +106,18 @@ function levelTable(): string {
   const rows = Array.from({ length: LEVEL_CAP }, (_, i) => {
     const lv = i + 1;
     const next = lv < LEVEL_CAP ? xpToNext(lv) : 0;
-    const row = `<tr>${td(`Lv ${lv}`)}${td(next || '—')}${td(total)}${td(`+${profBonus(lv)}`)}${td(passiveSlots(lv))}${td(lv >= TIER3_LEVEL ? 'yes' : '—')}${td(lv >= SUBCLASS_LEVEL ? 'yes' : '—')}</tr>`;
+    const row = `<tr>${td(`Lv ${lv}`)}${td(next || '—')}${td(total)}${td(`+${profBonus(lv)}`)}${td(passiveSlots(lv))}${td(lv >= TIER3_LEVEL ? 'yes' : '—')}</tr>`;
     total += next;
     return row;
   }).join('');
-  return wrapTable([th('Level'), th('XP to next'), th('Total XP'), th('Proficiency'), th('Passive slots'), th('Tier III'), th('Subclass')].join(''), rows);
+  return wrapTable([th('Level'), th('XP to next'), th('Total XP'), th('Proficiency'), th('Passive slots'), th('Tier III')].join(''), rows);
 }
 
 function constants(): string {
   const c = (name: string, v: string | number, f?: Parameters<typeof srcConst>[1]): [string, string | number, string] => [name, v, srcConst(name, f)];
   return kv([
     c('MAX_PLAYERS', MAX_PLAYERS), c('MIN_PARTY', MIN_PARTY), c('MAX_ACT', MAX_ACT), c('ACT_ROWS', ACT_ROWS), c('MAP_COLS', MAP_COLS), c('VOTE_MS', `${VOTE_MS / 1000}s`),
-    c('LEVEL_CAP', LEVEL_CAP), c('TIER3_LEVEL', TIER3_LEVEL), c('SUBCLASS_LEVEL', SUBCLASS_LEVEL, 'subclasses'), c('MAX_CANTRIPS', MAX_CANTRIPS), c('MAX_SPELLS', MAX_SPELLS),
+    c('LEVEL_CAP', LEVEL_CAP), c('TIER3_LEVEL', TIER3_LEVEL), c('MAX_CANTRIPS', MAX_CANTRIPS), c('MAX_SPELLS', MAX_SPELLS),
     c('XP_SHARED', XP_SHARED), c('XP_KILL', XP_KILL), c('XP_ASSIST', XP_ASSIST), c('XP_HEAL', XP_HEAL), c('XP_REVIVE', XP_REVIVE), c('XP_BUFF', XP_BUFF),
     c('XP_CATCH_UP', XP_CATCH_UP), c('STEAL_SHARE', STEAL_SHARE),
     c('REST_HEAL', REST_HEAL), c('REST_MS', `${REST_MS / 1000}s`), c('BOON_HP', BOON_HP), c('MAX_BONUS_AC', MAX_BONUS_AC),

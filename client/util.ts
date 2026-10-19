@@ -1,6 +1,8 @@
+import { ENGINES } from '../shared/engines.ts';
 import { CLASSES, MONSTER_AIS, type MonsterAi } from '../shared/rules.ts';
+import { topEngine, type StatusId } from '../shared/skills.ts';
 import { SUBCLASSES } from '../shared/subclasses.ts';
-import type { PlayerEntity } from '../shared/types.ts';
+import type { PlayerEntity, StatusInst } from '../shared/types.ts';
 
 export const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -11,11 +13,16 @@ export function monsterAiTag(ai: MonsterAi | undefined): { label: string; tip: s
   return { label: `${def.icon} PPO`, tip: `${def.name}: ${def.desc}` };
 }
 
-/** "Fighter", or "Fighter · Guardian" once the hero has picked a subclass. */
-export function classLabel(h: Pick<PlayerEntity, 'classId' | 'subclass'>): string {
-  const sub = h.subclass ? SUBCLASSES[h.subclass] : undefined;
-  return sub ? `${CLASSES[h.classId].name} · ${sub.name}` : CLASSES[h.classId].name;
+/** "Fighter", or "Fighter · Guardian" once the hero's picks lean into an engine (an old save's subclass counts too). */
+export function classLabel(h: Pick<PlayerEntity, 'classId' | 'subclass' | 'skills'>): string {
+  const engine = topEngine(h);
+  const name = engine ? ENGINES[engine].name : h.subclass ? SUBCLASSES[h.subclass]?.name : undefined;
+  return name ? `${CLASSES[h.classId].name} · ${name}` : CLASSES[h.classId].name;
 }
+
+/** Statuses whose power is a stack count, shown after the icon when there is more than one ("🤢5"). */
+const STACKED: StatusId[] = ['poisoned', 'charged', 'unleashed', 'seared', 'aiming', 'verse', 'inspired', 'rallied', 'drained'];
+export const stacksShown = (x: Pick<StatusInst, 'id' | 'power'>): number => (STACKED.includes(x.id) && (x.power ?? 0) > 1 ? x.power! : 0);
 
 export function esc(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);

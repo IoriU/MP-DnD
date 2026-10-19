@@ -108,9 +108,9 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - ✨ **Supports** (the Goblin Shaman, Necromancer and Dragon Priest) heal and buff their side from the back. Kill them first.
   - 💨 **Cowards** (rats and kobolds) run away when they get hurt.
   - They talk, too: the monsters' shouts show up in italics in the log.
-- **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Levels give HP and power, and the subclass at level 3. Skills come from the **🏆 spoils** after every won fight: each hero picks 1 of 3 cards (two skills, new or upgrades, and an item: gear or a consumable, now and then a boon); pick whenever you like, nobody has to wait. A 🧪 potion can drop after a fight too: 40% at first, and the odds climb after every fight without one.
+- **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Levels give HP and power and nothing else. Skills come from the **🏆 spoils** after every won fight: each hero picks 1 of 3 cards (two skills, new or upgrades, and an item: gear or a consumable, now and then a boon); pick whenever you like, nobody has to wait. A 🧪 potion can drop after a fight too: 40% at first, and the odds climb after every fight without one.
 - **At 0 HP** you fall unconscious and roll death saves on your turn. A friend next to you can 🤝 Help Up (2 AP, back at 25% max HP); healing spells, potions and scrolls work too, cantrips don't. Either way you're 🥴 Groggy and lose your next turn. If the party wins the fight, everyone gets back up, even the dead, but the dead come back 🩹 Injured (−20% max HP per death) until the next rest site.
-- **Rarity** uses the usual colors (grey, green, blue, purple epic, orange legendary) and weighted odds by act, with a pity counter on item cards.
+- **Rarity** uses the usual colors (grey, green, blue, purple epic, orange legendary) and weighted odds by act, with a pity counter on item cards. Skill cards have rarities too (up to epic).
 - **Between rooms:** HP carries over. Drink potions, or heal a friend by picking a heal and clicking their party card.
 - **Camera:** the mouse wheel zooms and right-drag pans.
 - **Graphics:** pixel art by default; press **G** to switch to the classic emoji look (it's remembered).
@@ -130,18 +130,18 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 | ⚜️ Paladin | AC 17 and holy fire. Divine Smite hits hard with radiant damage, Lay on Hands heals with a touch, Compelled Duel pulls a monster off your friends, and the Aura of Protection helps everyone near you resist. |
 | 🎻 Bard | Support from range. Vicious Mockery stings and dazes, Bardic Inspiration gives an ally advantage, Healing Ballad heals the whole party, Hideous Laughter takes a monster out of the fight. Fragile. |
 
-At **level 3** every hero picks a **subclass**, one of two for their class (that level-up pick is just those two cards). It gives a signature skill right away (no slot needed, and it can't be forgotten) and adds its own skills to your spoils from then on.
+Every class has **three build engines**: ways to build a hero out of the cards you pick. Nothing is chosen up front. Skill cards have **rarities** like items (common, uncommon, rare, epic), and every class card belongs to an engine. Picks **lean toward the engines you've started** (2 cards of an engine make its cards twice as likely, 4 make them three times), so a build grows as you go. An **epic capstone**, a card that bends a rule of its engine, only shows up once you own 2 cards of that engine. The card shows its rarity and engine, and how many of that engine's cards you have; your party card shows your strongest engine ("Fighter · Guardian").
 
-| Class | Subclass A | Subclass B |
-|---|---|---|
-| 🛡️ Fighter | ⚔️ **Weapon Master**: damage, cleave, counters | 🛡️ **Guardian**: Block, self-heal, thorns |
-| 🗡️ Rogue | 🗡️ **Assassin**: poison, burst | 💨 **Skirmisher**: 1-AP stabs, hit and run |
-| 🧙 Wizard | ☄️ **Evoker**: big area spells that spare friends | ❄️ **Elementalist**: control, elemental reactions |
-| ✨ Cleric | 💖 **Life**: group heals | ⚖️ **Order**: Block from range, +1 AP buffs |
-| 🪓 Barbarian | 🩸 **Berserker**: HP for AP, big damage when hurt | 🦏 **Juggernaut**: lifesteal, taunt, can't be knocked down |
-| 🏹 Ranger | 🪤 **Trapper**: hidden snares, barrages | 🎯 **Sharpshooter**: long range, big shots |
-| ⚜️ Paladin | 🏰 **Protection**: takes hits for friends, Block aura | 🌟 **Devotion**: smites that heal, regeneration |
-| 🎻 Bard | 🎺 **Valor**: Inspiration gives +1 AP, war chants | 🤫 **Whispers**: fear and debuffs |
+| Class | Engine A | Engine B | Engine C |
+|---|---|---|---|
+| 🛡️ Fighter | ⚔️ **Weapon Master**: crits | 🛡️ **Guardian**: Block and thorns | 🤺 **Duelist**: counters |
+| 🗡️ Rogue | 🗡️ **Assassin**: poison stacks | 💨 **Skirmisher**: many small hits | 🎭 **Shadow**: one huge backstab |
+| 🧙 Wizard | ☄️ **Evoker**: Arcane Charge | ❄️ **Elementalist**: elemental combos | 🪨 **Geomancer**: terrain |
+| ✨ Cleric | 💖 **Life**: overhealing | ⚖️ **Order**: buffs from range | ☀️ **Light**: Radiance |
+| 🪓 Barbarian | 🩸 **Berserker**: low HP, high damage | 🦏 **Juggernaut**: lifesteal tank | 🌋 **Wrecker**: knockdowns |
+| 🏹 Ranger | 🪤 **Trapper**: traps and nets | 🎯 **Sharpshooter**: Focus, one huge shot | 🏹 **Hunter**: marks, many targets |
+| ⚜️ Paladin | 🏰 **Protection**: Block on friends | 🌟 **Devotion**: heals that shield | ⚔️ **Vengeance**: smite burst |
+| 🎻 Bard | 🎺 **Valor**: hand out AP | 🤫 **Whispers**: stacking debuffs | 🎶 **Crescendo**: Verses and the Finale |
 
 Passives come in two kinds: hooks with their own rules (Sentinel, Favored Foe, Aura of Protection, Song of Rest...) and perks, stat blocks that add up like equipment (Thick Hide: +AC and max HP, Archery: +to hit...).
 
@@ -167,7 +167,8 @@ To test multiplayer alone, open several browser tabs. Each new tab is a new play
 ```
 shared/rules.ts    classes, monsters, acts, dice, XP and balance numbers  ← start here to tweak the game
 shared/skills.ts   every skill and passive (tiers I/II/III-A/III-B), statuses, targeting, descriptions
-shared/subclasses.ts  the two subclasses of each class (picked at level 3) and their signature skills
+shared/engines.ts  the three build engines of each class and the rarity of their cards
+shared/subclasses.ts  the old subclasses (no longer picked; kept so old saves load)
 shared/tactics.ts  facing, back attacks, flanking (every reason a roll has advantage) and cover
 shared/surfaces.ts the battlefield: ground, clouds, props, the combo engine, hazards, previews
 shared/items.ts    equipment, consumables, relics, blessings and prices

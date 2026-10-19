@@ -69,10 +69,14 @@ import {
   SLOWED,
   CLEANSED,
   STATUSES,
+  apOf,
   atEdge,
   attackBonus,
   avgDice,
+  blockOf,
   damageMod,
+  debuffsOn,
+  stacksOf,
   hasBranch,
   hpCostOf,
   isSignature,
@@ -94,6 +98,7 @@ import {
   type AimResult,
   type Element,
   type SkillId,
+  type PerSource,
   type SkillStats,
   type StatusApply,
   type StatusId,
@@ -181,6 +186,7 @@ import type {
   TurnState,
 } from '../shared/types.ts';
 import { attackAdvantage, canReact, coverFrom, coverWord, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
+import { LOW_COVER } from '../shared/grid.ts';
 import {
   EXPLOSION,
   FIELD_STATUS_TURNS,
@@ -215,7 +221,6 @@ import {
 } from './monsterai.ts';
 import { monsterPolicy } from './policy.ts';
 import { applyLevelUps, applyPick, dealOffer, killShares, picksLeft, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
-import { SUBCLASS_LEVEL } from '../shared/subclasses.ts';
 import { pick, randInt, rng, shuffle } from './rng.ts';
 import { generateRoom, pickDeployment, type Deployment } from './room.ts';
 import { SAVE_VERSION, archiveSave, dumpFight, writeSave, type SaveFile, type SavePoint } from './saves.ts';
@@ -238,6 +243,11 @@ const POST_FIGHT_HEAL = 0.2; // short rest after every won fight, so damage does
 const AUTO_DELAY_MS = 700; // pause before auto heroes vote, pick or use potions between rooms
 const SHOP_MS = 90_000; // the shop closes this long after the first person is done shopping
 const AWAY_MS = 20_000; // ...or this long after everyone left is someone who dropped out (a reload shouldn't close it)
+/** The smites: Zealous Smite and Avenging Angel work on these. */
+const SMITES: SkillId[] = ['divine_smite', 'radiant_strike'];
+/** Poison from heroes stacks up to this (Virulence raises it). */
+const POISON_CAP = 10;
+
 /** What the log says about where a fight starts (the classic line says nothing). */
 const DEPLOYMENT_LINE: Partial<Record<Deployment, string>> = {
   scattered: '🌫️ The party comes in by two ways, and the monsters are spread around the room.',
@@ -625,11 +635,11 @@ export class Game {
     return p;
   }
 
-  /** A hero joining a run in progress starts at the party's level, with a pick for every level they missed (and the subclass). */
+  /** A hero joining a run in progress starts at the party's level, with a pick for every level they missed. */
   private newcomer(info: PlayerInfo, level: number): PlayerEntity {
     const e = this.makePlayer(info, level);
     e.rewardPicks = level - 1;
-    e.levelUps = level >= SUBCLASS_LEVEL ? 1 : 0;
+    e.levelUps = 0;
     dealOffer(e, rng, this.run?.act ?? 1);
     return e;
   }
@@ -1573,6 +1583,7 @@ export class Game {
     if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1 || !canStep(this, p, dx, dy) || this.occupied(next.x, next.y, p.id)) return false;
     this.turn.movesLeft--;
     p.facing = { x: dx, y: dy };
+    if (!p.used.includes('turn:moved')) p.used.push('turn:moved'); // Patience
     p.x = next.x;
     p.y = next.y;
     this.watch(p);
@@ -1599,11 +1610,24 @@ export class Game {
     p.savedAp = 0;
     delete p.block;
     if (hasBranch(p, 'slippery', 'B') || hasBranch(p, 'alert', 'B') || this.hasRelic('eagle_eye')) p.statuses.push({ id: 'focused', turns: 99 });
+    // Stacks some heroes start a fight with: Arcane Charges (Steady Charge, the Charged Orb), Verses (Refrain, the Lute).
+    const charges = (hasBranch(p, 'arcane_charge', 'B') ? 2 : 0) + gearBonus(p, 'charges');
+    if (charges) p.statuses.push({ id: 'charged', turns: 99, power: charges, by: p.id });
+    const verses = (hasBranch(p, 'verse', 'B') ? 2 : 0) + gearBonus(p, 'verses');
+    if (verses) p.statuses.push({ id: 'verse', turns: 99, power: verses, by: p.id });
+  }
+
+  /** Adds stacks of a fight-long status (Arcane Charge, Verse, Focus), up to `cap`. */
+  private addStacks(p: PlayerEntity, id: StatusId, n: number, cap: number) {
+    const have = p.statuses.find((x) => x.id === id);
+    if (have) have.power = Math.min(cap, (have.power ?? 0) + n);
+    else p.statuses.push({ id, turns: 99, power: Math.min(cap, n), by: p.id });
   }
 
   private startCombat() {
     this.phoenixUsed = false;
     this.traps.clear();
+    this.raised.clear();
     this.eliteKiller = null;
     for (const p of this.heroes()) this.prepareForFight(p);
     const fighters: Entity[] = [...this.heroes().filter((p) => !p.dead), ...this.allies(), ...this.monsters()];
@@ -1658,7 +1682,7 @@ export class Game {
     t.movesLeft = (SLOWED.some((id) => hasStatus(e, id)) ? Math.floor(e.speed / 2) : e.speed) + (hasStatus(e, 'charging') ? CHARGE_MOVES : 0);
     t.ap = 0; // heroes get theirs below, once it's clear they get to act
     // The Block this creature gave runs out (on itself and on friends); then shields and gear put up this turn's.
-    this.dropBlock(e.id);
+    this.expireBlock(e);
     if (e.kind === 'player' && e.dead) return this.advanceTurn();
     const wall = e.kind === 'player' ? (this.standing(e) ? gearBonus(e, 'block') : 0) : (MONSTERS[e.type]?.block ?? 0);
     if (wall > 0) this.addBlock(e, e, wall, false);
@@ -1724,13 +1748,16 @@ export class Game {
 
   /** The hero skill being resolved right now (Empowered Evocation, Sculpt Spells, Blessed Smites read it). */
   private casting: { id: SkillId; s: SkillStats } | null = null;
+  /** Who this cast's Unleashed dice already hit (once per target, however many darts). */
+  private unleashedOn = new Set<string>();
   /** Hidden snares (Ranger Trapper), by tile: the first monster to step in gets it. `cast` orders them (3 casts each). */
-  private traps = new Map<number, { by: string; cast: number; status: StatusApply[]; dmg?: Dice }>();
+  private traps = new Map<number, { by: string; cast: number; status: StatusApply[]; dmg?: Dice; element?: Element; left: number }>();
   private trapCasts = 0;
 
   /** 🧱 Block from `by` (until the start of its next turn), on top of what the target has. */
   private addBlock(t: Entity, by: Entity, n: number, show = true) {
     if (n <= 0) return;
+    if (by.kind === 'player') n += passiveOf(by, 'unbreakable_oath')?.value ?? 0; // Unbreakable Oath II: a little more
     (t.block ??= {})[by.id] = (t.block[by.id] ?? 0) + n;
     if (show) this.float(t, `🧱+${n}`, '#c8d1dc');
   }
@@ -1742,12 +1769,38 @@ export class Game {
     this.addLog('info', t === p ? `🧱 ${p.name} gets ${n} Block until their next turn.` : `🧱 ${p.name} covers ${t.name}: ${n} Block until ${p.name}'s next turn.`);
   }
 
-  /** The Block this creature gave runs out, wherever it is. */
-  private dropBlock(id: string) {
+  /** The Block this creature gave runs out, wherever it is (`old`: only what an Unbreakable Oath kept from last turn). */
+  private dropBlock(id: string, old = false) {
     for (const e of this.entities) {
-      if (!e.block || e.block[id] === undefined) continue;
-      delete e.block[id];
+      if (!e.block) continue;
+      for (const key of old ? [`${id}:old`] : [id, `${id}:old`]) delete e.block[key];
       if (!Object.keys(e.block).length) delete e.block;
+    }
+  }
+
+  /**
+   * The start of a creature's turn: the Block it gave runs out. An Unbreakable Oath makes it last one more turn (it's
+   * kept as `id:old`), and Fortress keeps part of the Block a fighter gave themself.
+   */
+  private expireBlock(e: Entity) {
+    const hero = e.kind === 'player' ? e : null;
+    const fort = hero ? passiveOf(hero, 'fortress') : null;
+    const own = e.block?.[e.id] ?? 0;
+    if (hero && passiveOf(hero, 'unbreakable_oath')) {
+      this.dropBlock(e.id, true);
+      for (const x of this.entities) {
+        const n = x.block?.[e.id];
+        if (!n) continue;
+        x.block![`${e.id}:old`] = n;
+        delete x.block![e.id];
+      }
+    } else this.dropBlock(e.id);
+    if (hero && fort && own > 0 && this.standing(hero)) {
+      const kept = Math.floor((own * fort.value) / 100);
+      if (kept > 0) {
+        (e.block ??= {})[e.id] = Math.max(e.block[e.id] ?? 0, kept);
+        if (hasBranch(hero, 'fortress', 'B')) for (const h of this.heroes()) if (h !== hero && this.standing(h) && dist(h, hero) <= 1) this.addBlock(h, hero, Math.floor(kept / 2));
+      }
     }
   }
 
@@ -1758,6 +1811,7 @@ export class Game {
     for (const [id, n] of Object.entries(t.block)) {
       const take = Math.min(n, amount - soaked);
       soaked += take;
+      this.sharedBurden(id.split(':')[0], t, take);
       if (n > take) t.block[id] = n - take;
       else delete t.block[id];
       if (soaked >= amount) break;
@@ -1765,6 +1819,30 @@ export class Game {
     if (!Object.keys(t.block).length) delete t.block;
     if (soaked) this.float(t, `🧱${soaked}`, '#c8d1dc');
     return amount - soaked;
+  }
+
+  /** Shared Burden: when a paladin's Block soaks a hit on a friend, the paladin heals part of it (Bond of Steel: both). */
+  private sharedBurden(giverId: string, t: Entity, soaked: number) {
+    const giver = this.entity(giverId);
+    if (soaked <= 0 || giver === t || giver?.kind !== 'player' || !this.standing(giver)) return;
+    const burden = passiveOf(giver, 'shared_burden');
+    if (!burden) return;
+    const n = Math.floor((soaked * burden.value) / 100);
+    if (n <= 0) return;
+    this.healBy(null, giver, n);
+    if (hasBranch(giver, 'shared_burden', 'B') && t.kind === 'player') this.healBy(null, t, n);
+  }
+
+  /** Gives a hero AP: now, if it's their turn, else on their next one (Emboldened). */
+  private giveAp(t: PlayerEntity, n: number, by: Entity) {
+    if (n <= 0 || !this.standing(t)) return;
+    if (this.turn && this.current()?.id === t.id) this.turn.ap += n;
+    else {
+      const had = t.statuses.find((x) => x.id === 'emboldened');
+      if (had) had.power = (had.power ?? 0) + n;
+      else t.statuses.push({ id: 'emboldened', turns: 9, power: n, by: by.id });
+    }
+    this.float(t, `⚡+${n} AP`, '#f6cf7a');
   }
 
   /** A hero who gets to act: this turn's AP plus what they saved last turn, up to AP_MAX. A lost turn keeps the savings. */
@@ -1804,6 +1882,16 @@ export class Game {
       if (hasBranch(p, 'divine_vitality', 'B')) for (const h of this.heroes()) if (h !== p && this.standing(h) && dist(h, p) <= 1) this.healBy(null, h, 1);
     }
     if (hasBranch(p, 'unstoppable', 'B') && hasStatus(p, 'raging') && this.turn) this.turn.movesLeft += 2; // Rampaging
+    // Noxious Fumes: the enemies around you choke on it.
+    const fumes = passiveOf(p, 'noxious_fumes');
+    if (fumes) {
+      const reach = hasBranch(p, 'noxious_fumes', 'A') ? 2 : 1;
+      for (const m of this.monsters().filter((m) => dist(m, p) <= reach)) {
+        this.applyStatus(m, { id: 'poisoned', turns: 2, power: fumes.value }, p);
+        if (hasBranch(p, 'noxious_fumes', 'B')) this.applyStatus(m, { id: 'dazed', turns: 1 }, p);
+      }
+    }
+    if (hasBranch(p, 'magnum_opus', 'B')) this.addStacks(p, 'verse', 1, passiveOf(p, 'verse')?.value ?? 5);
   }
 
   /** Voice of Authority and Rousing Inspiration: a friend you help gets more AP on their next turn (Emboldened). */
@@ -1818,6 +1906,12 @@ export class Game {
         if (once) p.used.push(once);
         bold += voice.value;
       }
+    }
+    // Divine Order: Bless (and from tier II Warding Light) gives AP, once a round per friend.
+    const order = passiveOf(p, 'divine_order');
+    if (order && (id === 'bless' || (id === 'warding_light' && order.tier >= 2)) && !fr.used.includes('round:order')) {
+      fr.used.push('round:order');
+      bold += order.value;
     }
     if (id === 'inspiration') {
       const rouse = passiveOf(p, 'rousing');
@@ -1856,12 +1950,15 @@ export class Game {
         if (x < 0 || y < 0 || x >= this.width || y >= this.height || this.tiles[y * this.width + x] !== '.') continue;
         if (this.entities.some((e) => e.x === x && e.y === y && !(e.kind === 'player' && e.dead))) continue;
         const extra = hasBranch(p, 'ambusher', 'B') ? { n: (trap.dmg?.n ?? 0) + 1, d: 6 } : trap.dmg; // Snare Master
-        this.traps.set(y * this.width + x, { by: p.id, cast, status: trap.status, dmg: extra });
+        const field = passiveOf(p, 'killing_field'); // springs more than once (Cruel Traps: harder)
+        const dmg = hasBranch(p, 'killing_field', 'B') ? { n: (extra?.n ?? 0) + 1, d: extra?.d ?? 6, ...(extra?.bonus ? { bonus: extra.bonus } : {}) } : extra;
+        this.traps.set(y * this.width + x, { by: p.id, cast, status: trap.status, dmg, element: trap.element, left: field?.value ?? 1 });
         n++;
       }
     }
     const mine = [...new Set([...this.traps.values()].filter((t) => t.by === p.id).map((t) => t.cast))].sort((a, b) => b - a);
-    for (const [i, t] of [...this.traps]) if (t.by === p.id && !mine.slice(0, 3).includes(t.cast)) this.traps.delete(i);
+    const keep = (passiveOf(p, 'killing_field')?.tier ?? 0) >= 2 ? 5 : 3;
+    for (const [i, t] of [...this.traps]) if (t.by === p.id && !mine.slice(0, keep).includes(t.cast)) this.traps.delete(i);
     this.addLog('info', `🪤 ${p.name} hides ${n > 1 ? `${n} snares` : 'a snare'}.`);
   }
 
@@ -1871,11 +1968,12 @@ export class Game {
     const i = e.y * this.width + e.x;
     const trap = this.traps.get(i);
     if (!trap) return false;
-    this.traps.delete(i);
+    if (--trap.left <= 0) this.traps.delete(i);
     const by = this.entity(trap.by);
     this.addLog('hit', `🪤 ${e.name} steps into ${by ? `${by.name}'s` : 'a'} snare!`);
     this.float(e, '🪤 snared!', '#f6cf7a');
-    if (trap.dmg) this.damage(e, rollDice(trap.dmg), by, 'physical');
+    if (trap.dmg) this.damage(e, rollDice(trap.dmg), by, trap.element ?? 'physical');
+    if (trap.element && by) this.runField([{ kind: 'touch', tiles: [i], element: trap.element === 'fire' ? 'fire' : 'cold' }], by); // Fire Trap lights the oil
     if (!this.entities.includes(e)) return true;
     for (const st of trap.status) this.applyStatus(e, st, by);
     return ROOTED.some((id) => hasStatus(e, id));
@@ -1893,11 +1991,20 @@ export class Game {
 
   /** Burning and poison bite at the start of the creature's turn. */
   private tickStatuses(e: Entity) {
+    // Sunfire (Avatar of Light): Radiance burns at the start of the turn.
+    const seared = e.statuses.find((x) => x.id === 'seared');
+    const sun = seared && this.entity(seared.by);
+    if (seared?.power && sun?.kind === 'player' && hasBranch(sun, 'avatar_of_light', 'A')) {
+      this.addLog('hit', `🔆 ${e.name}'s Radiance burns for ${seared.power}.`);
+      this.damage(e, seared.power, sun, 'radiant');
+      if (!this.entities.includes(e)) return;
+    }
     for (const s of [...e.statuses]) {
       if (s.id !== 'burning' && s.id !== 'poisoned') continue;
       if (!this.entities.includes(e) || (e.kind === 'player' && (e.downed || e.dead))) return;
-      const dmg = rollDice({ n: s.power ?? 1, d: 4 });
       const source = this.entity(s.by);
+      const virulent = s.id === 'poisoned' && source?.kind === 'player' && !!passiveOf(source, 'virulence'); // Virulence: d6s
+      const dmg = rollDice({ n: s.power ?? 1, d: virulent ? 6 : 4 });
       this.addLog('hit', `${STATUSES[s.id].icon} ${e.name} ${s.id === 'burning' ? 'burns' : 'suffers from poison'} for ${dmg}.`);
       this.damage(e, dmg, source, s.id === 'burning' ? 'fire' : 'poison');
     }
@@ -1906,8 +2013,21 @@ export class Game {
   /** End of a creature's turn: statuses count down, and a hero's unspent AP is saved for the next turn. */
   private endOfTurn(e: Entity) {
     if (e.kind === 'player' && this.turn) e.savedAp = e.downed || e.dead ? 0 : Math.max(e.savedAp ?? 0, this.turn.ap);
-    for (const s of e.statuses) s.turns--;
+    // Patience: a turn without moving builds Focus.
+    const calm = e.kind === 'player' ? passiveOf(e, 'patience') : null;
+    if (calm && e.kind === 'player' && this.standing(e) && !e.used.includes('turn:moved')) {
+      const n = hasBranch(e, 'patience', 'A') ? 2 : 1;
+      this.applyStatus(e, { id: 'aiming', turns: 99, power: n, stack: calm.value / n }, e);
+    }
+    for (const s of e.statuses) if (!this.lasting(s)) s.turns--;
     e.statuses = e.statuses.filter((s) => s.turns > 0);
+  }
+
+  /** Virulent Poison and an Avatar's Radiance never wear off. */
+  private lasting(s: { id: StatusId; by?: string }): boolean {
+    if (s.id !== 'poisoned' && s.id !== 'seared') return false;
+    const by = this.entity(s.by);
+    return by?.kind === 'player' && !!passiveOf(by, s.id === 'poisoned' ? 'virulence' : 'avatar_of_light');
   }
 
   /** Plays an auto hero's turn, one decision at a time, through the same checks as a human. */
@@ -1962,6 +2082,7 @@ export class Game {
       t.index = 0;
       t.round++;
       tickField(this); // fires burn out, ice melts, electricity fades
+      this.tickRaised();
     }
     this.beginTurn();
   }
@@ -1989,6 +2110,7 @@ export class Game {
 
   private endCombat() {
     this.traps.clear();
+    this.raised.clear();
     const kind = this.roomKind ?? 'combat';
     const run = this.run!;
     // Song of Rest: the best Bard's song adds its share on top.
@@ -2164,6 +2286,14 @@ export class Game {
     await sleep(400);
     if (!ok()) return;
     const ally = !!m.ally;
+    if (!ally && this.madness(m)) {
+      this.broadcast();
+      if (this.checkEnd()) return;
+      await sleep(700);
+      if (ok()) this.advanceTurn();
+      else diedMidTurn();
+      return;
+    }
 
     if (def.breath && !ally && this.turn && this.turn.round % 3 === 0) {
       const victims = this.entities.filter((e) => !isFoe(e) && this.up(e) && dist(e, m) <= 3 && hasLOS(this, m, e));
@@ -2296,7 +2426,7 @@ export class Game {
       if (passiveOf(h, 'intercept') && times < (hasBranch(h, 'intercept', 'A') ? 2 : 1)) return 'intercept';
       return null;
     };
-    const guard = isFoe(m) ? this.heroes().find((h) => covers(h)) : undefined;
+    const guard = isFoe(m) && !isFoe(victim) ? this.heroes().find((h) => covers(h)) : undefined; // a mad monster's friend gets no bodyguard
     const how = guard ? covers(guard) : null;
     if (guard) {
       guard.used.push(how === 'bodyguard' ? 'round:bodyguard' : 'round:intercept');
@@ -2309,8 +2439,14 @@ export class Game {
     const enraged = hasTrait(m, 'enraged') && m.hp < m.maxHp / 2;
     const before = target.hp;
     const hit = this.attackRoll(m, target, {
-      bonus: def.atk + (m.atkBonus ?? 0), dmg: def.dmg, extra: (m.dmgBonus ?? 0) + (enraged ? ENRAGED_DMG : 0), verb: def.verb, element,
+      bonus: def.atk + (m.atkBonus ?? 0), dmg: def.dmg, extra: (m.dmgBonus ?? 0) + (enraged ? ENRAGED_DMG : 0) - this.wasting(m), verb: def.verb, element,
     });
+    // Spiked Pauldrons: melee hits on you hurt back.
+    const thorns = hit && target.kind === 'player' && dist(m, target) <= 1 ? gearBonus(target, 'thorns') : 0;
+    if (thorns && this.entities.includes(m)) {
+      this.addLog('hit', `🦔 ${m.name} cuts itself on ${target.name}'s spikes: ${thorns}.`);
+      this.damage(m, thorns, target, 'physical');
+    }
     if (hit && hasTrait(m, 'vampiric') && this.entities.includes(m)) {
       const drained = Math.min(Math.ceil(Math.max(0, before - target.hp) / 2), m.maxHp - m.hp);
       if (drained > 0) {
@@ -2325,17 +2461,20 @@ export class Game {
     if (el) this.runField([{ kind: 'touch', tiles: [at.y * this.width + at.x], element: el }], m);
     if (!hit && target.kind === 'player' && hasStatus(target, 'riposte') && !hasStatus(target, 'surprised') && this.standing(target) && dist(m, target) <= 1 && this.entities.includes(m)) {
       this.addLog('info', `🤺 ${target.name} ripostes!`);
-      this.freeStrike(target, m, 'Riposte');
+      this.freeStrike(target, m, 'Riposte', this.riposteBonus(target));
+      this.afterCounter(target, m);
     }
     // Counterattack (Weapon Master): a melee miss gets hit back, once per round (twice with Relentless Counter).
     const counter = target.kind === 'player' ? passiveOf(target, 'counterattack') : null;
     if (!hit && counter && target.kind === 'player' && dist(m, target) <= 1 && this.standing(target) && !hasStatus(target, 'surprised') && this.entities.includes(m)) {
       const times = target.used.filter((u) => u === 'round:counter').length;
-      if (times < (hasBranch(target, 'counterattack', 'A') ? 2 : 1)) {
+      const wall = passiveOf(target, 'blade_wall'); // Blade Wall: every miss
+      if (wall || times < (hasBranch(target, 'counterattack', 'A') ? 2 : 1)) {
         target.used.push('round:counter');
         this.addLog('info', `🤺 ${target.name} counterattacks!`);
-        const landed = this.freeStrike(target, m, 'Counterattack', counter.value);
+        const landed = this.freeStrike(target, m, 'Counterattack', counter.value + this.riposteBonus(target) + (hasBranch(target, 'blade_wall', 'A') ? 2 : 0));
         if (landed && hasBranch(target, 'counterattack', 'B') && this.entities.includes(m)) this.applyStatus(m, { id: 'dazed', turns: 1 }, target);
+        this.afterCounter(target, m);
       }
     }
     // Retaliation (Protection): after taking a hit for a friend, hit back.
@@ -2720,8 +2859,12 @@ export class Game {
 
     this.cancelWalk(p.id);
     const kind = SKILLS[skillId].kind;
+    // Before anything changes: who was low (Saint) and who still had your Inspiration (Standing Ovation).
+    const lowBefore = res.friends.map((f) => f.hp / f.maxHp);
     if (inCombat && this.turn) {
-      this.turn.ap -= s.ap;
+      const ap = apOf(p, skillId, s);
+      this.turn.ap -= ap;
+      if (skillId === 'shove' && ap === 0) p.used.push('turn:free-shove'); // Pile Driver
       if (s.oncePerTurn) p.used.push(`turn:${skillId}`);
       const blood = hpCostOf(p, s);
       if (blood > 0) {
@@ -2735,11 +2878,13 @@ export class Game {
     if (skillId === 'potion') p.potions--;
     else if (kind === 'item') p.bag.splice(p.bag.indexOf(skillId as ItemId), 1); // used up
     this.casting = { id: skillId, s };
+    this.unleashedOn.clear();
     try {
       this.useSkill(p, own, s, res);
     } finally {
       this.casting = null;
     }
+    if (inCombat) this.afterCast(p, own, s, res, lowBefore);
     if (inCombat) this.checkEnd();
     else this.checkpoint(); // a potion or heal between rooms
     this.broadcast();
@@ -2792,10 +2937,14 @@ export class Game {
       }
       if (!landed || !this.entities.includes(f) || (f.kind === 'player' && !this.standing(f))) return;
       for (const st of s.onHit ?? []) this.applyStatus(f, st, p);
-      if (s.push && s.roll !== 'contest') this.push(f, s.target === 'area' && (f.x !== res.center.x || f.y !== res.center.y) ? res.center : p, s.push);
+      if (s.poisonMult) this.multiplyPoison(p, f, s.poisonMult);
+      if (s.push && s.roll !== 'contest') this.push(f, s.target === 'area' && (f.x !== res.center.x || f.y !== res.center.y) ? res.center : p, s.push, p);
     };
     for (const f of res.foes) strikeOne(f);
+    if (own.id === 'quick_shot' && inCombat) this.splitShot(p, s, name, color, res.main);
     if (s.trap && inCombat) this.setTraps(p, s, res.center);
+    if (s.raise && inCombat) this.raiseGround(p, s, res);
+    if (s.rubble && inCombat) this.rubble(res.center, s.radius ?? 1, s.rubble);
     const caught = (res.caught ?? []).filter((h) => this.up(h));
     if (caught.length) {
       const who = caught.map((h) => (h === p ? `${p.name} themself` : h.name)).join(', ');
@@ -2805,10 +2954,14 @@ export class Game {
 
     // Friends: heals, temporary HP, cleansing and buffs.
     let healedAll = 0;
+    const verses = stacksOf(p, 'verse');
     for (const fr of res.friends) {
+      if (s.finale && verses > 0) this.finale(p, fr, s.finale, verses);
+      const ovation = own.id === 'inspiration' && fr.statuses.some((x) => x.id === 'focused' && x.by === p.id); // Standing Ovation
       if (s.heal) {
         const drink = SKILLS[own.id].kind === 'item' && this.hasRelic('alchemist_kit') ? 1.5 : 1; // Alchemist's Kit
-        const amount = Math.round((rollDice({ n: s.heal.n, d: s.heal.d }) + healBonus(p, s)) * drink);
+        const saint = own.id === 'lay_on_hands' ? (passiveOf(p, 'saint')?.value ?? 0) : 0; // Saint: +4 on Lay on Hands
+        const amount = Math.round((rollDice({ n: s.heal.n, d: s.heal.d }) + healBonus(p, s) + saint) * drink);
         const healed = this.healBy(p, fr, amount, s.overheal, !s.noRevive);
         if (fr !== p) healedAll += healed;
         const line =
@@ -2828,6 +2981,7 @@ export class Game {
       for (const st of s.status ?? []) this.applyStatus(fr, st, p);
       if ((s.status?.length || s.block) && fr !== p) this.grantXp(p, XP_BUFF);
       if (inCombat && this.standing(fr)) this.hurry(p, fr, own.id, s);
+      if (inCombat && this.standing(fr) && own.id === 'inspiration') this.inspire(p, fr, ovation);
     }
     if (s.healSelf && healedAll > 0) {
       const back = this.healBy(p, p, Math.floor(healedAll * s.healSelf));
@@ -2838,6 +2992,11 @@ export class Game {
     if (s.target === 'enemy' || s.target === 'area' || s.target === 'around') p.statuses = p.statuses.filter((x) => x.id !== 'hidden');
     for (const st of s.selfStatus ?? []) this.applyStatus(p, st, p);
     if (s.selfBlock) this.blockFrom(p, p, s.selfBlock, s.blockLevel);
+    if (s.doubleBlock && p.block?.[p.id]) {
+      const more = p.block[p.id];
+      this.addBlock(p, p, more);
+      this.addLog('info', `🏯 ${p.name} digs in: ${p.block[p.id]} Block.`);
+    }
     if (s.taunt) {
       const taunted = this.monsters().filter((m) => dist(m, p) <= s.taunt!.radius);
       for (const m of taunted) this.applyStatus(m, { id: 'taunted', turns: s.taunt.turns }, p);
@@ -2892,6 +3051,7 @@ export class Game {
     this.shot(p, f, color);
     let dmg = s.dmg ? rollDice(s.dmg) + damageMod(p, s) + this.bonusDamage(p, f, s.element ?? 'physical') : 0;
     if (edge) dmg = Math.floor(dmg / 2);
+    dmg = Math.round(dmg * this.damageScale(p, f));
     const evasion = f.kind === 'player' && s.target === 'area' && hasBranch(f, 'opportunist', 'B');
     if (saved) dmg = s.half && !evasion ? Math.floor(dmg / 2) : 0;
     else if (evasion) dmg = Math.floor(dmg / 2);
@@ -2908,6 +3068,7 @@ export class Game {
     const hits = hitsOf(p, s);
     let total = 0;
     for (let i = 0; i < hits; i++) total += rollDice(s.dmg ?? { n: 1, d: 4 }) + damageMod(p, s) + this.bonusDamage(p, f, s.element ?? 'physical');
+    total = Math.round(total * this.damageScale(p, f));
     this.shot(p, f, color);
     this.addLog('hit', `${p.name}'s ${name}: ${hits} hit${hits > 1 ? 's' : ''} strike ${f.name} for ${total}${elementWord(s.element)}.`);
     this.damage(f, total, p, s.element ?? 'physical');
@@ -2931,7 +3092,14 @@ export class Game {
     }
     this.addLog('hit', `${p.name} ${name.toLowerCase()}s ${f.name} (${roll})!`);
     const further = (gearBonus(p, 'shove') > 0 ? 1 : 0) + (this.hasRelic('lodestone') ? 1 : 0); // Ogre Gauntlets, Lodestone
-    this.push(f, p, (s.push ?? 1) + (margin >= 5 ? 1 : 0) + further);
+    this.push(f, p, (s.push ?? 1) + (margin >= 5 ? 1 : 0) + further, p);
+    // Pile Driver: a won Shove also knocks it down (Body Slam hurts, Ground and Pound dazes).
+    const driver = passiveOf(p, 'pile_driver');
+    if (driver && this.entities.includes(f)) {
+      this.applyStatus(f, { id: 'prone', turns: 1 }, p);
+      if (hasBranch(p, 'pile_driver', 'A')) this.damage(f, this.weaponRoll(p), p, 'physical');
+      if (hasBranch(p, 'pile_driver', 'B')) this.applyStatus(f, { id: 'dazed', turns: 1 }, p);
+    }
     return true;
   }
 
@@ -2966,6 +3134,200 @@ export class Game {
   }
 
   /** Steps next to the target, on its far side if there's room (behind it). */
+  /**
+   * After a cast, in a fight: stacks get spent or gained. The `per` and Finale stacks are used up, Unleash turns
+   * Arcane Charges into the next spell's dice (and a spell uses them), spells build Arcane Charge and Verses, and the
+   * cooldown tricks (Saint, Standing Ovation) kick in.
+   */
+  private afterCast(p: PlayerEntity, own: OwnedSkill, s: SkillStats, res: AimResult, lowBefore: number[]) {
+    const kind = SKILLS[own.id].kind;
+    const spend = (id: StatusId) => (p.statuses = p.statuses.filter((x) => x.id !== id));
+    if (s.per?.spend) {
+      if (s.per.of === 'focus') spend('aiming');
+      if (s.per.of === 'radiance') for (const f of res.foes) f.statuses = f.statuses.filter((x) => x.id !== 'seared');
+    }
+    if (s.finale || (s.per?.spend && s.per.of === 'verses')) {
+      const opus = passiveOf(p, 'magnum_opus');
+      if (opus && p.used.filter((u) => u === 'fight:opus').length < opus.value) p.used.push('fight:opus');
+      else spend('verse');
+    }
+    if (kind === 'spell' && !s.unleash) spend('unleashed'); // the Unleashed spell has gone off
+    if (s.unleash) {
+      const charges = stacksOf(p, 'charged');
+      spend('charged');
+      if (charges) {
+        p.statuses.push({ id: 'unleashed', turns: 99, power: charges, by: p.id });
+        this.addLog('info', `💥 ${p.name} unleashes ${charges} Arcane Charge${charges > 1 ? 's' : ''} into the next spell.`);
+      }
+    }
+    const charge = passiveOf(p, 'arcane_charge');
+    if (charge && (kind === 'spell' || (kind === 'cantrip' && charge.tier >= 2)) && !s.unleash) {
+      this.addStacks(p, 'charged', 1, hasBranch(p, 'archmage', 'B') ? 7 : charge.value);
+    }
+    const verse = passiveOf(p, 'verse');
+    if (verse && (kind === 'spell' || kind === 'cantrip') && !s.finale) {
+      this.addStacks(p, 'verse', hasBranch(p, 'verse', 'A') && kind === 'spell' ? 2 : 1, verse.value);
+    }
+    // Saint: Lay on Hands on a badly hurt friend is ready again at once (Martyr: it costs you 3 HP instead of AP).
+    const saint = own.id === 'lay_on_hands' ? passiveOf(p, 'saint') : null;
+    if (saint && lowBefore[0] !== undefined && lowBefore[0] < (hasBranch(p, 'saint', 'A') ? 0.75 : 0.5)) own.cd = 0;
+    if (saint && hasBranch(p, 'saint', 'B')) p.hp = Math.max(1, p.hp - 3);
+    if (own.id === 'inspiration' && (passiveOf(p, 'standing_ovation')?.tier ?? 0) >= 2) own.cd = Math.max(0, own.cd - 1);
+  }
+
+  /** Finale: every friend it touches heals and gets Block for each Verse (Magnum Opus II: and 1 AP). */
+  private finale(p: PlayerEntity, fr: PlayerEntity, f: { heal: number; block: number }, verses: number) {
+    const healed = this.healBy(p, fr, f.heal * verses, false, true);
+    if (this.standing(fr)) this.addBlock(fr, p, f.block * verses);
+    this.addLog('heal', `🎆 ${fr.name} rides the Finale: +${healed} HP, ${f.block * verses} Block.`);
+    const opus = passiveOf(p, 'magnum_opus');
+    if (opus && opus.tier >= 2 && p.used.filter((u) => u === 'fight:opus').length < opus.value) this.giveAp(fr, 1, p);
+  }
+
+  /** Bardic Inspiration's engines: Standing Ovation (more AP on the still-inspired) and Heroic Saga (Inspired stacks). */
+  private inspire(p: PlayerEntity, fr: PlayerEntity, ovation: boolean) {
+    const o = passiveOf(p, 'standing_ovation');
+    if (o && ovation && fr !== p) {
+      this.giveAp(fr, o.value, p);
+      if (hasBranch(p, 'standing_ovation', 'B')) this.addMoves(fr, 2);
+    }
+    const saga = passiveOf(p, 'heroic_saga');
+    if (saga) {
+      for (const h of hasBranch(p, 'heroic_saga', 'B') ? [fr, p] : [fr]) this.applyStatus(h, { id: 'inspired', turns: 2, power: 1, stack: saga.value }, p);
+    }
+  }
+
+  /** Toxic Catalyst: multiplies the Poison on it (up to the cap). */
+  private multiplyPoison(p: PlayerEntity, f: Entity, mult: number) {
+    const ps = f.statuses.find((x) => x.id === 'poisoned');
+    if (!ps?.power) return;
+    const cap = Math.max(POISON_CAP, ...this.heroes().map((h) => passiveOf(h, 'virulence')?.value ?? 0));
+    ps.power = Math.min(cap, ps.power * mult);
+    ps.turns = Math.max(ps.turns, 2);
+    ps.by = p.id;
+    this.addLog('info', `⚗️ The poison in ${f.name} blooms: ${ps.power} Poison.`);
+    this.float(f, `☠️×${mult}`, '#7ddc6f');
+  }
+
+  /** Split Shot: Quick Shot also fires at another Marked enemy in range (Marking Shot: any enemy, and Marks it). */
+  private splitShot(p: PlayerEntity, s: SkillStats, name: string, color: string, main: Entity | undefined) {
+    const split = passiveOf(p, 'split_shot');
+    if (!split) return;
+    const any = hasBranch(p, 'split_shot', 'B');
+    const near = this.monsters()
+      .filter((m) => m !== main && dist(m, p) <= s.range && hasLOS(this, p, m) && (any || hasStatus(m, 'marked')))
+      .sort((x, y) => Number(hasStatus(y, 'marked')) - Number(hasStatus(x, 'marked')) || dist(x, p) - dist(y, p))
+      .slice(0, split.value);
+    const shot = split.tier >= 2 && s.dmg ? { ...s, dmg: { ...s.dmg, bonus: (s.dmg.bonus ?? 0) + 2 } } : s;
+    for (const m of near) {
+      this.addLog('info', `🪃 ${p.name}'s shot splits toward ${m.name}!`);
+      this.weaponHit(p, m, shot, name, color, false);
+      if (any && this.entities.includes(m)) this.applyStatus(m, { id: 'marked', turns: 2 }, p);
+    }
+  }
+
+  /** Earthbreaker: knocking a monster Prone hurts it (World Breaker: those next to it too; Tectonic Rage: more Rage). */
+  private earthbreaker(p: PlayerEntity, t: MonsterEntity) {
+    const e = passiveOf(p, 'earthbreaker')!;
+    const hurt = this.weaponRoll(p) + (e.tier >= 2 ? statMod(p.classId, 'str') : 0);
+    this.later(this.turnToken, 0, () => {
+      if (!this.entities.includes(t)) return;
+      this.addLog('hit', `🌋 ${t.name} hits the ground hard: ${hurt}.`);
+      this.damage(t, hurt, p, 'physical');
+      if (hasBranch(p, 'earthbreaker', 'A')) for (const m of this.monsters().filter((m) => m !== t && dist(m, t) <= 1)) this.damage(m, Math.floor(hurt / 2), p, 'physical');
+      const rage = p.statuses.find((x) => x.id === 'raging');
+      if (hasBranch(p, 'earthbreaker', 'B') && rage && p.used.filter((u) => u === 'fight:quake').length < 4) {
+        p.used.push('fight:quake');
+        rage.power = (rage.power ?? 0) + 1;
+      }
+    });
+  }
+
+  /** A hero's weapon dice, no roll to hit (Body Slam, Earthbreaker). */
+  private weaponRoll(p: PlayerEntity): number {
+    const basic = p.skills.find((o) => SKILLS[o.id].kind === 'basic' && statsOf(o).range <= 1) ?? p.skills.find((o) => SKILLS[o.id].kind === 'basic');
+    return rollDice((basic && statsOf(basic).dmg) || { n: 1, d: 6 });
+  }
+
+  /** Tiles a Geomancer raised, with the rounds they have left (walls only: rubble stays for the fight). */
+  private raised = new Map<number, number>();
+
+  private setTile(i: number, c: string) {
+    this.tiles = this.tiles.slice(0, i) + c + this.tiles.slice(i + 1);
+  }
+
+  /**
+   * Raise Cover and Wall of Stone: cover or a wall rises on empty floor across the aimed spot (square to the caster),
+   * or all around the target (Prison of Stone). Earthshaper makes it burst on the enemies next to it, and walls last
+   * twice as long.
+   */
+  private raiseGround(p: PlayerEntity, s: SkillStats, res: AimResult) {
+    const r = s.raise!;
+    const c = res.center;
+    const spots: Pos[] = [];
+    if (r.ring) {
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) spots.push({ x: c.x + dx, y: c.y + dy });
+    } else {
+      const d = dirTo(p, c);
+      const across = d.x || d.y ? { x: -d.y, y: d.x } : { x: 0, y: 1 };
+      spots.push(c);
+      for (let k = 1; spots.length < r.tiles; k++) spots.push({ x: c.x + across.x * k, y: c.y + across.y * k }, { x: c.x - across.x * k, y: c.y - across.y * k });
+    }
+    const open = (q: Pos) => {
+      const i = q.y * this.width + q.x;
+      return q.x > 0 && q.y > 0 && q.x < this.width - 1 && q.y < this.height - 1 && this.tiles[i] === '.' && !this.occupied(q.x, q.y) && !this.traps.has(i);
+    };
+    const shaper = passiveOf(p, 'earthshaper');
+    const turns = (r.turns ?? 0) * (shaper ? 2 : 1);
+    const up: Pos[] = [];
+    for (const q of spots.slice(0, r.ring ? 8 : r.tiles)) {
+      if (!open(q)) continue;
+      const i = q.y * this.width + q.x;
+      this.setTile(i, r.cover === 'wall' ? '#' : LOW_COVER);
+      if (r.cover === 'wall') {
+        delete this.ground[i];
+        if (turns) this.raised.set(i, turns);
+      }
+      up.push(q);
+    }
+    if (!up.length) {
+      this.addLog('miss', `${s.icon} The ground won't rise there: no empty floor.`);
+      return;
+    }
+    this.addLog('info', r.cover === 'wall' ? `⛰️ A wall of stone rises (${up.length} tiles, ${turns} rounds).` : `🪨 Rubble rises: ${up.length} tiles of low cover.`);
+    if (shaper) {
+      const hit = this.monsters().filter((m) => up.some((q) => dist(q, m) <= 1));
+      for (const m of hit) this.damage(m, rollDice({ n: shaper.value, d: 6 }), p, 'physical');
+      if (hasBranch(p, 'earthshaper', 'B')) for (const h of this.heroes().filter((h) => this.standing(h) && up.some((q) => dist(q, h) <= 1))) this.addBlock(h, p, rollDice({ n: 1, d: 6 }));
+    }
+  }
+
+  /** Shatter Ground: the broken floor leaves rubble (low cover) on some empty tiles of the area. */
+  private rubble(center: Pos, radius: number, n: number) {
+    const free: number[] = [];
+    for (let y = center.y - radius; y <= center.y + radius; y++) {
+      for (let x = center.x - radius; x <= center.x + radius; x++) {
+        const i = y * this.width + x;
+        if (x > 0 && y > 0 && x < this.width - 1 && y < this.height - 1 && this.tiles[i] === '.' && !this.occupied(x, y) && !this.traps.has(i)) free.push(i);
+      }
+    }
+    const picked = shuffle(free).slice(0, n);
+    for (const i of picked) this.setTile(i, LOW_COVER);
+    if (picked.length) this.addLog('info', `⛏️ The broken floor leaves rubble on ${picked.length} tiles.`);
+  }
+
+  /** End of a round: raised walls crumble when their time is up. */
+  private tickRaised() {
+    for (const [i, left] of [...this.raised]) {
+      if (left > 1) {
+        this.raised.set(i, left - 1);
+        continue;
+      }
+      this.raised.delete(i);
+      if (this.tiles[i] === '#' && !this.props[i]) this.setTile(i, '.');
+    }
+  }
+
   private teleportNextTo(p: PlayerEntity, t: Entity) {
     const spots: Pos[] = [];
     for (let dy = -1; dy <= 1; dy++) {
@@ -3007,16 +3369,34 @@ export class Game {
   }
 
   /** Knocks a creature `tiles` steps directly away from `from`; walls and creatures stop it. */
-  private push(t: Entity, from: Pos, tiles: number) {
+  /** Knocks a creature `tiles` away from `from`. `by`: the hero who pushed it (Crushing Force). */
+  private push(t: Entity, from: Pos, tiles: number, by?: PlayerEntity) {
     const dx = Math.sign(t.x - from.x);
     const dy = Math.sign(t.y - from.y);
     if (!dx && !dy) return;
     const path: Pos[] = [];
     let at: Pos = { x: t.x, y: t.y };
+    let into: Entity | undefined; // the creature it slammed into
     for (let i = 0; i < tiles; i++) {
-      if (!canStep(this, at, dx, dy) || this.occupied(at.x + dx, at.y + dy, t.id)) break;
+      if (!canStep(this, at, dx, dy)) break;
+      if (this.occupied(at.x + dx, at.y + dy, t.id)) {
+        into = this.entities.find((e) => e.x === at.x + dx && e.y === at.y + dy && e !== t);
+        break;
+      }
       at = { x: at.x + dx, y: at.y + dy };
       path.push(at);
+    }
+    // Crushing Force: every tile it couldn't go hurts (Domino: the one it hits too).
+    const crush = by ? passiveOf(by, 'crushing_force') : null;
+    const blocked = tiles - path.length;
+    if (by && crush && blocked > 0) {
+      this.later(this.turnToken, 0, () => {
+        if (!this.entities.includes(t)) return;
+        const hurt = rollDice({ n: crush.value * blocked, d: 6 });
+        this.addLog('hit', `🧱 ${t.name} slams into ${into ? into.name : 'the wall'}: ${hurt}.`);
+        this.damage(t, hurt, by, 'physical');
+        if (into && hasBranch(by, 'crushing_force', 'B') && this.entities.includes(into) && isFoe(into)) this.damage(into, hurt, by, 'physical');
+      });
     }
     if (!path.length) return;
     this.addLog('info', `${t.name} is knocked back ${path.length} tile${path.length > 1 ? 's' : ''}.`);
@@ -3049,6 +3429,18 @@ export class Game {
       return;
     }
     if (a.id === 'drained' && t.kind !== 'player') return;
+    // Poison from heroes stacks (Slay the Spire style), up to POISON_CAP (Virulence: more); the Plague Censer adds 1.
+    if (a.id === 'poisoned' && by?.kind === 'player') {
+      const power = (a.power ?? 1) + (this.hasRelic('plague_censer') ? 1 : 0);
+      const cap = Math.max(POISON_CAP, ...this.heroes().map((h) => passiveOf(h, 'virulence')?.value ?? 0));
+      a = { ...a, power, stack: cap / power };
+    }
+    // Haunting Refrain: a bard's debuffs last longer; Zeal: a cleric's buffs too.
+    if (by?.kind === 'player') {
+      const refrain = passiveOf(by, 'haunting_refrain');
+      if (refrain && t.kind === 'monster' && !STATUSES[a.id].good) a = { ...a, turns: a.turns + refrain.value };
+      if (hasBranch(by, 'inspiring_presence', 'B') && t.kind === 'player' && STATUSES[a.id].good && a.turns < 50) a = { ...a, turns: a.turns + 1 };
+    }
     const turns = a.turns + (t.id === this.turnOwner ? 1 : 0);
     const have = t.statuses.find((x) => x.id === a.id);
     if (have) {
@@ -3060,6 +3452,7 @@ export class Game {
       t.statuses.push({ id: a.id, turns, ...(a.power ? { power: a.power } : {}), ...(by ? { by: by.id } : {}) });
     }
     if (a.id === 'drained' && t.kind === 'player') recalcHero(t); // max HP comes down (progression.ts)
+    if (a.id === 'prone' && !have && t.kind === 'monster' && by?.kind === 'player' && passiveOf(by, 'earthbreaker')) this.earthbreaker(by, t);
     const def = STATUSES[a.id];
     // Only new statuses pop up: wading through a puddle shouldn't say "Wet" on every step.
     if (this.phase === 'combat' && t !== by && !have) this.float(t, `${def.icon} ${def.name}`, def.good ? '#7ddc6f' : '#ffb04d');
@@ -3098,7 +3491,193 @@ export class Game {
     const relic: Partial<Record<Element, RelicId>> = { fire: 'ember_stone', cold: 'frost_shard', lightning: 'storm_rod' };
     const r = relic[element];
     if (r && this.hasRelic(r)) extra += 2;
+    if (element === 'lightning' && hasStatus(t, 'wet') && this.hasRelic('storm_coil')) extra += 3;
+    return extra + this.engineDamage(a, t, element);
+  }
+
+  /** Flat damage and extra dice from the build engines (shared/engines.ts) on a hero's hit. */
+  private engineDamage(a: PlayerEntity, t: Entity, element: Element): number {
+    let extra = 0;
+    const cast = this.casting;
+    const spell = !!cast && SKILLS[cast.id].kind === 'spell';
+    if (spell) {
+      // Arcane Charge: every Charge powers your spells; Unleash spends them on one big spell.
+      extra += stacksOf(a, 'charged') * (hasBranch(a, 'arcane_charge', 'A') ? 2 : 1);
+      const loose = stacksOf(a, 'unleashed');
+      if (loose && !this.unleashedOn.has(t.id)) {
+        this.unleashedOn.add(t.id);
+        extra += rollDice({ n: loose, d: hasBranch(a, 'unleash', 'A') ? 8 : 6 });
+      }
+    }
+    // Rupture, Mind Rot, Dawn, Kill Shot, Shield Slam: more for every stack of something.
+    const per = cast?.s.per;
+    if (per) {
+      const n = this.perCount(a, t, per.of);
+      if (n > 0) extra += (per.dice ? rollDice({ n: per.dice.n * n, d: per.dice.d }) : 0) + Math.floor((per.flat ?? 0) * n);
+    }
+    const wet = hasStatus(t, 'wet');
+    const conductor = passiveOf(a, 'conductor');
+    if (conductor && element === 'lightning' && wet && cast?.s.dmg) {
+      const dice = { n: cast.s.dmg.n * (hasBranch(a, 'conductor', 'A') ? 2 : 1), d: cast.s.dmg.d };
+      extra += rollDice(dice); // the dice again (and again, for Superconductor)
+    }
+    const shards = passiveOf(a, 'shatter_point');
+    if (shards && hasStatus(t, 'frozen')) extra += rollDice({ n: shards.value, d: 6 });
+    const stomp = passiveOf(a, 'stomp');
+    if (stomp && hasStatus(t, 'prone')) extra += rollDice({ n: stomp.value, d: 6 });
+    const fury = passiveOf(a, 'blood_fury');
+    if (fury && dist(a, t) <= 1) {
+      extra += fury.value * Math.floor((10 * (a.maxHp - a.hp)) / a.maxHp);
+      if (fury.tier === 2 && a.hp < a.maxHp / 2) extra += 3;
+    }
+    // Marks: Pack Hunter (yours, and your friends' with Pack Leader).
+    const marked = this.monsters().filter((m) => hasStatus(m, 'marked')).length;
+    if (marked) {
+      extra += (passiveOf(a, 'pack_hunter')?.value ?? 0) * marked;
+      if (this.heroes().some((h) => h !== a && hasBranch(h, 'pack_hunter', 'B'))) extra += marked;
+    }
+    // Radiance on the target: every stack adds to radiant damage (2 each for a Holy Brand).
+    const seared = t.statuses.find((x) => x.id === 'seared');
+    if (seared && element === 'radiant') {
+      const by = this.entity(seared.by);
+      extra += (seared.power ?? 0) * (by?.kind === 'player' && hasBranch(by, 'searing_light', 'B') ? 2 : 1);
+    }
+    if (element === 'radiant' && hasBranch(a, 'avatar_of_light', 'B')) extra += rollDice({ n: 1, d: 4 });
+    // Haunting Refrain II: each debuff a bard put on it makes it take more from everyone.
+    for (const x of t.statuses) {
+      if (STATUSES[x.id].good || !x.by) continue;
+      const bard = this.entity(x.by);
+      const refrain = bard?.kind === 'player' ? passiveOf(bard, 'haunting_refrain') : null;
+      if (refrain && refrain.tier >= 2) extra += hasBranch(bard as PlayerEntity, 'haunting_refrain', 'B') ? 2 : 1;
+    }
+    // On the hitter: Inspiring Presence (per buff from the cleric), Heroic Saga (Inspired), Oath of Valor (the paladin's Block).
+    for (const x of a.statuses) {
+      if (!STATUSES[x.id].good || !x.by) continue;
+      const giver = this.entity(x.by);
+      if (giver?.kind === 'player') extra += passiveOf(giver, 'inspiring_presence')?.value ?? 0;
+    }
+    const inspired = a.statuses.find((x) => x.id === 'inspired');
+    if (inspired?.power) {
+      const bard = this.entity(inspired.by);
+      extra += rollDice({ n: inspired.power, d: bard?.kind === 'player' && hasBranch(bard, 'heroic_saga', 'A') ? 8 : 6 });
+    }
+    for (const id of Object.keys(a.block ?? {})) {
+      const giver = this.entity(id.split(':')[0]);
+      if (giver?.kind === 'player' && giver !== a && hasBranch(giver, 'unbreakable_oath', 'B')) {
+        extra += 1;
+        break;
+      }
+    }
     return extra;
+  }
+
+  /** How many stacks a `per` bonus counts. */
+  private perCount(a: PlayerEntity, t: Entity, of: PerSource): number {
+    switch (of) {
+      case 'poison':
+        return stacksOf(t, 'poisoned');
+      case 'radiance':
+        return stacksOf(t, 'seared');
+      case 'debuffs':
+        return debuffsOn(t);
+      case 'focus':
+        return stacksOf(a, 'aiming');
+      case 'block':
+        return blockOf(a);
+      case 'verses':
+        return stacksOf(a, 'verse');
+    }
+  }
+
+  /** Damage multipliers: Hunter's Snare on the pinned. */
+  private damageScale(a: Entity, t: Entity): number {
+    if (a.kind !== 'player') return 1;
+    const snare = passiveOf(a, 'hunters_snare');
+    if (snare && (hasStatus(t, 'netted') || hasStatus(t, 'webbed') || hasStatus(t, 'prone'))) return 1 + snare.value / 100;
+    return 1;
+  }
+
+  /** Extra to-hit: Hunter's Calm (per Focus) and Overwatch (from cover). */
+  private hitBonus(p: PlayerEntity, t: Entity): number {
+    let b = hasBranch(p, 'patience', 'B') ? stacksOf(p, 'aiming') : 0;
+    if (hasBranch(p, 'snipers_nest', 'A') && dist(p, t) > 1 && coverFrom(this, t, p) > 0) b += 2;
+    return b;
+  }
+
+  /** Where a hero's attack starts to crit: 20, less for Keen Edge, smites, a Sniper's Nest, Loaded Dice and gear. */
+  private critRangeOf(p: PlayerEntity, t: Entity): number {
+    let r = 20;
+    if (hasBranch(p, 'lucky', 'B') || this.hasRelic('loaded_dice')) r--;
+    const keen = passiveOf(p, 'keen_edge');
+    if (keen) r -= keen.value + (hasBranch(p, 'keen_edge', 'B') && (hasStatus(t, 'prone') || hasStatus(t, 'netted')) ? 2 : 0);
+    const zeal = passiveOf(p, 'zealous_smite');
+    if (zeal && this.casting && SMITES.includes(this.casting.id)) r -= zeal.value;
+    const nest = passiveOf(p, 'snipers_nest');
+    if (nest && dist(p, t) > 1 && coverFrom(this, t, p) > 0) r -= nest.value;
+    return Math.max(15, r - gearBonus(p, 'crit'));
+  }
+
+  /** Perfect Form (a crit readied by the last one) or Death Blossom (from hiding): this attack is a crit. */
+  private forcedCrit(p: PlayerEntity, fromHiding: boolean): 'perfect' | 'blossom' | null {
+    const ready = p.used.indexOf('turn:perfect-ready');
+    if (ready >= 0) {
+      p.used.splice(ready, 1);
+      return 'perfect';
+    }
+    const blossom = passiveOf(p, 'death_blossom');
+    if (fromHiding && blossom && p.used.filter((u) => u === 'turn:blossom').length < blossom.value) {
+      p.used.push('turn:blossom');
+      return 'blossom';
+    }
+    return null;
+  }
+
+  /** On a crit: more dice (Devastating Blows, Zealous Smite), +damage (Perfect Form II, Deadly Nest). */
+  private critExtra(p: PlayerEntity, t: Entity, dmg: Dice, forced: 'perfect' | 'blossom' | null): number {
+    let extra = 0;
+    const blows = passiveOf(p, 'devastating_blows');
+    if (blows) extra += rollDice({ n: dmg.n * (blows.value - 2), d: dmg.d }) + (blows.tier >= 2 ? 3 : 0);
+    if (passiveOf(p, 'zealous_smite') && this.casting && SMITES.includes(this.casting.id)) extra += rollDice({ n: dmg.n, d: dmg.d });
+    if (forced === 'perfect' && (passiveOf(p, 'perfect_form')?.tier ?? 0) >= 2) extra += 4;
+    if (hasBranch(p, 'snipers_nest', 'B') && dist(p, t) > 1 && coverFrom(this, t, p) > 0) extra += rollDice({ n: 2, d: 8 });
+    return extra;
+  }
+
+  /** After a crit lands: Momentum (AP back), Perfect Form (the next one crits), Shattering Blows (Prone), Righteous Fury. */
+  private afterCrit(p: PlayerEntity, t: Entity) {
+    this.momentum(p);
+    const form = passiveOf(p, 'perfect_form');
+    if (form && p.used.filter((u) => u === 'turn:perfect').length < form.value) p.used.push('turn:perfect', 'turn:perfect-ready');
+    if (hasBranch(p, 'devastating_blows', 'B') && this.entities.includes(t)) this.applyStatus(t, { id: 'prone', turns: 1 }, p);
+    if (hasBranch(p, 'zealous_smite', 'B') && this.casting && SMITES.includes(this.casting.id)) {
+      const healed = this.healBy(null, p, rollDice({ n: 1, d: 8 }));
+      if (healed) this.addLog('heal', `🗯️ Righteous fury mends ${p.name}: +${healed} HP.`);
+    }
+  }
+
+  /** Momentum: a crit (or, from tier II, a kill) gives 1 AP back, once (or twice) a turn. */
+  private momentum(p: PlayerEntity) {
+    const m = passiveOf(p, 'momentum');
+    if (!m || !this.turn || this.current()?.id !== p.id || p.used.filter((u) => u === 'turn:momentum').length >= m.value) return;
+    p.used.push('turn:momentum');
+    this.turn.ap++;
+    this.float(p, '⚡+1 AP', '#f6cf7a');
+    if (hasBranch(p, 'momentum', 'B')) this.addMoves(p, 2);
+  }
+
+  /** Every Nth hit of a turn: Knife Juggler throws a free knife at the nearest enemy (it never misses). */
+  private afterHitInTurn(p: PlayerEntity, t: Entity) {
+    const n = p.used.filter((u) => u === 'turn:hit').length;
+    if (hasBranch(p, 'flurry', 'B') && n >= 4 && this.entities.includes(t)) this.applyStatus(t, { id: 'poisoned', turns: 2, power: 2 }, p);
+    const juggler = passiveOf(p, 'knife_juggler');
+    if (!juggler || n % juggler.value !== 0) return;
+    const near = this.monsters().filter((m) => dist(m, p) <= 5 && hasLOS(this, p, m)).sort((x, y) => dist(x, p) - dist(y, p))[0];
+    if (!near) return;
+    const knife = rollDice({ n: juggler.tier >= 2 ? 2 : 1, d: 4 }) + statMod(p.classId, 'dex');
+    this.shot(p, near, '#c9d1d9');
+    this.addLog('hit', `🔪 ${p.name} flicks a knife at ${near.name}: ${knife}.`);
+    this.damage(near, knife, p, 'physical');
+    if (hasBranch(p, 'knife_juggler', 'B') && this.entities.includes(near)) this.applyStatus(near, { id: 'poisoned', turns: 2, power: 2 }, p);
   }
 
   /** Rolls an attack (advantage, crits, Sneak Attack, passives) and applies the damage. Returns true on a hit. */
@@ -3125,11 +3704,13 @@ export class Game {
       d20 = rollDie(20);
       reroll = ` 🍀→${d20}`;
     }
-    const bonus = o.bonus + (hasStatus(a, 'blessed') ? 2 : 0) - (hasStatus(a, 'dazed') ? 2 : 0) + rally;
-    const cover = coverFrom(this, a, t); // ducking behind a wall or a crate (none in melee)
+    const bonus = o.bonus + (hasStatus(a, 'blessed') ? 2 : 0) - (hasStatus(a, 'dazed') ? 2 : 0) + rally + (hero ? this.hitBonus(hero, t) : 0);
+    // Perfect Form and Death Blossom turn this attack into a crit (it can't miss); a Blossom from hiding ignores cover.
+    const forced = hero ? this.forcedCrit(hero, !!hidden) : null;
+    const cover = forced === 'blossom' && hero && (passiveOf(hero, 'death_blossom')?.tier ?? 0) >= 2 ? 0 : coverFrom(this, a, t); // ducking behind a wall or a crate (none in melee)
     const ac = this.acOf(t) + cover;
-    const critRange = hero && (hasBranch(hero, 'lucky', 'B') || this.hasRelic('loaded_dice')) ? 19 : 20;
-    const crit = d20 >= critRange || (!!o.critFull && t.hp >= t.maxHp);
+    const critRange = hero ? this.critRangeOf(hero, t) : 20;
+    const crit = !!forced || d20 >= critRange || (!!o.critFull && t.hp >= t.maxHp);
     const hit = crit || (d20 !== 1 && d20 + bonus >= ac);
     if (dist(a, t) > 1 && a.kind === 'monster') this.shot(a, t, ELEMENT_COLOR[o.element]);
     // Strike and Fade: the first attack on your own turn, hit or miss, frees up some movement.
@@ -3151,16 +3732,38 @@ export class Game {
     const rage = dist(a, t) <= 1 ? (a.statuses.find((s) => s.id === 'raging')?.power ?? 0) : 0; // Rage: melee only
     let total = rollDice(o.dmg, crit) + (o.extra ?? 0) + this.bonusDamage(a, t, o.element) + rally + rage;
     const notes: string[] = [];
-    if (hero && o.sneak && !hero.used.includes('turn:sneak')) {
+    if (hero && crit) total += this.critExtra(hero, t, o.dmg, forced);
+    // Hits this turn (Flurry, Knife Juggler): only your own attacks on your own turn count.
+    const mine = hero && this.turn && this.current()?.id === hero.id;
+    if (hero && mine) {
+      hero.used.push('turn:hit');
+      const n = hero.used.filter((u) => u === 'turn:hit').length;
+      const flurry = passiveOf(hero, 'flurry');
+      if (flurry && n > 1) {
+        total += flurry.value * (n - 1);
+        notes.push(`${flurry.value * (n - 1)} flurry`);
+      }
+    }
+    // Sneak Attack, once a turn (Thousand Cuts: part of it on every later hit too).
+    const cuts = hero ? passiveOf(hero, 'thousand_cuts') : null;
+    const again = !!hero && hero.used.includes('turn:sneak');
+    if (hero && o.sneak && (!again || cuts)) {
       const flanked = this.entities.some((e) => e !== hero && !isFoe(e) && this.up(e) && dist(e, t) <= 1);
       if (flanked || adv) {
-        // Death Mark: more dice on the Poisoned (or Marked, for Marked for Death).
+        // Death Mark: more dice on the Poisoned (or Marked, for Marked for Death). Cunning Strikes: more per debuff.
         const mark = passiveOf(hero, 'death_mark');
         const doomed = mark && (hasStatus(t, 'poisoned') || (hasBranch(hero, 'death_mark', 'B') && hasStatus(t, 'marked')));
-        const sneak = rollDice({ n: sneakDice(hero.level) + (doomed ? mark.value : 0), d: 6 }, crit);
+        const cunning = passiveOf(hero, 'cunning_strikes');
+        const debuffs = cunning ? Math.min(debuffsOn(t), cunning.tier >= 2 && !hasBranch(hero, 'cunning_strikes', 'A') ? 5 : 3) : 0;
+        let dice = sneakDice(hero.level) + (doomed ? mark.value : 0) + (cunning ? cunning.value * debuffs : 0);
+        if (again && cuts) dice = Math.max(1, Math.floor((dice * cuts.value) / 100));
+        const sneak = rollDice({ n: dice, d: 6 }, crit);
         total += sneak;
-        hero.used.push('turn:sneak');
+        if (!again) hero.used.push('turn:sneak');
         notes.push(`${sneak} Sneak Attack`);
+        if (this.entities.includes(t) && ((!again && hasBranch(hero, 'cunning_strikes', 'B')) || (again && hasBranch(hero, 'thousand_cuts', 'B')))) {
+          this.applyStatus(t, { id: 'poisoned', turns: 2, power: again ? 1 : 2 }, hero); // Twist the Knife, Opening Wounds
+        }
       }
     }
     if (o.execute && t.hp < t.maxHp / 2) {
@@ -3194,16 +3797,106 @@ export class Game {
       total += holy;
       notes.push(`${holy} Divine Favor`);
     }
-    total = Math.max(1, total);
+    total = Math.max(1, Math.round(total * this.damageScale(a, t)));
     this.addLog(crit ? 'crit' : 'hit', `${what}: ${roll}, ${crit ? 'CRITICAL HIT' : 'hit'} for ${total}${elementWord(o.element)}${notes.length ? ` (incl. ${notes.join(', ')})` : ''}`);
     this.damage(t, total, a, o.element);
     if (crit) this.callout(a, 'crit', { target: t.name }); // after the damage, so a kill steal gets the bot's word first
+    if (hero && crit) this.afterCrit(hero, t);
+    if (hero && forced === 'blossom') {
+      this.applyStatus(hero, { id: 'hidden', turns: 2 }, hero); // Death Blossom: back into the shadows
+      if (hasBranch(hero, 'death_blossom', 'B') && this.entities.includes(t)) this.applyStatus(t, { id: 'poisoned', turns: 2, power: 3 }, hero);
+    }
     if (hero && o.basic) this.weaponExtras(hero, t, crit);
     const venom = hero && o.basic ? a.statuses.find((s) => s.id === 'envenomed') : undefined;
     if (venom && this.entities.includes(t)) this.applyStatus(t, { id: 'poisoned', turns: 2, power: venom.power ?? 1 }, a);
+    const vial = hero && o.basic ? gearBonus(hero, 'poison') : 0; // Venom Vial
+    if (vial && this.entities.includes(t)) this.applyStatus(t, { id: 'poisoned', turns: 2, power: vial }, a);
+    if (hero && mine) this.afterHitInTurn(hero, t);
     if (hero && this.entities.includes(t)) this.afterHit(hero, t, o.element, !!o.basic);
     if (dist(a, t) <= 1 && this.entities.includes(t) && canReact(t)) this.face(t, a); // you turn toward whoever hit you
     return true;
+  }
+
+  /** Madness: a monster carrying enough of one bard's debuffs attacks another monster it can reach. Returns true if it did. */
+  private madness(m: MonsterEntity): boolean {
+    for (const bard of this.heroes()) {
+      const mad = passiveOf(bard, 'madness');
+      if (!mad || debuffsOn(m, bard.id) < mad.value) continue;
+      const reach = MONSTERS[m.type].range;
+      const friend = this.monsters().filter((x) => x !== m && dist(x, m) <= reach && (reach <= 1 || hasLOS(this, m, x))).sort((x, y) => dist(x, m) - dist(y, m))[0];
+      if (!friend) return false;
+      this.addLog('crit', `🤪 ${m.name} goes mad and turns on ${friend.name}!`);
+      this.float(m, '🤪 mad!', '#b57bff');
+      this.monsterAttack(m, friend);
+      if (mad.tier >= 2 && this.entities.includes(m)) this.damage(m, rollDice({ n: 1, d: 6 }), bard, 'force');
+      if (hasBranch(bard, 'madness', 'B') && this.entities.includes(m)) this.applyStatus(m, { id: 'dazed', turns: 1 }, bard);
+      return true;
+    }
+    return false;
+  }
+
+  /** Swift Riposte: extra dice on counterattacks and ripostes. */
+  private riposteBonus(p: PlayerEntity): number {
+    const r = passiveOf(p, 'swift_riposte');
+    return r ? rollDice({ n: r.value, d: 6 }) : 0;
+  }
+
+  /** After a counter: Swift Riposte heals (and Humbles), Blade Wall II stacks AC. */
+  private afterCounter(p: PlayerEntity, m: MonsterEntity) {
+    const r = passiveOf(p, 'swift_riposte');
+    if (r && this.standing(p)) this.healBy(null, p, r.tier >= 2 ? 3 : 2);
+    if (r && hasBranch(p, 'swift_riposte', 'B') && this.entities.includes(m)) this.applyStatus(m, { id: 'dazed', turns: 1 }, p);
+    const wall = passiveOf(p, 'blade_wall');
+    if (wall && wall.tier >= 2) this.applyStatus(p, { id: 'shielded', turns: 1, power: 1, stack: hasBranch(p, 'blade_wall', 'B') ? 5 : 3 }, p);
+  }
+
+  /** Wasting Toxin (Virulence III-B): the Poisoned hit softer. */
+  private wasting(m: MonsterEntity): number {
+    const ps = m.statuses.find((x) => x.id === 'poisoned');
+    const by = ps && this.entity(ps.by);
+    return by?.kind === 'player' && hasBranch(by, 'virulence', 'B') ? 2 : 0;
+  }
+
+  /** A hero's killing blow: the engines that pay off on a kill. */
+  private engineKill(p: PlayerEntity, t: MonsterEntity) {
+    const myTurn = !!this.turn && this.current()?.id === p.id;
+    const melt = passiveOf(p, 'melt_away');
+    if (melt && this.standing(p)) {
+      this.applyStatus(p, { id: 'hidden', turns: 2 }, p);
+      if (melt.value) this.addMoves(p, melt.value);
+      if (hasBranch(p, 'melt_away', 'A') && myTurn && !p.used.includes('turn:ghost') && this.turn) {
+        p.used.push('turn:ghost');
+        this.turn.ap++;
+      }
+    }
+    if ((passiveOf(p, 'momentum')?.tier ?? 0) >= 2) this.momentum(p);
+    const form = passiveOf(p, 'perfect_form');
+    if (form && hasBranch(p, 'perfect_form', 'B') && p.used.filter((u) => u === 'turn:perfect').length < form.value) p.used.push('turn:perfect', 'turn:perfect-ready');
+    if (hasBranch(p, 'hunters_snare', 'B') && myTurn && this.turn && !p.used.includes('turn:trophy') && ['netted', 'webbed', 'prone'].some((id) => hasStatus(t, id as StatusId))) {
+      p.used.push('turn:trophy');
+      this.turn.ap++;
+    }
+    const angel = passiveOf(p, 'avenging_angel');
+    const id = this.casting?.id;
+    if (angel && id && SMITES.includes(id) && !p.used.includes('turn:angel')) {
+      const any = hasBranch(p, 'avenging_angel', 'A');
+      if (id === 'divine_smite' || any) {
+        p.used.push('turn:angel');
+        if (id === 'divine_smite') p.slots = Math.min(p.maxSlots, p.slots + 1);
+        if ((angel.tier >= 2 || any) && myTurn && this.turn) this.turn.ap++;
+        if (hasBranch(p, 'avenging_angel', 'B')) this.addMoves(p, 3);
+        this.addLog('level', `👼 ${p.name}'s vengeance is answered.`);
+      }
+    }
+    // Pandemic and Avatar of Light: what was on it spreads to the ones next to it.
+    for (const id2 of ['poisoned', 'seared'] as const) {
+      const st = t.statuses.find((x) => x.id === id2);
+      const by = st && this.entity(st.by);
+      if (!st?.power || by?.kind !== 'player') continue;
+      const spreads = id2 === 'poisoned' ? hasBranch(by, 'virulence', 'A') : !!passiveOf(by, 'avatar_of_light');
+      if (!spreads) continue;
+      for (const m of this.monsters().filter((m) => dist(m, t) <= 1)) this.applyStatus(m, { id: id2, turns: 3, power: st.power }, by);
+    }
   }
 
   /** Spiked Shield: Block that soaked a monster's hit hurts it back (melee, or anything but areas with Retribution). */
@@ -3220,8 +3913,20 @@ export class Game {
   /** Blood Drinker (melee hits) and Blessed Smites (Divine Smite, Radiant Strike): a hero heals off the damage dealt. */
   private drink(p: PlayerEntity, t: MonsterEntity, dealt: number, area: boolean) {
     const drinker = passiveOf(p, 'blood_drinker');
+    const stone = gearBonus(p, 'lifesteal'); // the Bloodstone
+    const bath = passiveOf(p, 'bloodbath');
+    const pinned = hasStatus(t, 'taunted') || ((bath?.tier ?? 0) >= 2 && (hasStatus(t, 'prone') || hasStatus(t, 'netted')));
+    const mult = bath && pinned ? bath.value : 1;
+    if (stone && !area && dist(p, t) <= 1 && !drinker) {
+      const healed = this.healBy(null, p, Math.max(1, Math.floor((dealt * stone * mult) / 100)));
+      if (healed) this.float(p, `🍷+${healed}`, '#c0392b');
+    }
     if (drinker && !area && dist(p, t) <= 1) {
-      const healed = this.healBy(null, p, Math.max(1, Math.floor((dealt * drinker.value) / 100)));
+      const healed = this.healBy(null, p, Math.max(1, Math.floor((dealt * (drinker.value + stone) * mult) / 100)));
+      if (healed && hasBranch(p, 'bloodbath', 'B')) {
+        const friend = this.heroes().filter((h) => h !== p && this.standing(h) && dist(h, p) <= 1).sort((x, y) => x.hp / x.maxHp - y.hp / y.maxHp)[0];
+        if (friend) this.healBy(null, friend, Math.max(1, Math.floor(healed / 2)));
+      }
       if (healed) this.float(p, `🍷+${healed}`, '#c0392b');
       if (hasBranch(p, 'blood_drinker', 'B')) for (const h of this.heroes()) if (h !== p && this.standing(h) && dist(h, p) <= 1) this.healBy(null, h, 1);
     }
@@ -3238,9 +3943,52 @@ export class Game {
     }
   }
 
+  /** The engines' on-hit effects: Radiance, lightning arcs, shattering ice, Rain of Arrows, Cold Fury, Grinding Stomp. */
+  private engineAfterHit(p: PlayerEntity, t: Entity, element: Element) {
+    if (!this.entities.includes(t) || t.kind !== 'monster') return;
+    // Searing Light (and the Sunstone): radiant hits stack Radiance.
+    const sear = (element === 'radiant' ? passiveOf(p, 'searing_light')?.value ?? 0 : 0) + (element === 'radiant' ? gearBonus(p, 'radiance') : 0);
+    if (sear > 0) {
+      const avatar = this.heroes().find((h) => passiveOf(h, 'avatar_of_light'));
+      const cap = avatar ? passiveOf(avatar, 'avatar_of_light')!.value : 5;
+      this.applyStatus(t, { id: 'seared', turns: avatar ? 99 : 3, power: sear, stack: cap / sear }, p);
+      if (hasBranch(p, 'searing_light', 'A') && stacksOf(t, 'seared') >= 5) this.applyStatus(t, { id: 'blinded', turns: 1 }, p);
+    }
+    // Conductor: lightning on the Wet arcs to the Wet around it.
+    const conductor = passiveOf(p, 'conductor');
+    if (conductor && element === 'lightning' && hasStatus(t, 'wet')) {
+      const reach = hasBranch(p, 'conductor', 'B') ? 3 : 1;
+      for (const m of this.monsters().filter((m) => m !== t && hasStatus(m, 'wet') && dist(m, t) <= reach)) {
+        const arc = rollDice({ n: conductor.value, d: 6 });
+        this.shot(t, m, ELEMENT_COLOR.lightning);
+        this.addLog('hit', `⚡ The shock arcs from ${t.name} to ${m.name}: ${arc}.`);
+        this.damage(m, arc, p, 'lightning');
+      }
+    }
+    // Shatter Point: the hit breaks the ice (and Frost Shatter's shards chill the ones around it).
+    if (passiveOf(p, 'shatter_point') && this.entities.includes(t) && hasStatus(t, 'frozen')) {
+      t.statuses = t.statuses.filter((x) => x.id !== 'frozen');
+      this.addLog('info', `💎 ${t.name}'s ice shatters!`);
+      if (hasBranch(p, 'shatter_point', 'B')) for (const m of this.monsters()) if (m !== t && dist(m, t) <= 1) this.applyStatus(m, { id: 'chilled', turns: 2 }, p);
+    }
+    // Rain of Arrows: hitting one Marked enemy sends arrows down on the others.
+    const rain = passiveOf(p, 'rain_of_arrows');
+    if (rain && hasStatus(t, 'marked') && p.used.filter((u) => u === 'turn:rain').length < (hasBranch(p, 'rain_of_arrows', 'B') ? 2 : 1)) {
+      const others = this.monsters().filter((m) => m !== t && hasStatus(m, 'marked') && dist(m, p) <= 8);
+      if (others.length) {
+        p.used.push('turn:rain');
+        this.addLog('info', `🌧️ Arrows rain down on the Marked!`);
+        for (const m of others) this.damage(m, rollDice({ n: rain.value, d: 6 }), p, 'physical');
+      }
+    }
+    if (hasBranch(p, 'blood_fury', 'B') && dist(p, t) <= 1 && p.hp < p.maxHp / 2) this.healBy(null, p, 2);
+    if (hasBranch(p, 'stomp', 'B') && this.entities.includes(t) && hasStatus(t, 'prone')) this.applyStatus(t, { id: 'dazed', turns: 1 }, p);
+  }
+
   /** On-hit passives that put statuses on the target or heal allies. */
   private afterHit(p: PlayerEntity, t: Entity, element: Element, basic: boolean) {
     if (element === 'fire' && hasBranch(p, 'elemental_affinity', 'A')) this.applyStatus(t, { id: 'burning', turns: 2 }, p);
+    this.engineAfterHit(p, t, element);
     if (hasBranch(p, 'psychic_blades', 'B') && t.kind === 'monster' && t.statuses.some((x) => !STATUSES[x.id].good)) this.applyStatus(t, { id: 'dazed', turns: 1 }, p);
     if (!basic) return;
     if (hasBranch(p, 'divine_strike', 'A')) this.applyStatus(t, { id: 'blinded', turns: 1 }, p);
@@ -3322,6 +4070,7 @@ export class Game {
     if (amount <= 0) return;
     if (t.kind === 'monster' && by?.kind === 'player') t.dmgBy[by.id] = (t.dmgBy[by.id] ?? 0) + Math.min(amount, t.hp);
     const bloodied = t.hp < t.maxHp / 2;
+    if (t.kind === 'player' && amount >= t.hp && this.unkillable(t)) amount = t.hp - 1;
     const dealt = Math.min(amount, t.hp);
     t.hp = Math.max(0, t.hp - amount);
     if (t.kind === 'monster' && by?.kind === 'player' && dealt > 0) this.drink(by, t, dealt, area);
@@ -3356,6 +4105,22 @@ export class Game {
     }
   }
 
+  /** Unkillable: a Raging barbarian stays at 1 HP (Defy Death: once a fight without Rage too); it heals a little. */
+  private unkillable(p: PlayerEntity): boolean {
+    const u = passiveOf(p, 'unkillable');
+    if (!u || p.hp <= 1) return false;
+    const rage = p.statuses.find((x) => x.id === 'raging');
+    if (!rage) {
+      if (!hasBranch(p, 'unkillable', 'B') || p.used.includes('fight:defy')) return false;
+      p.used.push('fight:defy');
+    }
+    this.addLog('crit', `💀 ${p.name} refuses to fall!`);
+    this.float(p, '💀 unkillable', '#ffd84d');
+    if (u.tier >= 2) this.later(this.turnToken, 0, () => this.healBy(null, p, rollDice({ n: 1, d: 8 })));
+    if (rage && hasBranch(p, 'unkillable', 'A')) rage.power = (rage.power ?? 0) + 2;
+    return true;
+  }
+
   /** What an element does to a creature it hurts: cold chills then freezes, lightning shocks then stuns, fire thaws. */
   private elementHit(t: Entity, el: Element, by?: Entity) {
     if (!this.entities.includes(t) || this.phase !== 'combat') return;
@@ -3368,6 +4133,7 @@ export class Game {
         t.statuses = t.statuses.filter((x) => x.id !== 'chilled' && x.id !== 'wet');
         this.addLog('info', `🧊 ${t.name} freezes solid!`);
         this.applyStatus(t, { id: 'frozen', turns: 1 }, by);
+        if (by?.kind === 'player') this.combo(by);
       } else this.applyStatus(t, { id: 'chilled', turns: FIELD_STATUS_TURNS }, by);
     } else if (el === 'lightning') {
       if (hasStatus(t, 'stunned')) return; // can't be stunned again while stunned
@@ -3375,8 +4141,19 @@ export class Game {
         t.statuses = t.statuses.filter((x) => x.id !== 'shocked');
         this.addLog('info', `⚡ ${t.name} is stunned by the shock${wet ? ' (Wet)' : ''}!`);
         this.applyStatus(t, { id: 'stunned', turns: 1 }, by);
+        if (by?.kind === 'player') this.combo(by);
       } else this.applyStatus(t, { id: 'shocked', turns: FIELD_STATUS_TURNS }, by);
     }
+  }
+
+  /** Convergence: setting off a combo on your own turn gives AP back, a few times a turn. */
+  private combo(p: PlayerEntity) {
+    const c = passiveOf(p, 'convergence');
+    if (!c || !this.turn || this.current()?.id !== p.id || p.used.filter((u) => u === 'turn:combo').length >= c.value) return;
+    p.used.push('turn:combo');
+    const n = hasBranch(p, 'convergence', 'B') ? 2 : 1;
+    this.turn.ap += n;
+    this.float(p, `🌈+${n} AP`, '#f6cf7a');
   }
 
   // ------------------------------------------------------------ the battlefield (shared/surfaces.ts)
@@ -3388,6 +4165,7 @@ export class Game {
   private runField(ops: FieldOp[], by?: Entity) {
     if (!ops.length || this.phase !== 'combat') return;
     const r = applyField(this, ops, by?.id);
+    if (by?.kind === 'player' && r.reactions.length) this.combo(by);
     for (const x of r.reactions) {
       const info = REACTIONS[x.kind];
       const c = x.tiles.map((i) => tilePos(this, i));
@@ -3469,6 +4247,7 @@ export class Game {
     this.removeFromOrder(t.id);
     const killer = by?.kind === 'player' ? by : null;
     if (killer && t.elite) this.eliteKiller = killer.id;
+    if (killer) this.engineKill(killer, t);
     if (killer) {
       killer.kills++;
       const total = Object.values(t.dmgBy).reduce((s, n) => s + n, 0);
@@ -3555,9 +4334,12 @@ export class Game {
     if (healer && hasBranch(healer, 'blessed_healer', 'B')) amount += 2; // Shepherd
     const room = t.maxHp - t.hp;
     const wasDown = t.downed;
+    const wasLow = t.hp < t.maxHp / 2;
     t.hp = Math.min(t.maxHp, t.hp + amount);
     const healed = Math.min(amount, room);
-    if (overheal && amount > room) t.tempHp = Math.max(t.tempHp, amount - room);
+    const grace = healer && this.phase === 'combat' ? passiveOf(healer, 'overflowing_grace') : null;
+    if (overheal && amount > room && !grace) t.tempHp = Math.max(t.tempHp, amount - room);
+    if (this.phase === 'combat' && amount > 0) this.healPayoffs(healer, t, amount - room, healed, wasLow);
     if (healed > 0) this.float(t, `+${healed}`, '#7ddc6f');
     if (t.downed && t.hp > 0) {
       this.getUp(t);
@@ -3579,6 +4361,51 @@ export class Game {
       if (hasBranch(healer, 'blessed_healer', 'A')) this.applyStatus(t, { id: 'shielded', turns: 1, power: 2 }, healer);
     }
     return healed;
+  }
+
+  /**
+   * What a heal also does, by engine: Overflowing Grace and Scar Tissue turn the overflow into Block, Radiant Recovery
+   * shields, Soul Link heals the linked friend too, Font of Life gives AP to the badly hurt, Immortal Hunger feeds Rage.
+   */
+  private healPayoffs(healer: PlayerEntity | null, t: PlayerEntity, over: number, healed: number, wasLow: boolean) {
+    if (!this.standing(t)) return;
+    const grace = healer ? passiveOf(healer, 'overflowing_grace') : null;
+    if (healer && grace) {
+      const n = Math.max(Math.floor((Math.max(0, over) * grace.value) / 100), grace.tier >= 2 ? 2 : 0);
+      if (n > 0) this.addBlock(t, healer, n);
+      if (n > 0 && hasBranch(healer, 'overflowing_grace', 'B')) this.applyStatus(t, { id: 'shielded', turns: 1, power: 1 }, healer);
+    }
+    const scar = passiveOf(t, 'scar_tissue');
+    if (scar && over > 0) this.addBlock(t, t, Math.floor((over * scar.value) / 100));
+    if (!healer || healed <= 0) return;
+    const recovery = passiveOf(healer, 'radiant_recovery');
+    if (recovery) {
+      this.addBlock(t, healer, Math.floor((healed * recovery.value) / 100));
+      if (hasBranch(healer, 'radiant_recovery', 'B') && healer !== t && this.standing(healer)) healer.hp = Math.min(healer.maxHp, healer.hp + 2);
+    }
+    // Soul Link: everyone linked to this healer gets a share (no chain: it's a direct heal).
+    for (const h of this.heroes()) {
+      const link = h.statuses.find((x) => x.id === 'linked' && x.by === healer.id);
+      if (!link || h === t || !this.standing(h) || h.hp >= h.maxHp) continue;
+      const n = Math.min(h.maxHp - h.hp, Math.floor((healed * (link.power ?? 50)) / 100));
+      if (n <= 0) continue;
+      h.hp += n;
+      this.float(h, `🔗+${n}`, '#7ddc6f');
+    }
+    const font = passiveOf(healer, 'font_of_life');
+    if (font && healer !== t && wasLow && !t.used.includes(`round:font:${healer.id}`)) {
+      t.used.push(`round:font:${healer.id}`);
+      this.giveAp(t, font.value, healer);
+      if (font.tier >= 2 && !hasBranch(healer, 'font_of_life', 'A') && !hasBranch(healer, 'font_of_life', 'B')) this.addMoves(t, 2);
+      if (hasBranch(healer, 'font_of_life', 'B')) this.applyStatus(t, { id: 'shielded', turns: 1, power: 2 }, healer);
+    }
+    const hunger = passiveOf(t, 'immortal_hunger');
+    const rage = t.statuses.find((x) => x.id === 'raging');
+    if (hunger && rage && t.used.filter((u) => u === 'fight:hunger').length < hunger.value) {
+      const n = hasBranch(t, 'immortal_hunger', 'B') ? 2 : 1;
+      for (let i = 0; i < n; i++) t.used.push('fight:hunger');
+      rage.power = (rage.power ?? 0) + n;
+    }
   }
 
   /** Back up from 0 HP with someone's help: Groggy, so the next turn is lost (Smelling Salts add 5 HP). */

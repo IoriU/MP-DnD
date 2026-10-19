@@ -1,13 +1,17 @@
 // Hero progression: XP shares, level-ups, level-up offers (pick 1 of 3), elite spoils, and training at rest sites.
 // Pure functions on PlayerEntity, so they can be unit tested without a running game.
 
-import { GEAR_IDS, ITEMS, ITEM_IDS, bagRoom, gearBonus, gearDef, isItemId, nextPity, rarityPool, rollRarity, type ItemId } from '../shared/items.ts';
+import { GEAR_IDS, ITEMS, ITEM_IDS, bagRoom, gearBonus, gearDef, isItemId, nextPity, rarityOdds, rarityPool, rollRarity, type ItemId } from '../shared/items.ts';
+import { CARD_RARITIES, type CardRarity, type EngineId } from '../shared/engines.ts';
 import { BOON_HP, CLASSES, INJURY_PCT, LEVEL_CAP, MAX_BONUS_AC, MAX_INJURIES, XP_ASSIST, XP_KILL, XP_SHARED, maxHpFor, maxSlotsFor, xpToNext } from '../shared/rules.ts';
 import {
   COUNTED_KINDS,
   SKILLS,
   SKILL_IDS,
+  cardRarity,
   countKind,
+  engineOf,
+  enginePicks,
   hasBranch,
   isSignature,
   limitFor,
@@ -19,7 +23,7 @@ import {
   type SkillId,
 } from '../shared/skills.ts';
 import type { BoonId, ClassId, OfferCard, OwnedSkill, PickRequest, PlayerEntity, RestPick } from '../shared/types.ts';
-import { SUBCLASSES, SUBCLASS_LEVEL, isSubclassId, subclassesOf, type SubclassId } from '../shared/subclasses.ts';
+import { SUBCLASSES, isSubclassId, subclassesOf, type SubclassId } from '../shared/subclasses.ts';
 import type { Rng } from './rng.ts';
 
 export const startingSkills = (c: ClassId): OwnedSkill[] => CLASSES[c].start.map((id) => ({ id, tier: 1, cd: 0 }));
@@ -62,7 +66,7 @@ export function killShares(xp: number, killerId: string | null, dmgBy: Record<st
 
 /**
  * Levels up as far as the XP goes. Returns how many levels were gained. Levels give HP and power; skills come from the
- * pick after every won fight, so the only level-up pick left is the subclass at SUBCLASS_LEVEL.
+ * pick after every won fight (since 2026-10-19 there's no subclass pick either: builds are engines, shared/engines.ts).
  */
 export function applyLevelUps(p: PlayerEntity): number {
   let gained = 0;
@@ -71,7 +75,6 @@ export function applyLevelUps(p: PlayerEntity): number {
     p.level++;
     gained++;
   }
-  if (p.level >= SUBCLASS_LEVEL && !p.subclass && !p.levelUps) p.levelUps = 1;
   if (p.level >= LEVEL_CAP) p.xp = 0;
   if (gained) recalcHero(p);
   return gained;
@@ -85,22 +88,46 @@ interface Weighted {
   w: number;
 }
 
-function candidates(p: PlayerEntity, pool: 'class' | 'common'): Weighted[] {
+/** An epic capstone is only offered once you picked this many cards of its engine (starting cards don't count). */
+const CAPSTONE_AFTER = 2;
+
+/** How much likelier an engine's cards get as you pick more of them: 2 picks double it, 4 triple it. */
+const leanOf = (p: PlayerEntity, engine: EngineId | undefined) => {
+  if (!engine) return 1;
+  const n = enginePicks(p, engine);
+  return n >= 4 ? 3 : n >= 2 ? 2 : 1;
+};
+
+/**
+ * What an offer can draw: new skills and upgrades from the class pool (or passives and boons from the common pool).
+ * New skills have a rarity like items: each rarity gets the act's share of the draws (with the hero's pity), split over
+ * the cards of that rarity, and cards of engines the hero has started lean in (`leanOf`). The total weight of new
+ * skills stays about one per card, so upgrades keep their old odds.
+ */
+function candidates(p: PlayerEntity, pool: 'class' | 'common', act = 1): Weighted[] {
   const out: Weighted[] = [];
+  const learns: { id: SkillId; rarity: CardRarity; lean: number }[] = [];
   for (const id of SKILL_IDS) {
     const def = SKILLS[id];
-    if (!COUNTED_KINDS.includes(def.kind)) continue;
+    const engine = engineOf(id);
+    if (!COUNTED_KINDS.includes(def.kind) && !(def.kind === 'basic' && engine)) continue; // Quick Stab is a card too
     if (pool === 'class' ? def.pool !== p.classId : def.pool !== 'common') continue;
-    if (def.sub && def.sub !== p.subclass) continue; // another subclass's skill (or no subclass yet)
     const owned = p.skills.some((s) => s.id === id);
     if (!owned) {
-      out.push({ card: { kind: 'learn', skill: id }, key: id, w: 1 });
+      const rarity = cardRarity(id);
+      if (rarity === 'epic' && (!engine || enginePicks(p, engine) < CAPSTONE_AFTER)) continue;
+      learns.push({ id, rarity, lean: leanOf(p, engine) });
       continue;
     }
     const tier = nextTier(p, id);
     // Upgrades are weighted up, so builds come together.
-    if (tier) out.push({ card: { kind: 'upgrade', skill: id, tier }, key: id, w: 2 });
+    if (tier) out.push({ card: { kind: 'upgrade', skill: id, tier }, key: id, w: 2 * leanOf(p, engine) });
   }
+  const odds = rarityOdds(act, { pity: p.pity });
+  const share: Record<CardRarity, number> = { common: odds.common, uncommon: odds.uncommon, rare: odds.rare, epic: odds.epic + odds.legendary };
+  const count = (r: CardRarity) => learns.filter((l) => l.rarity === r).length;
+  const total = CARD_RARITIES.reduce((s, r) => s + (count(r) ? share[r] : 0), 0);
+  for (const l of learns) out.push({ card: { kind: 'learn', skill: l.id }, key: l.id, w: (learns.length * share[l.rarity] * l.lean) / (total * count(l.rarity)) });
   if (pool === 'common') {
     const boons: BoonId[] = ['hp', 'potions', 'slot'];
     if (p.bonusAc < MAX_BONUS_AC) boons.push('ac');
@@ -163,9 +190,10 @@ export function rewardItem(p: PlayerEntity, r: Rng, act: number): ItemId | null 
  */
 export function makeRewardOffer(p: PlayerEntity, r: Rng, act: number): OfferCard[] {
   const taken = new Set<string>();
-  const common = candidates(p, 'common');
-  const skills = [...candidates(p, 'class'), ...common.filter((c) => c.card.kind !== 'boon').map((c) => ({ ...c, w: c.w * 0.5 }))];
+  const common = candidates(p, 'common', act);
+  const skills = [...candidates(p, 'class', act), ...common.filter((c) => c.card.kind !== 'boon').map((c) => ({ ...c, w: c.w * 0.5 }))];
   const cards = takeWeighted(skills, 2, r, taken);
+  for (const c of cards) if (c.kind === 'learn') p.pity = nextPity(p.pity, cardRarity(c.skill)); // rare cards reset the pity too
   const item = bagRoom(p) > 0 && r.next() >= 0.25 ? rewardItem(p, r, act) : null;
   if (item) cards.push({ kind: 'item', item });
   cards.push(...takeWeighted(common.filter((c) => c.card.kind === 'boon'), 3 - cards.length, r, taken));
@@ -178,8 +206,8 @@ export function makeRewardOffer(p: PlayerEntity, r: Rng, act: number): OfferCard
  */
 export function makeEliteOffer(p: PlayerEntity, r: Rng, act: number): OfferCard[] {
   const taken = new Set<string>();
-  const upgrades = candidates(p, 'class').concat(candidates(p, 'common')).filter((c) => c.card.kind === 'upgrade');
-  const learns = candidates(p, 'class').filter((c) => c.card.kind === 'learn');
+  const upgrades = candidates(p, 'class', act).concat(candidates(p, 'common', act)).filter((c) => c.card.kind === 'upgrade');
+  const learns = candidates(p, 'class', act).filter((c) => c.card.kind === 'learn');
   const cards = takeWeighted(upgrades.length ? upgrades : learns, 1, r, taken);
   const want = rollRarity(r.next(), act, { pity: p.pity, elite: true }); // the next act's odds, never common
   const worn = new Set(Object.values(p.gear));
@@ -200,14 +228,11 @@ export const subclassOffer = (p: PlayerEntity): OfferCard[] => subclassesOf(p.cl
 /** Picks still to make, of every kind. */
 export const picksLeft = (p: PlayerEntity) => p.levelUps + p.elitePicks + (p.rewardPicks ?? 0);
 
-/** Deals the next pick: elite spoils first, then the subclass, then victory spoils (and old saves' level-up picks). */
+/** Deals the next pick: elite spoils first, then victory spoils (and old saves' level-up picks). */
 export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
   if (p.elitePicks > 0) {
     p.offer = makeEliteOffer(p, r, act);
     p.offerKind = 'elite';
-  } else if (p.levelUps > 0 && p.level >= SUBCLASS_LEVEL && !p.subclass) {
-    p.offer = subclassOffer(p);
-    p.offerKind = 'level';
   } else if ((p.rewardPicks ?? 0) > 0) {
     p.offer = makeRewardOffer(p, r, act);
     p.offerKind = 'reward';

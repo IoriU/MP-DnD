@@ -1,10 +1,11 @@
 // Heroes: one card per class.
 
+import { CARD_RARITIES } from '../../../shared/engines.ts';
+import { RARITY_COLOR } from '../../../shared/items.ts';
 import { CLASSES, CLASS_IDS, MAX_CANTRIPS, MAX_SPELLS, maxHpFor, maxSlotsFor, passiveSlots, saveDc, type Stat } from '../../../shared/rules.ts';
 import { SKILLS, type SkillId } from '../../../shared/skills.ts';
-import { SUBCLASS_LEVEL } from '../../../shared/subclasses.ts';
 import { CLASS_SPRITES } from '../../sprites.ts';
-import { poolCounts, subclassSkills } from '../checks.ts';
+import { enginesIn, looseCards, poolCounts } from '../checks.ts';
 import { DATA } from '../model.ts';
 import { srcTag } from '../sources.ts';
 import { chip, esc, icon, link, q, type TabDef } from '../ui.ts';
@@ -13,25 +14,30 @@ const STATS: Stat[] = ['str', 'dex', 'int', 'wis'];
 const sign = (n: number) => (n >= 0 ? `+${n}` : String(n));
 const LEVELS = [1, 4, 8, 12];
 
-/** A skill as a chip that opens it in the Skills tab; the signature is outlined. */
-const skillChip = (id: SkillId, signature = false) =>
-  link(`skills?id=${id}`, `<span class="sk-chip${signature ? ' sig' : ''}">${SKILLS[id].base.icon} ${esc(SKILLS[id].base.name)}</span>`, signature ? 'Signature: learned with the subclass, takes no slot' : id);
+/** A skill as a chip that opens it in the Skills tab, outlined in its rarity's color. */
+const skillChip = (id: SkillId, rarity?: (typeof CARD_RARITIES)[number]) =>
+  link(`skills?id=${id}`, `<span class="sk-chip"${rarity ? ` style="border-color:${RARITY_COLOR[rarity]}"` : ''}>${SKILLS[id].base.icon} ${esc(SKILLS[id].base.name)}</span>`, id);
 
-/** The class's subclasses: what they are about, the signature skill, and the skills they add to the spoils offers. */
-function subclassBlock(classId: string): string {
-  const subs = Object.entries(DATA.subclasses).filter(([, sc]) => sc.classId === classId);
-  if (!subs.length) return '';
-  const cards = subs
-    .map(([sid, sc]) => {
-      const more = subclassSkills(DATA, sid).filter((s) => s !== sc.signature) as SkillId[];
-      return `<div class="sub-card">
-        <div class="sub-head"><b>${sc.icon} ${esc(sc.name)}</b><code>${sid}</code>${srcTag('subclass', sid)}</div>
-        <p class="blurb">${esc(sc.blurb)}</p>
-        <div class="chips">${skillChip(sc.signature, true)}${more.map((s) => skillChip(s)).join('')}</div>
+/** The class's build engines: what each builds up, and its cards by rarity (the offers lean toward the engines a hero has started). */
+function engineBlock(classId: string): string {
+  const engines = enginesIn(DATA, classId);
+  if (!engines.length) return '';
+  const cards = engines
+    .map(([eid, e]) => {
+      const rows = CARD_RARITIES.filter((r) => e.cards[r]?.length)
+        .map((r) => `<div class="rar-row"><span class="rar" style="color:${RARITY_COLOR[r]}">${r}</span><span class="chips">${e.cards[r]!.map((s) => skillChip(s as SkillId, r)).join('')}</span></div>`)
+        .join('');
+      return `<div class="eng-card">
+        <div class="eng-head"><b>${e.icon} ${esc(e.name)}</b><code>${eid}</code>${srcTag('engine', eid)}</div>
+        <p class="blurb">${esc(e.desc)}</p>
+        ${rows}
       </div>`;
     })
     .join('');
-  return `<h3>Subclasses <small class="muted">pick one at Lv ${SUBCLASS_LEVEL}</small></h3><div class="sub-list">${cards}</div>`;
+  const loose = looseCards(DATA, classId) as SkillId[];
+  return `<h3>Engines <small class="muted">${engines.length} ways to build</small></h3><div class="eng-list">${cards}</div>${
+    loose.length ? `<p class="muted note">In no engine (general picks): ${loose.map((s) => skillChip(s)).join(' ')}</p>` : ''
+  }`;
 }
 
 function card(id: (typeof CLASS_IDS)[number]): string {
@@ -41,7 +47,7 @@ function card(id: (typeof CLASS_IDS)[number]): string {
   const start = c.start.map((s: SkillId) => link(`skills?id=${s}`, `<span class="sk-chip">${SKILLS[s].base.icon} ${esc(SKILLS[s].base.name)}</span>`, s)).join('');
   const mods = STATS.map((s) => `<span class="mod${s === c.stat ? ' main' : ''}" title="${s === c.stat ? 'casting stat' : ''}"><small>${s.toUpperCase()}</small><b>${sign(c.mods[s])}</b></span>`).join('');
   const growth = LEVELS.map((lv) => `<tr><td>Lv ${lv}</td><td>${maxHpFor(id, lv)}</td><td>${maxSlotsFor(id, lv)}</td><td>${saveDc(id, lv)}</td></tr>`).join('');
-  return `<article class="card hero" data-id="${id}" data-q="${q(c.name, id, c.blurb, c.stat, Object.values(c.names).join(' '), c.start.join(' '), ...Object.values(DATA.subclasses).filter((sc) => sc.classId === id).map((sc) => `${sc.name} ${sc.blurb}`))}">
+  return `<article class="card hero" data-id="${id}" data-q="${q(c.name, id, c.blurb, c.stat, Object.values(c.names).join(' '), c.start.join(' '), ...enginesIn(DATA, id).map(([, e]) => `${e.name} ${e.desc}`))}">
     <header class="hero-head">
       ${icon(sheet ? { sheet, frame: 0 } : undefined, c.glyph, 56)}
       <div><h2>${c.glyph} ${esc(c.name)}</h2><code>${id}</code></div>
@@ -56,8 +62,8 @@ function card(id: (typeof CLASS_IDS)[number]): string {
     <h3>Starting skills</h3>
     <div class="chips">${start}</div>
     <h3>Skill pool</h3>
-    <p>${link(`skills?pool=${id}`, `${n.cantrip} cantrips · ${n.spell} spells · ${n.passive} passives${n.basic ? ` · ${n.basic} basic` : ''}`)}${n.sub ? ` <span class="muted">+ ${n.sub} subclass skills</span>` : ''} ${chip(`holds ${MAX_CANTRIPS} / ${MAX_SPELLS} / ${passiveSlots(1)}-${passiveSlots(8)}`, 'dim', 'cantrips, spells, passives a hero can hold at once')}</p>
-    ${subclassBlock(id)}
+    <p>${link(`skills?pool=${id}`, `${n.cantrip} cantrips · ${n.spell} spells · ${n.passive} passives${n.basic ? ` · ${n.basic} basic` : ''}`)}${n.engine ? ` <span class="muted">${n.engine} of them in engines</span>` : ''} ${chip(`holds ${MAX_CANTRIPS} / ${MAX_SPELLS} / ${passiveSlots(1)}-${passiveSlots(8)}`, 'dim', 'cantrips, spells, passives a hero can hold at once')}</p>
+    ${engineBlock(id)}
     <h3>Growth</h3>
     <div class="table-wrap"><table class="kv"><thead><tr><th></th><th>Max HP</th><th>Slots</th><th>Save DC</th></tr></thead><tbody>${growth}</tbody></table></div>
   </article>`;

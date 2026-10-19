@@ -13,7 +13,8 @@ import { io } from 'socket.io-client';
 import { DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, MONSTER_AIS, MONSTER_AI_IDS, isDifficulty, isMonsterAi, type Difficulty, type MonsterAi } from '../shared/rules.ts';
 import { LINES, type BarkEvent } from '../server/barks.ts';
 import { RELICS } from '../shared/items.ts';
-import { itemInfo, skillTitle } from '../shared/skills.ts';
+import { itemInfo, skillTitle, topEngine } from '../shared/skills.ts';
+import { ENGINES } from '../shared/engines.ts';
 import type { GameState, JoinResult, NodeType, PlayerEntity } from '../shared/types.ts';
 
 export const NODE_TYPES: NodeType[] = ['combat', 'elite', 'event', 'rest', 'treasure', 'shop', 'boss'];
@@ -71,13 +72,20 @@ const AI_RES: [string, RegExp][] = [
 ];
 /** The heroes' AP, Block and subclass tricks (Phase 12), counted from the log like AI_RES. */
 const HERO_RES: [string, RegExp][] = [
-  ['subclasses picked', / becomes an? .+ and learns /], ['dashes', / uses Dash!/], ['braces', / uses Brace!/], ['block given', /^🧱 .+ (gets|covers) /],
+  ['dashes', / uses Dash!/], ['braces', / uses Brace!/], ['block given', /^🧱 .+ (gets|covers) /],
   ['snares set', /^🪤 .+ hides /], ['snares sprung', / steps into .*snare!/], ['counterattacks', / counterattacks!/], ['intercepts', /^🙅 /],
   ['frightened', / flees in terror/], ['blood paid', / HP in blood\./], ['thorns', / spiked shield: /], ['smite heals', /The smite's light flows/],
   ['help ups', /^🤝 .+ hauls /], ['heal revives', / is back on their feet, but groggy/], ['groggy turns lost', / is still groggy /],
   ['injuries', /^🩹 .+ is back, but injured/], ['blast edges', /edge of the blast/],
   ['rolls vs cover', /\((behind a wall|in cover)\)|\+\d (in cover|behind a wall) vs DC/], ['starts scattered', /^🌫️ The party comes in by two ways/],
   ['starts pincer', /^⚠️ A pincer!/], ['starts surrounded', /^⚠️ Surrounded!/], ['starts at a camp', /^🔥 You come upon their camp/],
+];
+/** Build engines (shared/engines.ts) at work: their own log lines. */
+const ENGINE_RES: [string, RegExp][] = [
+  ['poison blooms', /^⚗️ The poison in/], ['free knives', /^🔪 .+ flicks a knife/], ['unleashed', /^💥 .+ unleashes/], ['walls raised', /^⛰️ A wall of stone rises/],
+  ['cover raised', /^🪨 Rubble rises|^⛏️ The broken floor/], ['crushed', /^🧱 .+ slams into/], ['shock arcs', /^⚡ The shock arcs/], ['ice shattered', /^💎 /],
+  ['arrow rains', /^🌧️ Arrows rain/], ['finales', /^🎆 /], ['madness', /^🤪 /], ['unkillable', /refuses to fall/], ['knockdown hits', /^🌋 /],
+  ['split shots', /^🪃 /], ['entrench', /^🏯 /], ['vengeance', /^👼 /], ['radiance burns', /Radiance burns/],
 ];
 const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")
@@ -108,7 +116,7 @@ export interface RunResult {
   downs: string[]; // class of each hero that fell unconscious
   deaths: string[]; // class of each hero that died
   killer: string | null; // the encounter that wiped the party
-  heroes: { name: string; classId: string; level: number; kills: number; steals: number; hp: number; maxHp: number; skills: string[] }[];
+  heroes: { name: string; classId: string; level: number; kills: number; steals: number; hp: number; maxHp: number; skills: string[]; engine?: string }[];
   skillUses: Record<string, number>; // by skill name as it appears in the log
   tactics: { sneakOk: number; sneakFail: number; charge: number; ambush: number; flanking: number; behind: number };
   field: Record<string, number>; // FIELD_RES counts
@@ -225,7 +233,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       for (const [name, re] of FIELD_RES) if (re.test(l.text)) r.field[name] = (r.field[name] ?? 0) + 1;
       for (const [name, re] of ITEM_RES) if (re.test(l.text)) r.items[name] = (r.items[name] ?? 0) + 1;
       for (const [name, re] of ELITE_RES) if (re.test(l.text)) r.elites[name] = (r.elites[name] ?? 0) + 1;
-      for (const [name, re] of [...AI_RES, ...HERO_RES]) if (re.test(l.text)) r.ai[name] = (r.ai[name] ?? 0) + 1;
+      for (const [name, re] of [...AI_RES, ...HERO_RES, ...ENGINE_RES]) if (re.test(l.text)) r.ai[name] = (r.ai[name] ?? 0) + 1;
       if (/^🛒 A merchant spreads/.test(l.text)) r.shops++;
       // A reaction right after a hero's skill line is a combo the heroes set off (not a monster's firebomb).
       if (REACTION_RE.test(l.text) && heroActed && s.run) r.combosByAct[s.run.act] = (r.combosByAct[s.run.act] ?? 0) + 1;
@@ -350,6 +358,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       .map((e) => ({
         name: e.name, classId: e.classId, level: e.level, kills: e.kills, steals: e.steals, hp: e.hp, maxHp: e.maxHp,
         skills: e.skills.map((o) => skillTitle(o)),
+        engine: ((id) => (id ? ENGINES[id].name : undefined))(topEngine(e)),
       }));
     r.log = s.log.slice(-20).map((l) => `[${l.kind}] ${l.text}`);
     r.goldAtEnd = s.run?.gold ?? 0;
@@ -442,6 +451,7 @@ skills used (${uses.size} different):`);
   for (const r of results) for (const [k, v] of Object.entries(r.ai)) ai.set(k, (ai.get(k) ?? 0) + v);
   console.log(`monster AI: ${AI_RES.map(([k]) => `${k} ${ai.get(k) ?? 0}`).join(' · ')}`);
   console.log(`hero tricks: ${HERO_RES.map(([k]) => `${k} ${ai.get(k) ?? 0}`).join(' · ')}`);
+  console.log(`engines: ${ENGINE_RES.map(([k]) => `${k} ${ai.get(k) ?? 0}`).join(' · ')}`);
   // Results per difficulty, and per difficulty and party size (the balance pass in Phase 13 tunes the numbers against these).
   const diffs = DIFFICULTY_IDS.filter((d) => results.some((r) => r.difficulty === d));
   const sizes = [...new Set(results.map((r) => r.party))].sort((a, b) => a - b);
@@ -491,6 +501,9 @@ skills used (${uses.size} different):`);
   }
   const last = results.filter((r) => r.heroes.length).at(-1);
   if (last) {
+    const builds = new Map<string, number>();
+    for (const r of results) for (const h of r.heroes) builds.set(`${h.classId} ${h.engine ?? '(no engine)'}`, (builds.get(`${h.classId} ${h.engine ?? '(no engine)'}`) ?? 0) + 1);
+    console.log(`main engines at the end: ${[...builds].sort().map(([k, n]) => `${k} ${n}`).join(' · ')}`);
     console.log(`builds at the end of run ${last.code}:`);
     for (const h of last.heroes) console.log(`  ${h.name} (${h.classId} ${h.level}): ${h.skills.join(', ')}`);
     console.log(`  items: ${last.gearAtEnd.join(' | ')}`);

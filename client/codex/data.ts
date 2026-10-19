@@ -2,11 +2,11 @@
 // Pure (no DOM, no ?raw), so the pool checks can run under Node. `liveData()` is the real game; tests pass their own.
 
 import { EVENTS, type EventDef } from '../../server/events.ts';
+import { ENGINES, type EngineDef } from '../../shared/engines.ts';
 import { ALLIES, type AllyDef } from '../../shared/elites.ts';
 import { ITEMS, type ItemDef } from '../../shared/items.ts';
 import { ACTS, CLASSES, HELP, MONSTERS, ORDER_STATUS, type ActDef, type ClassDef, type MonsterDef } from '../../shared/rules.ts';
 import { SKILLS, STATUSES, type SkillDef, type StatusDef } from '../../shared/skills.ts';
-import { SUBCLASSES, type SubclassDef } from '../../shared/subclasses.ts';
 import { CLASS_SPRITES, MONSTER_SPRITES } from '../sprites.ts';
 
 /** The monsters an event's fights can use, scanned from the event's source (see sources.ts eventFights). */
@@ -19,7 +19,7 @@ export interface CodexData {
   monsters: Record<string, MonsterDef>;
   acts: ActDef[];
   classes: Record<string, ClassDef>;
-  subclasses: Record<string, SubclassDef>;
+  engines: Record<string, EngineDef>;
   skills: Record<string, SkillDef>;
   items: Record<string, ItemDef>;
   allies: Record<string, AllyDef>;
@@ -34,7 +34,7 @@ export const liveData = (eventFights: Record<string, EventFight> = {}): CodexDat
   monsters: MONSTERS,
   acts: ACTS,
   classes: CLASSES,
-  subclasses: SUBCLASSES,
+  engines: ENGINES,
   skills: SKILLS,
   items: ITEMS,
   allies: ALLIES,
@@ -94,7 +94,7 @@ export const usedAsFoe = (u: Usage): boolean => usageActs(u).length > 0 || u.eve
 
 // ---------------------------------------------------------------- where a status comes from
 
-/** Statuses the engine applies without a skill saying so: the battlefield, the elements and the ambush rules. */
+/** Statuses the game engine applies without a skill's stats saying so: the battlefield, the elements, the ambush rules and the build engines' passives. */
 const ENGINE_STATUSES: Record<string, string> = {
   groggy: 'getting back up from 0 HP (Help Up, a heal)',
   burning: 'fire and burning ground',
@@ -105,7 +105,13 @@ const ENGINE_STATUSES: Record<string, string> = {
   frozen: 'cold on a Wet or Chilled creature',
   shocked: 'lightning',
   surprised: 'ambushes (game rules)',
-  emboldened: 'Voice of Authority and Rousing Inspiration (subclass passives)',
+  emboldened: 'Voice of Authority and Rousing Inspiration (engine passives)',
+  charged: 'Arcane Charge (casting) and Charged Orb',
+  unleashed: 'Unleash (turns Arcane Charges into one big spell)',
+  seared: 'Searing Light and the Sunstone (radiant hits stack Radiance)',
+  aiming: 'Patience (a turn without moving builds Focus)',
+  verse: 'Verse (songs build Verses) and the Lute of Echoes',
+  inspired: 'Heroic Saga (Valor engine)',
 };
 
 /**

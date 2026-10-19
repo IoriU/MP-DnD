@@ -4,7 +4,7 @@ import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
 import { BAG_SIZE, type ItemId } from '../shared/items.ts';
 import { AP_GAIN, AP_MAX, CLASSES, DIFFICULTIES, INJURY_PCT, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
-  blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, isSignature, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
+  apOf, blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, isSignature, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
 } from '../shared/skills.ts';
 import { SUBCLASSES } from '../shared/subclasses.ts';
@@ -15,7 +15,7 @@ import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { classIcon, onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
 import { aimAt, blockReason, currentEntity, huntedIds, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
-import { $, classLabel, esc, monsterAiTag, toast } from './util.ts';
+import { $, classLabel, esc, monsterAiTag, stacksShown, toast } from './util.ts';
 
 let lastLogId = -1;
 let lastTurnKey = '';
@@ -298,7 +298,7 @@ function apPips(ap: number): string {
   return `<span class="pill ap" title="Action points: attacks cost 2, quick skills 1, the biggest spells 3. AP you don't spend carries over (a turn starts with at most ${AP_MAX}).">⚡ ${ap} AP ${pips}</span>`;
 }
 
-/** A subclass's signature skill takes no slot and can't be forgotten: say so in its tooltip. */
+/** An old save's subclass signature skill takes no slot and can't be forgotten: say so in its tooltip. */
 const signatureNote = (m: PlayerEntity, id: SkillId) =>
   isSignature(m, id) ? `\n\n${SUBCLASSES[m.subclass!].icon} ${SUBCLASSES[m.subclass!].name} signature: takes no slot, can't be forgotten` : '';
 
@@ -307,11 +307,13 @@ function skillButton(m: PlayerEntity, id: SkillId, n: number): string {
   const st = statsOf(own);
   const def = SKILLS[id];
   const reason = blockReason(id);
-  const tip = `${skillTitle(own)}\n${describeSkill(id, own.tier, own.branch, m)}${signatureNote(m, id)}${reason ? `\n\n⛔ ${reason}` : ''}`;
+  const ap = apOf(m, id, st); // can be lower than the skill's own price (Archmage, Pile Driver)
+  const cheaper = ap < st.ap ? `\n⚡ Costs ${ap ? `${ap} AP` : 'no AP'} right now (usually ${st.ap})` : '';
+  const tip = `${skillTitle(own)}\n${describeSkill(id, own.tier, own.branch, m)}${cheaper}${signatureNote(m, id)}${reason ? `\n\n⛔ ${reason}` : ''}`;
   const cd = own.cd > 0 ? `<span class="cd-ov">⏱${own.cd}</span>` : '';
   const icon = id === 'potion' || def.kind === 'item' ? itemIcon(id as ItemId | 'potion', st.icon) : st.icon; // potions and consumables have item art
   const meta = [
-    `<span class="cost ap${Math.min(st.ap, 3)}">${st.ap ? `${st.ap} AP` : 'free'}</span>`,
+    `<span class="cost ap${Math.min(ap, 3)}">${ap ? `${ap} AP` : 'free'}</span>`,
     def.kind === 'spell' ? `<span class="slotcost">🔮${slotCost(st)}</span>` : '',
     id === 'potion' ? `<span class="uses">×${m.potions}</span>` : def.kind === 'item' ? `<span class="uses" title="In your bag">×${m.bag.filter((b) => b === id).length}</span>` : '',
   ].join('');
@@ -354,9 +356,10 @@ function hotbarHtml(m: PlayerEntity): string {
 
 function statusChip(st: StatusInst): string {
   const def = STATUSES[st.id];
-  const power = st.power ? ` (power ${st.power})` : '';
+  const stacks = stacksShown(st);
+  const power = stacks ? ` ×${stacks}` : st.power ? ` (power ${st.power})` : '';
   const tip = `${def.name}${power}, ${st.turns} turn${st.turns === 1 ? '' : 's'} left\n${def.desc}`;
-  return `<span class="st ${def.good ? 'good' : 'bad'}" title="${esc(tip)}">${def.icon}<i>${st.turns}</i></span>`;
+  return `<span class="st ${def.good ? 'good' : 'bad'}" title="${esc(tip)}">${def.icon}${stacks ? `<b class="stk">${stacks}</b>` : ''}<i>${st.turns}</i></span>`;
 }
 
 function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable: boolean): string {

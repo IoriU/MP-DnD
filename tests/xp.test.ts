@@ -32,7 +32,7 @@ test('levelling: XP carries over, HP and slots grow, the level cap holds', () =>
   assert.equal(applyLevelUps(w), 2);
   assert.equal(w.level, 3);
   assert.equal(w.xp, 5);
-  assert.equal(w.levelUps, 1, 'levels give stats: the only level-up pick is the subclass, at level 3');
+  assert.equal(w.levelUps, 0, 'levels give stats, no pick (builds are engines now)');
   assert.equal(w.maxHp, maxHpFor('wizard', 3));
   assert.equal(w.hp, w.maxHp, 'level-ups add the new max HP');
   assert.equal(w.maxSlots, CLASSES.wizard.slots + 1);
