@@ -1748,7 +1748,7 @@ export class Game {
 
   /** End of a creature's turn: statuses count down, and a hero's unspent AP is saved for the next turn. */
   private endOfTurn(e: Entity) {
-    if (e.kind === 'player' && this.turn) e.savedAp = Math.max(e.savedAp ?? 0, this.turn.ap);
+    if (e.kind === 'player' && this.turn) e.savedAp = e.downed || e.dead ? 0 : Math.max(e.savedAp ?? 0, this.turn.ap);
     for (const s of e.statuses) s.turns--;
     e.statuses = e.statuses.filter((s) => s.turns > 0);
   }
@@ -3033,6 +3033,7 @@ export class Game {
       t.saves = { ok: 0, fail: 0 };
       t.statuses = [];
       delete t.block;
+      t.savedAp = 0; // going down costs the AP saved up
       this.cancelWalk(t.id);
       this.addLog('death', `🩸 ${t.name} falls unconscious! Heal them to get them back up.`);
       this.callout(this.randomBot(t), 'down', { ally: t.name });

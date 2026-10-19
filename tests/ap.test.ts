@@ -190,6 +190,22 @@ test('a lost turn (stunned) gains no AP but keeps what was saved; a fight starts
   assert.equal(ann.savedAp, 0, 'AP never carries from one fight into the next');
 });
 
+test('going down costs the AP saved up, even mid-turn', () => {
+  const { p, heroes } = battle();
+  const [ann] = heroes;
+  ann.savedAp = 2;
+  ann.hp = 1;
+  p.damage(ann, 50);
+  assert.ok(ann.downed);
+  assert.equal(ann.savedAp, 0);
+  const [, bob] = heroes;
+  startTurn(p, bob);
+  bob.hp = 1;
+  p.damage(bob, 50); // walks into the fire on their own turn, with 3 AP unspent
+  p.endOfTurn(bob);
+  assert.equal(bob.savedAp, 0);
+});
+
 // ---------------------------------------------------------------- the hero AI
 
 function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn: TurnState): HeroView {
