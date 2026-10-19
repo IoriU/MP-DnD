@@ -676,8 +676,17 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
   - Browse every pool: heroes, skills (every tier), items, relics, blessings, monsters, acts and encounters, elites and allies, statuses and surfaces, events.
   - It imports the real game data, so it can't drift. Every entry shows the file and line it lives on (a VS Code link in dev); edits still happen in code.
   - Pool checks: broken references (errors), unused content and missing sprites (warnings), and coverage against the goals below (events and encounters per act, classes). `tests/codex.test.ts` fails on any error.
-- [ ] More classes: Ranger, Paladin, Barbarian, Bard
-  - The codex also shows the current pools are thin: every class has only 2 class passives (a hero holds 2 at level 1, so no choice there), and the Fighter has exactly 3 cantrips and 3 spells (the hotbar limits). New classes should come with deeper pools, and the old ones need more passives.
+- [x] **More classes: Barbarian, Ranger, Paladin, Bard** (2026-10-19). 8 classes now, each with a basic attack, 3–4 cantrips, 3–4 spells and 3 class passives, all with tiers I → II → III-A / III-B.
+  - 🪓 **Barbarian** (STR, Fury): Rage (new status: + damage on melee hits, half physical damage taken), Reckless Attack (advantage, but you're Marked), Ground Slam (knocks everything around you Prone), Menacing Roar; Brutal Strike, Relentless, Harpoon (drags a monster to you), Earth Splitter.
+  - 🏹 **Ranger** (DEX, Focus): Hunter's Mark, Ensnaring Shot (nets a monster), Quick Shot; Lightning Arrow, Hail of Thorns, Herbal Remedy, Steady Aim. Favored Foe: + damage against Marked targets.
+  - ⚜️ **Paladin** (WIS for spells, STR weapon, Devotion): Lay on Hands, Compelled Duel (taunts one monster), Radiant Strike, Bulwark; Divine Smite, Healing Hands, Crusader's Mantle. Aura of Protection: + to saves for everyone within 2 tiles.
+  - 🎻 **Bard** (INT, Verses): Vicious Mockery, Bardic Inspiration, Thunderwave, Hypnotic Gaze; Healing Ballad, Shatter, Hideous Laughter, Heroic Anthem. Song of Rest: the party heals more after every fight.
+  - **Perks:** a passive can be a stat block that adds up like equipment (`SkillStats.perk`, added in `shared/items.ts` statBlocks), so most new passives are pure data: Thick Hide, Danger Sense, Brutal Blows, Natural Explorer, Archery, Divine Health, Defender, Jack of All Trades, Silver Tongue. Only Rage, Favored Foe, Aura of Protection and Song of Rest needed server code.
+  - **Deeper old pools:** a third class passive each (Fighting Style, Nimble, Arcane Focus, Devout) and a 4th Fighter cantrip (Trip Attack: Prone).
+  - The heroes' new tricks use the monsters' new statuses too: Prone, Netted, Rallied, Taunted on one monster.
+  - **Bots** pick a class the party doesn't have that fills a missing role (front line, healer, ranged), at random among those.
+  - The Cleric's Lay on Hands branch is renamed Purifying Touch (the Paladin's cantrip has the name now).
+  - [ ] Each new class still borrows a commissioned sprite sheet (tinted per class; see client/sprites.ts)
 - [x] **Monster abilities** (decided 2026-10-19, after Phase 11 showed monsters that only move and hit leave PPO nothing to learn):
   - [x] Tricks, instead of attacking (`MonsterDef.trick`): 🪢 Kobold's Net (Netted: can't move, ranged attacks have advantage; once a fight), 🫳 Goblin's Dirty Trick (Blinded), 🕸️ Giant Spider's and Broodmother's Web (Webbed: stuck, attacks have advantage, its own have disadvantage, until cut free or burned), 🎯 Dragon Cultist's Brand (Marked)
   - [x] Riders on hits (`MonsterDef.rider`): Wolves and Ogres knock you 🤕 Prone (melee advantage, ranged disadvantage, getting up costs half your movement); a Wight's touch 🩸 Drains max HP until the fight ends (stacks)
@@ -687,9 +696,9 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
   - [x] Drenched: already there (Wet from water: lightning stuns, cold freezes); no new trick needed
   - [x] The scripted squad AI uses them: a set-up is worth what the friends who act before the target's next turn gain from it (`trickValue` in server/monsterai.ts, with the initiative order and pack targets)
   - [x] The hero bots answer: ✂️ Cut Free (everyone, bonus action) for themselves or a friend next to them, and they go for trick-throwers and leaders first
-  - [ ] Retrain the PPO monsters (training/README.md). The option features changed (44 → 48: the trick and Help kinds, and what an option sets up), so the old policy no longer fit.
+  - [x] Retrain the PPO monsters (training/README.md). The option features changed (44 → 48: the trick and Help kinds, and what an option sets up), so the old policy no longer fit.
     - [x] For now 🧠 PPO ships the imitation stage of run 3 (it copies the scripted AI 100%), so the lobby choice keeps working
-    - [ ] PPO run 3 (`training/runs/ppo3`, entropy bonus lowered to 0.002 after run 2's drift), then a 2,000-fight comparison and export
+    - [x] PPO run 3 (`training/runs/ppo3`, entropy bonus lowered to 0.002 after run 2's drift; stopped at update 33 of 40 by a restart). Best checkpoint vs scripted on 2,000 fights: party losses 0.057 vs 0.058, monsters win 0.80% vs 0.95%: a tie again, so the imitation copy stays. The fights are still too one-sided for PPO; worth another try after the Phase 13 balance pass.
   - Bot runs (3 batches of 18, all difficulties, 3–6 heroes): 0 anomalies, 0 rejected actions, 0 server errors. Per 18 runs: about 55 tricks (half land), 50–65 orders, 26 Cut Frees by the bots, 5–14 knockdowns, 8–20 drains; Help is rare (it only wins next to a big hitter, like Kobolds next to an Ogre).
   - Tests: `tests/abilities.test.ts` (34). It caught a bug: a netted hero could dash out of the net (dash movement now waits until it's free).
 - [ ] More monsters and elites per act; alternate bosses

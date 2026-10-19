@@ -16,7 +16,7 @@ import type { Entity, Fx, GameState, MonsterEntity, PlayerEntity, Pos } from '..
 import { send } from './net.ts';
 import {
   ACT_TILES, CLASS_SPRITES, DECOR_SHARE, FLAME, MONSTER_SPRITES, PLATINO, PROP_SPRITES, SHEETS, SPRITE_PX, WALK_ROW,
-  floorFrame, markMissing, onGraphicsMode, platinoFor, sheetFiles, sheetKeys, spritesOn, wallFrame, type SheetId,
+  floorFrame, markMissing, onGraphicsMode, platinoFor, sheetFiles, sheetKeys, sheetsReady, spritesOn, wallFrame, type SheetId,
 } from './sprites.ts';
 import {
   aimAt, attackProblem, bestAttack, bestPropAttack, currentEntity, huntedIds, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, refresh, select, store,
@@ -1464,16 +1464,23 @@ class DungeonScene extends Phaser.Scene {
 }
 
 let game: Phaser.Game | null = null;
+let starting = false;
 
-/** Creates the Phaser canvas the first time the game screen is shown. */
+/**
+ * Creates the Phaser canvas the first time the game screen is shown. It waits for the palette-swapped class sheets to be
+ * painted (a few milliseconds, long done by then) so the loader finds the Barbarian, Ranger, Bard and Cleric in their colors.
+ */
 export function ensureGame() {
-  if (game) return;
-  game = new Phaser.Game({
-    type: Phaser.AUTO,
-    parent: 'canvas-wrap',
-    backgroundColor: '#0b0a09',
-    scale: { mode: Phaser.Scale.RESIZE },
-    scene: [DungeonScene],
-    banner: false,
+  if (game || starting) return;
+  starting = true;
+  void sheetsReady.then(() => {
+    game = new Phaser.Game({
+      type: Phaser.AUTO,
+      parent: 'canvas-wrap',
+      backgroundColor: '#0b0a09',
+      scale: { mode: Phaser.Scale.RESIZE },
+      scene: [DungeonScene],
+      banner: false,
+    });
   });
 }

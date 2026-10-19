@@ -3,6 +3,7 @@
 import { CLASSES } from '../shared/rules.ts';
 import type { SaveSummary } from '../shared/types.ts';
 import { deleteSave, listSaves, socket } from './net.ts';
+import { classIcon } from './sprites.ts';
 import { store, subscribe } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
@@ -20,7 +21,7 @@ export function ago(ms: number, now = Date.now()): string {
 
 function partyChip(m: SaveSummary['party'][number]): string {
   const c = CLASSES[m.classId];
-  return `<span class="save-hero" title="${c.name}">${c.glyph} ${esc(m.name)} <span class="lv">Lv ${m.level}</span>${m.bot ? ' 🤖' : ''}</span>`;
+  return `<span class="save-hero" title="${c.name}">${classIcon(m.classId, 16)} ${esc(m.name)} <span class="lv">Lv ${m.level}</span>${m.bot ? ' 🤖' : ''}</span>`;
 }
 
 function saveRow(sv: SaveSummary): string {

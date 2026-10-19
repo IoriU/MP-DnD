@@ -4,6 +4,7 @@ import { CLASSES, CLASS_IDS, DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, MIN_PART
 import type { ClassId, GameState, PlayerInfo, ResumeView } from '../shared/types.ts';
 import { join, leave, send } from './net.ts';
 import { ago, initSaves } from './saves.ts';
+import { classIcon } from './sprites.ts';
 import { store } from './store.ts';
 import { $, esc, loadPref, savePref, toast } from './util.ts';
 
@@ -13,9 +14,9 @@ function classCards(selected: ClassId): string {
   return CLASS_IDS.map((id) => {
     const c = CLASSES[id];
     return `<button type="button" class="class-card${id === selected ? ' selected' : ''}" data-class="${id}">
-      <span class="cc-glyph">${c.glyph}</span>
+      <span class="cc-glyph">${classIcon(id, 48)}</span>
       <span class="cc-name">${c.name}</span>
-      <span class="cc-stats">❤️ ${c.hp} HP · 🛡️ AC ${c.ac}</span>
+      <span class="cc-stats"><span>❤️ ${c.hp} HP</span><i>·</i><span>🛡️ AC ${c.ac}</span></span>
       <span class="cc-blurb">${c.blurb}</span>
     </button>`;
   }).join('');
@@ -146,7 +147,7 @@ const removeBotBtn = (p: PlayerInfo | undefined, isHost: boolean) =>
 function playerRow(s: GameState, p: PlayerInfo, isHost: boolean, extra: string[] = []): string {
   const c = CLASSES[p.classId];
   const tags = [p.id === s.hostId ? 'host' : '', p.id === store.playerId ? 'you' : '', p.bot ? '🤖 bot' : '', ...extra];
-  return `<li><span class="dot" style="background:${p.color}"></span><span class="rp-glyph">${c.glyph}</span>
+  return `<li><span class="dot" style="background:${p.color}"></span><span class="rp-glyph">${classIcon(p.classId, 32)}</span>
     <b>${esc(p.name)}</b><span class="muted">${c.name}</span>${tagList(tags)}${removeBotBtn(p, isHost)}</li>`;
 }
 
@@ -157,7 +158,7 @@ function heroRow(s: GameState, h: SavedHero, isHost: boolean, unassigned: boolea
   const here = h.bot || !!p?.connected;
   const status = h.playerId === store.playerId ? 'you' : h.bot ? '🤖 bot' : here ? 'here' : 'away';
   const claim = !here && unassigned ? `<button type="button" class="btn small rp-claim" data-claim="${h.playerId}">Play as ${esc(h.name)}</button>` : '';
-  return `<li${here ? '' : ' class="away"'}><span class="dot" style="background:${p?.color ?? '#6b5434'}"></span><span class="rp-glyph">${c.glyph}</span>
+  return `<li${here ? '' : ' class="away"'}><span class="dot" style="background:${p?.color ?? '#6b5434'}"></span><span class="rp-glyph">${classIcon(h.classId, 32)}</span>
     <b>${esc(h.name)}</b><span class="muted">${c.name} · Lv ${h.level}</span>${tagList([p?.id === s.hostId ? 'host' : '', status])}${claim}${removeBotBtn(p, isHost)}</li>`;
 }
 

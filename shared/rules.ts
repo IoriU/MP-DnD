@@ -55,6 +55,9 @@ export function diceText(d: Dice): string {
 
 export type Stat = 'str' | 'dex' | 'int' | 'wis';
 
+/** What a class brings to a party. Bots fill the missing ones first (server/game.ts addBot). */
+export type PartyRole = 'front' | 'healer' | 'ranged';
+
 export interface ClassDef {
   name: string;
   glyph: string;
@@ -68,6 +71,7 @@ export interface ClassDef {
   start: SkillId[]; // starting skills, in hotbar order
   names: { cantrip: string; spell: string; slots: string }; // class flavor for the shared mechanics
   blurb: string;
+  roles: PartyRole[];
 }
 
 export const CLASSES: Record<ClassId, ClassDef> = {
@@ -76,24 +80,57 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     start: ['longsword', 'shield_bash', 'second_wind'],
     names: { cantrip: 'Techniques', spell: 'Maneuvers', slots: 'Grit' },
     blurb: 'Tough front-liner in heavy armor. Bashes, taunts and shrugs off hits.',
+    roles: ['front'],
   },
   rogue: {
     name: 'Rogue', glyph: '🗡️', hp: 9, hpPerLevel: 6, ac: 14, speed: 6, mods: { str: 0, dex: 3, int: 1, wis: 1 }, stat: 'dex', slots: 1,
     start: ['rapier', 'shortbow', 'cunning_dash', 'shadow_step'],
     names: { cantrip: 'Tricks', spell: 'Exploits', slots: 'Cunning' },
     blurb: 'Sneak Attack when a friend is next to the target (or with advantage). Fast, slippery, steals kills.',
+    roles: ['ranged'],
   },
   wizard: {
     name: 'Wizard', glyph: '🧙', hp: 7, hpPerLevel: 5, ac: 12, speed: 6, mods: { str: -1, dex: 2, int: 3, wis: 1 }, stat: 'int', slots: 2,
     start: ['dagger', 'fire_bolt', 'magic_missile'],
     names: { cantrip: 'Cantrips', spell: 'Spells', slots: 'Spell slots' },
     blurb: 'Fragile, but deadly from range. Fire, frost and lightning, plus Magic Missile that never misses.',
+    roles: ['ranged'],
   },
   cleric: {
     name: 'Cleric', glyph: '✨', hp: 10, hpPerLevel: 7, ac: 16, speed: 6, mods: { str: 2, dex: 0, int: 0, wis: 3 }, stat: 'wis', slots: 2,
     start: ['mace', 'sacred_flame', 'healing_word'],
     names: { cantrip: 'Cantrips', spell: 'Prayers', slots: 'Spell slots' },
     blurb: 'The healer. Healing Word gets downed friends back up from range; Bless makes everyone hit harder.',
+    roles: ['healer'],
+  },
+  // Phase 12
+  barbarian: {
+    name: 'Barbarian', glyph: '🪓', hp: 14, hpPerLevel: 9, ac: 14, speed: 7, mods: { str: 3, dex: 2, int: -1, wis: 0 }, stat: 'str', slots: 1,
+    start: ['greataxe', 'rage', 'brutal_strike'],
+    names: { cantrip: 'Instincts', spell: 'Furies', slots: 'Fury' },
+    blurb: 'Huge HP and a temper. Rage halves the damage you take and adds to every swing; Reckless Attack trades your guard for advantage.',
+    roles: ['front'],
+  },
+  ranger: {
+    name: 'Ranger', glyph: '🏹', hp: 10, hpPerLevel: 7, ac: 14, speed: 6, mods: { str: 1, dex: 3, int: 0, wis: 2 }, stat: 'dex', slots: 2,
+    start: ['longbow', 'shortsword', 'hunters_mark', 'lightning_arrow'],
+    names: { cantrip: 'Field Craft', spell: 'Hunter Spells', slots: 'Focus' },
+    blurb: "A hunter with a long reach. Marks prey for the whole party, nets runners in place, and patches friends up with herbs.",
+    roles: ['ranged'],
+  },
+  paladin: {
+    name: 'Paladin', glyph: '⚜️', hp: 12, hpPerLevel: 8, ac: 17, speed: 5, mods: { str: 3, dex: -1, int: 0, wis: 2 }, stat: 'wis', slots: 2,
+    start: ['warhammer', 'lay_on_hands', 'divine_smite'],
+    names: { cantrip: 'Oaths', spell: 'Miracles', slots: 'Devotion' },
+    blurb: 'Heavy armor and holy fire. Divine Smite hits hard, Lay on Hands heals with a touch, and Compelled Duel drags monsters off your friends.',
+    roles: ['front', 'healer'],
+  },
+  bard: {
+    name: 'Bard', glyph: '🎻', hp: 8, hpPerLevel: 6, ac: 13, speed: 6, mods: { str: 0, dex: 2, int: 3, wis: 1 }, stat: 'int', slots: 2,
+    start: ['hand_crossbow', 'vicious_mockery', 'inspiration', 'healing_ballad'],
+    names: { cantrip: 'Tunes', spell: 'Ballads', slots: 'Verses' },
+    blurb: "The party's voice. Insults that sting, songs that inspire, a ballad that heals everyone. Fragile: stay behind the front line.",
+    roles: ['healer', 'ranged'],
   },
 };
 

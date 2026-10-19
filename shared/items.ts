@@ -4,7 +4,7 @@
 // read them); consumables are 'item' skills in shared/skills.ts, used like the potion; relics are hooks keyed by id.
 
 import type { Dice, Resist } from './rules.ts';
-import type { Element, StatusApply } from './skills.ts';
+import { SKILLS, statsOf, type Element, type StatusApply } from './skills.ts';
 import type { PlayerEntity } from './types.ts';
 
 export type Slot = 'weapon' | 'armor' | 'trinket';
@@ -215,11 +215,15 @@ export const sellPrice = (id: ItemId) => Math.floor(itemPrice(id) * SELL_SHARE);
 
 // ---------------------------------------------------------------- reading a hero's gear
 
-type Geared = Partial<Pick<PlayerEntity, 'gear' | 'relics' | 'blessings'>>;
+type Geared = Partial<Pick<PlayerEntity, 'gear' | 'relics' | 'blessings' | 'skills'>>;
 
-/** Every equipment, relic and blessing stat block that applies to a hero. */
+/** Every equipment, relic, blessing and passive perk stat block that applies to a hero. */
 export function statBlocks(p: Geared): GearStats[] {
   const out: GearStats[] = [];
+  for (const o of p.skills ?? []) {
+    const perk = SKILLS[o.id]?.kind === 'passive' ? statsOf(o).perk : undefined;
+    if (perk) out.push(perk);
+  }
   for (const id of Object.values(p.gear ?? {})) {
     const def = id && isItemId(id) ? gearDef(id) : null;
     if (def) out.push(def.stats);

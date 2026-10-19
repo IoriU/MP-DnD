@@ -123,6 +123,7 @@ body.resuming .resume-note { display: block; }
 .class-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 .class-card {
   display: grid;
+  align-content: start; /* a card taller than its content (its row-mates are) keeps the extra space at the bottom, so names line up across the row */
   gap: 4px;
   text-align: left;
   color: var(--text);
@@ -138,10 +139,25 @@ body.resuming .resume-note { display: block; }
 .class-card:disabled { cursor: default; } /* the difficulty cards for everyone but the host: read-only */
 .class-card:disabled:not(.selected) { opacity: 0.55; }
 .cc-glyph { font-size: 28px; }
+.cc-glyph .sprite, .rp-glyph .sprite, .pc-glyph .sprite { display: block; } /* class icons (pixel art): no baseline gap below them */
 .cc-name { font: 600 17px var(--serif); }
-.cc-stats { font-size: 12px; color: var(--accent-2); }
+.cc-stats { display: flex; flex-wrap: wrap; gap: 0 5px; font-size: 12px; color: var(--accent-2); } /* HP and AC wrap as a whole, never mid-stat */
+.cc-stats span { white-space: nowrap; }
+.cc-stats i { font-style: normal; }
 .cc-blurb { font-size: 12px; color: var(--muted); }
 .cc-note { font-size: 12px; font-style: italic; color: var(--warn); } /* why a card can't be picked */
+/* The class picker: four cards across, or two on narrower screens (auto-fit would give a ragged 3 + 3 + 2, and one column is two screens tall). */
+#home-classes, #room-classes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 760px) {
+  #home-classes, #room-classes { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 420px) { /* phones: tighter cards, and only the picked one shows its blurb */
+  #home-classes, #room-classes { gap: 8px; }
+  #home-classes .cc-stats i, #room-classes .cc-stats i { display: none; }
+  #home-classes .cc-stats, #room-classes .cc-stats { column-gap: 8px; }
+  #home-classes .class-card, #room-classes .class-card { padding: 10px; }
+  #home-classes .class-card:not(.selected) .cc-blurb, #room-classes .class-card:not(.selected) .cc-blurb { display: none; }
+}
 
 .room-code { display: flex; align-items: baseline; gap: 12px; margin: 12px 0; }
 .room-code strong { font: 700 40px var(--serif); letter-spacing: 8px; color: var(--accent-2); }

@@ -3,6 +3,7 @@
 // (Vite serves client/assets/ at the site root). Anything without a sprite here keeps its emoji.
 
 import type { ItemId } from '../shared/items.ts';
+import { CLASSES } from '../shared/rules.ts';
 import type { PropId } from '../shared/surfaces.ts';
 import type { ClassId, NodeType } from '../shared/types.ts';
 import { loadPref, savePref } from './util.ts';
@@ -11,9 +12,22 @@ export const SPRITE_ROOT = 'dawnlike/';
 export const SPRITE_PX = 16; // every DawnLike tile is 16x16
 
 /**
+ * DawnLike's 16 colors (DawnBringer's palette, exactly as they are in the sheets), plus two that aren't (they are for the
+ * Bard, tuned to sit with the rest). A sheet's `swap` repaints one color as another, by these names.
+ */
+const COLORS = {
+  black: 0x140c1c, wine: 0x452434, navy: 0x30346d, grey: 0x4d494d, brown: 0x864d30, forest: 0x346524, red: 0xd34549, olive: 0x757161,
+  blue: 0x597dcf, orange: 0xd37d2c, steel: 0x8696a2, green: 0x6daa2c, skin: 0xd3aa9a, cyan: 0x6dc3cb, yellow: 0xdbd75d, white: 0xdfefd7,
+  purple: 0xa050c8, pink: 0xe070b0,
+} as const;
+type ColorName = keyof typeof COLORS;
+type Swap = Partial<Record<ColorName, ColorName>>;
+
+/**
  * The sheets in use. `frames: 2` sheets come as a pair (Undead0.png, Undead1.png): the same tile in each is one frame
  * of a 2-frame idle animation. `walk` sheets (the commissioned player classes) are 4 columns x 4 rows: one row per
- * direction (down, left, right, up), 4 walking frames each.
+ * direction (down, left, right, up), 4 walking frames each. A sheet with a `swap` is another sheet's art in other colors
+ * (see bakeSheets): that is how classes that share a commissioned sheet still look different.
  */
 export const SHEETS = {
   player: { file: 'Characters/Player', cols: 8, frames: 2 },
@@ -30,6 +44,11 @@ export const SHEETS = {
   rogue: { file: 'Commissions/Rogue', cols: 4, frames: 1, walk: true },
   mage: { file: 'Commissions/Mage', cols: 4, frames: 1, walk: true },
   paladin: { file: 'Commissions/Paladin', cols: 4, frames: 1, walk: true },
+  // The same four sheets in other colors, one line per class that wants its own look (CLASS_SPRITES picks them).
+  barbarian: { file: 'Commissions/Warrior', cols: 4, frames: 1, walk: true, swap: { steel: 'red', olive: 'brown', grey: 'wine', cyan: 'yellow', white: 'skin' } }, // a red warrior, bone horns
+  ranger: { file: 'Commissions/Rogue', cols: 4, frames: 1, walk: true, swap: { red: 'green', orange: 'forest' } }, // a green hood
+  bard: { file: 'Commissions/Mage', cols: 4, frames: 1, walk: true, swap: { blue: 'purple', cyan: 'pink' } }, // a purple robe
+  cleric: { file: 'Commissions/Paladin', cols: 4, frames: 1, walk: true, swap: { orange: 'cyan', yellow: 'white', brown: 'steel' } }, // white and pale blue, where the Paladin is gold
   wall: { file: 'Objects/Wall', cols: 20, frames: 1 },
   floor: { file: 'Objects/Floor', cols: 21, frames: 1 },
   decor: { file: 'Objects/Decor', cols: 8, frames: 2 },
@@ -49,7 +68,7 @@ export const SHEETS = {
   money: { file: 'Items/Money', cols: 8, frames: 1 },
   chest: { file: 'Items/Chest', cols: 8, frames: 2 },
   hat: { file: 'Items/Hat', cols: 8, frames: 1 },
-} as const satisfies Record<string, { file: string; cols: number; frames: 1 | 2; walk?: boolean }>;
+} as const satisfies Record<string, { file: string; cols: number; frames: 1 | 2; walk?: boolean; swap?: Swap }>;
 
 export type SheetId = keyof typeof SHEETS;
 
@@ -61,11 +80,78 @@ export interface Sprite {
 
 const s = (sheet: SheetId, frame: number): Sprite => ({ sheet, frame });
 
-/** The file(s) of a sheet, relative to the site root: one per animation frame. */
+/**
+ * The file(s) of a sheet, relative to the site root: one per animation frame. A swapped sheet is its repainted copy (a
+ * data: URL) once bakeSheets has made it, else the plain file it is made from.
+ */
 export const sheetFiles = (id: SheetId): string[] => {
   const { file, frames } = SHEETS[id];
-  return frames === 2 ? [`${SPRITE_ROOT}${file}0.png`, `${SPRITE_ROOT}${file}1.png`] : [`${SPRITE_ROOT}${file}.png`];
+  return frames === 2 ? [`${SPRITE_ROOT}${file}0.png`, `${SPRITE_ROOT}${file}1.png`] : [baked.get(id) ?? `${SPRITE_ROOT}${file}.png`];
 };
+
+// ---------------------------------------------------------------- palette swaps
+
+const swapOf = (id: SheetId): Swap | undefined => (SHEETS[id] as { swap?: Swap }).swap;
+
+const baked = new Map<SheetId, string>(); // swapped sheet -> its repainted PNG as a data: URL
+
+/** The sheet with its `swap` applied, as a PNG data: URL. Only pixels that are exactly a swapped color change. */
+function repaint(img: HTMLImageElement, swap: Swap): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const g = canvas.getContext('2d', { willReadFrequently: true })!;
+  g.drawImage(img, 0, 0);
+  const pixels = g.getImageData(0, 0, canvas.width, canvas.height);
+  const map = new Map<number, number>(); // 0xRRGGBB -> 0xRRGGBB
+  for (const [from, to] of Object.entries(swap) as [ColorName, ColorName][]) map.set(COLORS[from], COLORS[to]);
+  const d = pixels.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const to = d[i + 3] === 255 ? map.get((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]) : undefined;
+    if (to === undefined) continue;
+    d[i] = to >> 16;
+    d[i + 1] = (to >> 8) & 255;
+    d[i + 2] = to & 255;
+  }
+  g.putImageData(pixels, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+const loadImage = (url: string) =>
+  new Promise<HTMLImageElement | null>((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+
+/**
+ * Paints every swapped sheet once, as the page starts. HTML icons pick the result up by themselves (spriteHtml points at a
+ * CSS variable, set here); the Phaser loader takes it as an ordinary file, so the game waits for `sheetsReady`. If a sheet
+ * can't be painted it just keeps the colors of the sheet it is made from.
+ */
+async function bakeSheets(): Promise<void> {
+  if (typeof document === 'undefined') return; // Node (the tests) has no canvas, and no art to show
+  const ids = (Object.keys(SHEETS) as SheetId[]).filter((id) => swapOf(id));
+  const images = new Map<string, Promise<HTMLImageElement | null>>(); // several swaps can share one source file
+  await Promise.all(
+    ids.map(async (id) => {
+      const url = `${SPRITE_ROOT}${SHEETS[id].file}.png`;
+      if (!images.has(url)) images.set(url, loadImage(url));
+      const img = await images.get(url);
+      if (!img) return;
+      try {
+        const data = repaint(img, swapOf(id)!);
+        baked.set(id, data);
+        document.documentElement.style.setProperty(`--sheet-${id}`, `url('${data}')`);
+      } catch (err) {
+        console.warn(`Couldn't repaint the art for ${id}: keeping the colors it is made from`, err);
+      }
+    }),
+  );
+}
+
+export const sheetsReady: Promise<void> = bakeSheets();
 
 /** The Phaser texture keys of a sheet, one per file: `undead:0`, `undead:1`, or just `warrior`. */
 export const sheetKeys = (id: SheetId): string[] => (SHEETS[id].frames === 2 ? [`${id}:0`, `${id}:1`] : [id]);
@@ -105,7 +191,12 @@ export function onGraphicsMode(fn: () => void): () => void {
 // ---------------------------------------------------------------- creatures
 
 /** The heroes walk in 4 directions (rows: down, left, right, up; 4 frames each). */
-export const CLASS_SPRITES: Record<ClassId, SheetId> = { fighter: 'warrior', rogue: 'rogue', wizard: 'mage', cleric: 'paladin' };
+export const CLASS_SPRITES: Record<ClassId, SheetId> = {
+  fighter: 'warrior', barbarian: 'barbarian', // steel and red
+  rogue: 'rogue', ranger: 'ranger', // a red hood, a green one
+  wizard: 'mage', bard: 'bard', // a blue robe, a purple one
+  paladin: 'paladin', cleric: 'cleric', // gold, white and pale blue
+};
 export const WALK_ROW = { down: 0, left: 1, right: 2, up: 3 } as const;
 
 /** Monsters and NPC allies, by their MONSTERS key (shared/rules.ts). */
@@ -273,9 +364,13 @@ export function spriteHtml(sp: Sprite | undefined, px = 32, title = ''): string 
   const k = px / SPRITE_PX;
   const col = sp.frame % sheet.cols;
   const row = Math.floor(sp.frame / sheet.cols);
-  const url = sheetFiles(sp.sheet)[0];
-  return `<span class="sprite" style="width:${px}px;height:${px}px;background-image:url('${url}');background-position:-${col * px}px -${row * px}px;background-size:${sheet.cols * SPRITE_PX * k}px auto"${title ? ` title="${title}"` : ''}></span>`;
+  // A swapped sheet reads its repainted copy from a CSS variable (see bakeSheets), so icons drawn before it was ready change by themselves.
+  const url = swapOf(sp.sheet) ? `var(--sheet-${sp.sheet},url('${SPRITE_ROOT}${sheet.file}.png'))` : `url('${sheetFiles(sp.sheet)[0]}')`;
+  return `<span class="sprite" style="width:${px}px;height:${px}px;background-image:${url};background-position:-${col * px}px -${row * px}px;background-size:${sheet.cols * SPRITE_PX * k}px auto"${title ? ` title="${title}"` : ''}></span>`;
 }
 
 /** An icon as HTML: the sprite while pixel art is on, else (or when it has none) the emoji. */
 export const iconHtml = (sp: Sprite | undefined, emoji: string, px = 32, title = ''): string => (pixelArt && spriteHtml(sp, px, title)) || emoji;
+
+/** A class's icon as HTML: its hero standing facing you, in its colors, while pixel art is on, else the class glyph. */
+export const classIcon = (id: ClassId, px = 32, title = ''): string => iconHtml({ sheet: CLASS_SPRITES[id], frame: 0 }, CLASSES[id].glyph, px, title);

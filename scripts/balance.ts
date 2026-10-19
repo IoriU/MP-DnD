@@ -8,6 +8,7 @@
 // starts the run and then only watches. playRun() below is also what scripts/smoke.ts uses.
 // Exit code: 0 even when runs are lost (it is a measurement tool), 1 on anomalies or connection failures.
 
+import fs from 'node:fs';
 import { io } from 'socket.io-client';
 import { DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, MONSTER_AIS, MONSTER_AI_IDS, isDifficulty, isMonsterAi, type Difficulty, type MonsterAi } from '../shared/rules.ts';
 import { LINES, type BarkEvent } from '../server/barks.ts';
@@ -247,8 +248,15 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       fight = { act: run?.act ?? 0, row: node?.row ?? 0, kind: s.roomKind ?? '?', name: lastEncounter, won: false, rounds: 1 };
     }
     if (fight && s.turn) {
+      const before = fight.rounds;
       fight.rounds = Math.max(fight.rounds, s.turn.round);
-      if (fight.rounds === MAX_ROUNDS + 1) r.anomalies.push(`fight "${fight.name}" (A${fight.act} r${fight.row}) passed ${MAX_ROUNDS} rounds: livelock?`);
+      if (fight.rounds > MAX_ROUNDS && before <= MAX_ROUNDS) {
+        // Once per fight, with the end of the log and who's still standing, to see what goes round in circles.
+        const who = s.entities.map((e) => `${e.name} ${e.hp}/${e.maxHp}${e.statuses.length ? ` [${e.statuses.map((x) => x.id).join(',')}]` : ''}`).join('; ');
+        // LIVELOCK_DIR=<dir>: also keep the whole state, to replay the turn (e.g. nextHeroIntent on it).
+        if (process.env.LIVELOCK_DIR) fs.writeFileSync(`${process.env.LIVELOCK_DIR}/livelock-${r.code}.json`, JSON.stringify(s));
+        r.anomalies.push(`fight "${fight.name}" (A${fight.act} r${fight.row}) passed ${MAX_ROUNDS} rounds: livelock?\n    ${who}\n    ${s.log.slice(-25).map((l) => l.text).join('\n    ')}`);
+      }
     }
     if (fight && s.phase !== 'combat') {
       fight.won = s.phase !== 'defeat';

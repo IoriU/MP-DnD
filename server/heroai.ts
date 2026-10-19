@@ -485,6 +485,25 @@ function foeStatusValue(sim: Sim, m: MonsterEntity, list: StatusApply[]): number
       case 'blinded':
         v += 0.4 * t * acting;
         break;
+      case 'prone': {
+        // Melee friends near it get advantage until it gets up (and it loses half its movement doing that).
+        const near = sim.heroes.filter((h) => standing(h) && dist(h, m) <= 2).length;
+        v += fresh ? 0.8 * near + 0.1 * t : 0;
+        break;
+      }
+      case 'netted':
+      case 'webbed': {
+        // It can't walk: a melee monster with nobody next to it is out of the fight.
+        const engaged = sim.heroes.some((h) => standing(h) && dist(h, m) <= 1);
+        v += fresh * ((isMelee(m) && !engaged ? 0.6 : 0.15) * t + (st.id === 'webbed' ? 0.8 : 0.4) * sim.heroes.filter(standing).length);
+        break;
+      }
+      case 'taunted': {
+        // Compelled Duel: its attacks come at you instead of a friend.
+        const sturdy = hpPct(sim.me) >= 0.6 ? 1 : hpPct(sim.me) >= 0.4 ? 0.3 : -0.6;
+        v += acting * fullDamage(m) * (targetOf(sim, m)?.id !== sim.me.id ? 0.3 : 0.05) * sturdy;
+        break;
+      }
       case 'marked':
         v += 1.2 * fresh * sim.heroes.filter(standing).length; // the whole party gets advantage
         break;
@@ -721,6 +740,19 @@ function heroStatusValue(sim: Sim, f: PlayerEntity, st: StatusApply): number {
     }
     case 'riposte':
       return 1.2 * adjacentFoes(sim, f);
+    case 'raging': {
+      // More damage on melee hits, half the physical damage taken: worth it in the thick of it.
+      if (hasStatus(f, 'raging')) return 0;
+      const melee = adjacentFoes(sim, f) > 0 || sim.monsters.some((m) => dist(m, f) <= f.speed + 1);
+      return melee ? turns * ((st.power ?? 2) * 1.2 + 0.25 * exposure(sim, f)) : 0.3;
+    }
+    case 'rallied': {
+      const have = f.statuses.find((x) => x.id === 'rallied')?.power ?? 0;
+      if (have >= (st.power ?? 1) * (st.stack ?? 1)) return 0;
+      return Math.min(st.turns, 3) * (st.power ?? 1) * (0.1 * (5 + f.level) + 0.7) * (f.id === sim.me.id || standing(f) ? 1 : 0);
+    }
+    case 'marked': // Reckless Attack: the monsters get advantage on you
+      return -0.3 * exposure(sim, f) * turns;
     default:
       return 0;
   }
@@ -1080,6 +1112,8 @@ function comboGain(sim: Sim, p: Preview): number {
 function deathValue(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, m: MonsterEntity, own: Preview | null): number {
   const death = MONSTERS[m.type]?.death;
   if (!death) return 0;
+  // The last one standing: the fight ends with it, so its burst can't hurt anyone (and must not stop the kill).
+  if (sim.monsters.every((o) => o.id === m.id)) return 0;
   const fx = sim.fx;
   const key = `death|${m.id}|${aimKey(sim, id, s, res)}`;
   let p = fx.previews.get(key) ?? null;
@@ -1223,6 +1257,8 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
   }
   if (s.heal && res.friends.some((f) => f.downed || hpPct(f) < 0.35)) early = true; // patch people up first
   if (s.frees) early = true; // cut free before walking or attacking
+  // Rage before the swing, so the swing gets it.
+  if (sim.actionLater && s.selfStatus?.some((x) => x.id === 'raging') && score > MIN_BONUS) early = true;
   return { score: score - costOf(sim, id, s), early };
 }
 

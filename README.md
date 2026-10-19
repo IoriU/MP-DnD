@@ -121,6 +121,12 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 | 🗡️ Rogue | Sneak Attack adds extra d6s when an ally is next to the target or you have advantage. Shadow Step teleports behind a target. The kill-steal class. |
 | 🧙 Wizard | Fire, frost and lightning at range: the element master. Fireball for crowds, Grease to set up a blaze, Magic Missile never misses. Fragile. |
 | ✨ Cleric | Healing Word picks up downed allies from range, Bless makes the party hit harder, Sacred Flame forces a DEX save, Create Water soaks enemies for the Wizard's lightning. |
+| 🪓 Barbarian | The most HP. Rage halves the physical damage you take and adds to every melee hit; Reckless Attack swings with advantage but leaves you open; Ground Slam knocks everything around you prone. |
+| 🏹 Ranger | Longbow at long range. Hunter's Mark gives the whole party advantage on a target (and Favored Foe adds damage to it), Ensnaring Shot nets a monster in place, Herbal Remedy patches friends up. |
+| ⚜️ Paladin | AC 17 and holy fire. Divine Smite hits hard with radiant damage, Lay on Hands heals with a touch, Compelled Duel pulls a monster off your friends, and the Aura of Protection helps everyone near you resist. |
+| 🎻 Bard | Support from range. Vicious Mockery stings and dazes, Bardic Inspiration gives an ally advantage, Healing Ballad heals the whole party, Hideous Laughter takes a monster out of the fight. Fragile. |
+
+Passives come in two kinds: hooks with their own rules (Sentinel, Favored Foe, Aura of Protection, Song of Rest...) and perks, stat blocks that add up like equipment (Thick Hide: +AC and max HP, Archery: +to hit...).
 
 ## Development
 

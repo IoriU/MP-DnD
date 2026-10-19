@@ -12,7 +12,7 @@ import type { GameState, LogLine, PlayerEntity, StatusInst, TurnState } from '..
 import { alliesHtml, blessingsHtml, gearIconsHtml, itemIcon, relicsHtml, toggleInventory } from './inventory.ts';
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
-import { onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
+import { classIcon, onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
 import { aimAt, blockReason, currentEntity, huntedIds, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
 import { $, esc, monsterAiTag, toast } from './util.ts';
 
@@ -373,7 +373,7 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
   const focus = !p.dead && huntedIds(s).includes(p.id); // the monsters are ganging up on this hero
   const cls = ['pc', isCurrent ? 'current' : '', mine ? 'mine' : '', p.dead || p.downed ? 'down' : '', targetable ? 'targetable' : '', focus ? 'focus' : ''].join(' ');
   return `<div class="${cls}" data-entity="${p.id}">
-    <div class="pc-glyph" style="border-color:${p.color}">${p.dead ? '🪦' : c.glyph}</div>
+    <div class="pc-glyph" style="border-color:${p.color}">${p.dead ? '🪦' : classIcon(p.classId, 32)}</div>
     <div class="pc-main">
       <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${c.name} Lv ${p.level}</span>${autoTag(info)}${status}${focus ? '<span class="tag bad" title="Hunted: the monsters are ganging up on this hero">🎯 hunted</span>' : ''}${ups}</div>
       <div class="hpbar"><div style="width:${hpPct}%;background:${hpColor}"></div>${p.tempHp > 0 ? `<i class="tmp" style="width:${tempPct}%"></i>` : ''}<span>${p.hp} / ${p.maxHp}${p.tempHp > 0 ? ` <em>+${p.tempHp} 🛡</em>` : ''}</span></div>
@@ -421,7 +421,7 @@ function renderEnd(s: GameState, party: PlayerEntity[]) {
     .map((p) => {
       const slayer = topKills > 0 && p.kills === topKills ? ' <span class="tag">💀 top slayer</span>' : '';
       const crown = topSteals > 0 && p.steals === topSteals ? ' <span class="tag">🗡️ kill-steal champion</span>' : '';
-      return `<li><span class="dot" style="background:${p.color}"></span>${CLASSES[p.classId].glyph} <b>${esc(p.name)}</b>
+      return `<li><span class="dot" style="background:${p.color}"></span>${classIcon(p.classId, 32)} <b>${esc(p.name)}</b>
         <span class="muted">${CLASSES[p.classId].name} Lv ${p.level}</span>${slayer}${crown}
         <span class="end-kills" title="Kills and kill steals">💀 ${p.kills} · 🗡️ ${p.steals}</span></li>`;
     })

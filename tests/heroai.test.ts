@@ -619,6 +619,20 @@ test('a bloated zombie bursts only after the spell that killed it, so finishing 
   assert.ok(second.kind === 'act' && second.target === z2.id, JSON.stringify(second));
 });
 
+// Found in Phase 12 bot runs: six heroes around the last Bloated Zombie at 2 HP all passed their turns for 40 rounds,
+// because its poison would splash them. The fight ends with the last monster, so its burst can't hurt anyone.
+test('heroes standing around the last bursting monster still finish it off', () => {
+  const zombie = monster('bloated', 6, 3, { hp: 2 });
+  const f = hero('fighter', 5, 3);
+  const p = hero('paladin', 6, 4);
+  const b = hero('barbarian', 7, 3);
+  b.skills.find((o) => o.id === 'rage')!.cd = 3; // (it would rage first, then swing)
+  for (const h of [f, p, b]) {
+    const intent = nextHeroIntent(view(h, [f, p, b], [zombie]));
+    assert.ok(intent.kind === 'act' && intent.target === zombie.id, `${h.classId}: ${JSON.stringify(intent)}`);
+  }
+});
+
 test('a wizard blows up an oil barrel next to two goblins, but not with the fighter standing by it', () => {
   const m = field([], { props: [[8, 3, 'barrel']] });
   const w = withSkills(hero('wizard', 2, 3), [['fire_bolt']]);
@@ -670,8 +684,7 @@ function randomMap(r: Rng): FieldLike {
   return { width: w, height: h, tiles, ground: {}, clouds: {}, props: {} };
 }
 
-function randomHero(r: Rng, pos: Pos): PlayerEntity {
-  const classId = r.pick(CLASS_IDS);
+function randomHero(r: Rng, pos: Pos, classId: ClassId = r.pick(CLASS_IDS)): PlayerEntity {
   const level = r.int(1, 12);
   const p = hero(classId, pos.x, pos.y, { level, maxHp: 1, hp: 1, maxSlots: 0, slots: 0 });
   for (const id of r.shuffle([...ACTIVE])) {
@@ -720,13 +733,14 @@ function randomFight(seed: number) {
   r.shuffle(open);
   const nHeroes = Math.min(r.int(1, 4), open.length - 1);
   const nMonsters = Math.min(r.int(1, 6), open.length - nHeroes);
-  const heroes = open.slice(0, nHeroes).map((p) => randomHero(r, p));
+  // The hero whose turn it is takes every class in turn, so each class gets its share of the fights.
+  const heroes = open.slice(0, nHeroes).map((p, i) => randomHero(r, p, i === 0 ? CLASS_IDS[seed % CLASS_IDS.length] : undefined));
   const monsters = open.slice(nHeroes, nHeroes + nMonsters).map((p) => randomMonster(r, p));
   const turn: TurnState = { ...freshTurn(), movesLeft: r.int(0, 8), actionUsed: r.chance(0.25), bonusUsed: r.chance(0.25) };
   return { r, map: m, heroes, monsters, turn, me: heroes[0] };
 }
 
-const FIGHTS = 400;
+const FIGHTS = 800; // 8 classes: enough fights that every class's tricks come up
 
 test(`every act in ${FIGHTS} random fights passes the game's checks`, () => {
   let acts = 0;

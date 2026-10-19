@@ -433,6 +433,7 @@ export function damageFactor(e: Entity, el: Element): number {
   if (r === 'absorb') return -1;
   let k = r === 'resist' ? 0.5 : r === 'weak' ? 2 : 1;
   if (el === 'fire' && hasStatus(e, 'wet')) k *= 0.5;
+  if (el === 'physical' && hasStatus(e, 'raging')) k *= 0.5; // a Barbarian's Rage
   return k;
 }
 

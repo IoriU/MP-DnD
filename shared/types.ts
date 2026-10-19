@@ -6,7 +6,7 @@ import type { AllyId, TraitId } from './elites.ts';
 import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
 import type { Difficulty, MonsterAi } from './rules.ts';
 
-export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric';
+export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric' | 'barbarian' | 'ranger' | 'paladin' | 'bard';
 export type Phase = 'lobby' | 'map' | 'combat' | 'event' | 'rest' | 'shop' | 'victory' | 'defeat';
 export type NodeType = 'combat' | 'elite' | 'event' | 'rest' | 'treasure' | 'shop' | 'boss';
 

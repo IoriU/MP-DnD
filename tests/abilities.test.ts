@@ -215,12 +215,12 @@ test('webbed: Cut Free from an adjacent ally removes it, and one out of reach ca
   assert.ok(!has(ann, 'webbed'));
 });
 
-test('webbed and netted are cleansed by Lay on Hands, and a hero who cleanses themself can move again', () => {
+test('webbed and netted are cleansed by Purifying Touch, and a hero who cleanses themself can move again', () => {
   assert.ok(CLEANSED.includes('webbed') && CLEANSED.includes('netted'));
   const { p, heroes } = battle(['fighter', 'cleric']);
   const [ann, bob] = heroes;
   bob.skills = [{ id: 'healing_touch', tier: 3, branch: 'A', cd: 0 }];
-  assert.equal(statsOf(bob.skills[0]).cleanse, true, 'Lay on Hands');
+  assert.equal(statsOf(bob.skills[0]).cleanse, true, 'Purifying Touch');
   ann.statuses.push(status('webbed', 3), status('netted'), status('burning'));
   bob.statuses.push(status('netted'));
   Object.assign(bob, { x: 5, y: 3 });

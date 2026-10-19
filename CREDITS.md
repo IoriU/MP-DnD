@@ -9,6 +9,9 @@
 - The player classes in `Commissions/` were commissioned by Romet and are part of the same pack.
 - Files: `client/assets/dawnlike/` (the pack's sprite sheets and its original `README.txt`). We use the sheets as they
   are; the game picks single tiles out of them (see `client/sprites.ts`).
+- **Changes:** four classes (Barbarian, Ranger, Bard, Cleric) use recolored copies of the commissioned Warrior, Rogue,
+  Mage and Paladin sheets: the game swaps their colors for other DawnBringer palette colors when the page loads. The
+  files on disk are unchanged.
 - As the artist asks, his Platino sprite is hidden somewhere in the game. Good luck.
 
 Everything else (emoji glyphs aside, which come from your system's emoji font) is drawn in code.

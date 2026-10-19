@@ -374,8 +374,12 @@ export class Game {
   addBot(playerId: string) {
     if (playerId !== this.hostId || this.phase === 'victory' || this.phase === 'defeat') return;
     if (this.players.length >= MAX_PLAYERS) return this.whisper(playerId, `The party is full (max ${MAX_PLAYERS}).`);
+    // A class the party doesn't have yet, one that fills a missing role (front line, healer, ranged) if it can.
     const taken = new Set(this.players.map((p) => p.classId));
-    const classId = CLASS_IDS.find((c) => !taken.has(c)) ?? pick(CLASS_IDS);
+    const covered = new Set([...taken].flatMap((c) => CLASSES[c].roles));
+    const free = CLASS_IDS.filter((c) => !taken.has(c));
+    const needed = free.filter((c) => CLASSES[c].roles.some((r) => !covered.has(r)));
+    const classId = pick(needed.length ? needed : free.length ? free : CLASS_IDS);
     const names = new Set(this.players.map((p) => p.name));
     const name = BOT_NAMES.find((n) => !names.has(n)) ?? `Bot ${this.players.length + 1}`;
     const used = new Set(this.players.map((p) => p.color));
@@ -1771,7 +1775,10 @@ export class Game {
   private endCombat() {
     const kind = this.roomKind ?? 'combat';
     const run = this.run!;
-    const breather = POST_FIGHT_HEAL + (this.hasRelic('rations') ? 0.1 : 0);
+    // Song of Rest: the best Bard's song adds its share on top.
+    const song = Math.max(0, ...this.heroes().map((h) => passiveOf(h, 'song_of_rest')?.value ?? 0)) / 100;
+    const breather = POST_FIGHT_HEAL + (this.hasRelic('rations') ? 0.1 : 0) + song;
+    for (const h of this.heroes()) if (hasBranch(h, 'song_of_rest', 'B') && h.slots < h.maxSlots) h.slots++; // Encore
     this.dispose();
     // NPC allies have one fight fewer to go.
     for (const a of run.allies) a.fights--;
@@ -1794,7 +1801,7 @@ export class Game {
       p.tempHp = 0;
       p.used = [];
       for (const s of p.skills) s.cd = 0;
-      p.hp = Math.min(p.maxHp, Math.max(1, p.hp) + Math.ceil(p.maxHp * breather));
+      p.hp = Math.min(p.maxHp, Math.max(1, p.hp) + Math.ceil(p.maxHp * breather - 1e-9)); // (0.2 + 0.1 isn't quite 0.3)
     }
     this.addLog('heal', `🫁 The party catches its breath: everyone heals ${Math.round(breather * 100)}% of their max HP.`);
     const gold = this.goldFound(roomGold(run.act, kind));
@@ -2399,8 +2406,18 @@ export class Game {
   private heroSave(p: PlayerEntity, stat: 'dex' | 'str' | 'wis'): { total: number; text: string } {
     let d20 = rollDie(20);
     if (d20 === 1 && this.useLucky(p, true)) d20 = rollDie(20);
-    const bonus = statMod(p.classId, stat) + (passiveOf(p, 'steady')?.value ?? 0) + (hasStatus(p, 'blessed') ? 2 : 0) + gearBonus(p, 'saves');
+    const bonus = statMod(p.classId, stat) + (passiveOf(p, 'steady')?.value ?? 0) + (hasStatus(p, 'blessed') ? 2 : 0) + gearBonus(p, 'saves') + this.auraBonus(p);
     return { total: d20 + bonus, text: `🎲${d20}${fmtMod(bonus)}=${d20 + bonus}` };
+  }
+
+  /** Aura of Protection: the best Paladin aura a hero stands in (2 tiles, or 4 with Wide Aura), the Paladin included. */
+  private auraBonus(p: PlayerEntity): number {
+    let best = 0;
+    for (const h of this.heroes()) {
+      const aura = passiveOf(h, 'aura_of_protection');
+      if (aura && this.standing(h) && dist(h, p) <= (hasBranch(h, 'aura_of_protection', 'B') ? 4 : 2)) best = Math.max(best, aura.value);
+    }
+    return best;
   }
 
   /** Spends a Lucky reroll if the hero has one left (Lucky Charms count for attacks). `save`: Fortune also covers saves. */
@@ -2587,7 +2604,7 @@ export class Game {
     const roll = `${save.toUpperCase()} save ${rolled} vs DC ${dc}`;
     this.addLog(saved ? 'miss' : 'hit', `${f.name} ${saved ? 'resists' : 'is caught by'} ${p.name}'s ${name} (${roll})${dmg ? `: ${dmg}${elementWord(s.element)}` : ''}.`);
     if (dmg > 0) this.damage(f, dmg, p, s.element ?? 'physical', s.target === 'area');
-    else this.float(f, 'saved', '#9aa0a6');
+    else if (saved) this.float(f, 'saved', '#9aa0a6');
     if (!saved && this.entities.includes(f)) this.afterHit(p, f, s.element ?? 'physical', false);
     return !saved;
   }
@@ -2766,6 +2783,7 @@ export class Game {
     if (a.kind !== 'player') return 0;
     let extra = 0;
     if (t.hp < t.maxHp / 2) extra += passiveOf(a, 'opportunist')?.value ?? 0;
+    if (hasStatus(t, 'marked')) extra += passiveOf(a, 'favored_foe')?.value ?? 0;
     if (element === 'fire') extra += passiveOf(a, 'elemental_affinity')?.value ?? 0;
     const relic: Partial<Record<Element, RelicId>> = { fire: 'ember_stone', cold: 'frost_shard', lightning: 'storm_rod' };
     const r = relic[element];
@@ -2812,7 +2830,8 @@ export class Game {
       return false;
     }
 
-    let total = rollDice(o.dmg, crit) + (o.extra ?? 0) + this.bonusDamage(a, t, o.element) + rally;
+    const rage = dist(a, t) <= 1 ? (a.statuses.find((s) => s.id === 'raging')?.power ?? 0) : 0; // Rage: melee only
+    let total = rollDice(o.dmg, crit) + (o.extra ?? 0) + this.bonusDamage(a, t, o.element) + rally + rage;
     const notes: string[] = [];
     if (hero && o.sneak && !hero.used.includes('turn:sneak')) {
       const flanked = this.entities.some((e) => e !== hero && !isFoe(e) && this.up(e) && dist(e, t) <= 1);
@@ -2879,8 +2898,8 @@ export class Game {
       this.addLog('info', `🔥 The web around ${t.name} burns away.`);
       this.unrooted(t);
     }
-    if (element !== 'physical' && amount > 0) {
-      // Resistances (monsters by kind, Attunement), and Wet halves fire.
+    if (amount > 0) {
+      // Resistances (monsters by kind, Attunement), Wet halves fire, Rage halves physical.
       const k = damageFactor(t, element);
       if (k === 0) {
         this.float(t, 'immune', '#9aa0a6');
