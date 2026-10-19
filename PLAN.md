@@ -114,7 +114,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 5 | Elements & surfaces (DOS2-style) | 🟢 |
 | 6 | Items, relics, shop & treasure | 🟢 |
 | 7 | Elites, blessings & NPC allies | 🟢 |
-| 8 | Real art *(independent; can be done anytime)* | ⚪ |
+| 8 | Real art *(independent; can be done anytime)* | 🟢 |
 | 9 | Smarter enemy AI + difficulty | ⚪ |
 | 10 | AI Dungeon Master (local LLM) | ⚪ |
 | 11 | Experiments: RL enemies/companions, talking NPCs | 🧪 |
@@ -487,16 +487,26 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 8: Real art ⚪ *(independent track)*
+## Phase 8: Real art 🟢 *(independent track)*
 
 **Tasks**
-- [ ] Claude: shortlist 3–4 packs with preview screenshots and verified licenses (candidates: Kenney Tiny Dungeon, 0x72 Dungeon Tileset II, Kenney 1-Bit Pack, DawnLike)
-- [ ] **You: pick the style**
-- [ ] Download the chosen pack (with your OK) into `client/assets/`, and add `CREDITS.md`
-- [ ] Sprite mapping table: class / monster / tile / item / map-node icon → sprite
-- [ ] Wall auto-tiling, floor variety, room props, surface/cloud visuals (or keep them procedural)
-- [ ] Simple animation: idle bob, walk tween, hit flash, death fade
-- [ ] Keep the emoji fallback for anything without a sprite yet
+- [x] Claude: shortlist with verified licenses: DawnLike (CC-BY 4.0), 0x72 Dungeon Tileset II (CC0), Dungeon Crawl Stone Soup tiles (CC0), Kenney 1-Bit Pack (CC0). Kenney Tiny Dungeon was dropped (too few creatures). No screenshots: the network at the time blocked the asset sites, so the pick went on descriptions and links.
+- [x] **You: picked DawnLike** (16×16, by DragonDePlatino on DawnBringer's palette)
+- [x] Downloaded `DawnLike_5.zip` (1.0 MB, the official OpenGameArt file, with your OK) into `client/assets/dawnlike/` (the sheets and the pack's README); `CREDITS.md`, the README and the in-game how-to-play credit it. As the artist asks, his Platino sprite is hidden in the game.
+- [x] Sprite mapping table (`client/sprites.ts`): the 4 classes use the pack's commissioned Warrior / Rogue / Mage / Paladin with 4-direction walk cycles; all 23 monsters and 4 NPC allies, walls, floors and decorations per act, props, every item, and the map-node icons
+- [x] Wall auto-tiling (4-neighbour, DawnLike's line-art wall pieces), a floor and wall material per act, floor decorations (skulls, cobwebs, vines), barrels and braziers as sprites, flames on burning tiles; the ground pools and clouds stay procedural
+- [x] Animation: 2-frame idle for monsters and allies, walk cycles and an idle bob for heroes, a white hit flash, a fade-out on death
+- [x] Emoji fallback for anything without a sprite (and if a sheet fails to load); **G** switches between pixel art and the classic emoji look
+
+**Result (2026-10-19):** ✅ The battle scene, the bag, the shop, the hotbar, the spoils cards and the act map all draw DawnLike sprites; every act has its own walls and floor.
+- **Checked in the browser:** rooms in all 3 acts (corners, T-junctions, obstacles, lone pillars, the outer border), heroes, monsters, elites, bosses, allies and Platino up close, hit flash and death fade, downed and dead heroes, the bag, shop, hotbar, spoils card and map icons, the **G** toggle, a 375 px window, and the fallback when a sheet is missing. The walk and idle frames were checked by stepping the game by hand (the browser pane was hidden, so animation didn't run on its own).
+- **Tests:** 272, unchanged (this phase is client-only).
+
+**Notes**
+- Props stand on a floor-looking tile instead of joining the wall auto-tiling: a wall piece under a barrel looked wrong.
+- DawnLike walls are thick line-art pieces, so a 2×2 block of wall reads as a small hollow box. That's the pack's look.
+- Elites draw at 2.4× and bosses at 2.8× (normal creatures 2×); with the camera's free zoom, pixels are never perfectly even anyway.
+- Ideas for later: hero portraits from the walk sheets on the party cards and turn order (still emoji), sprites for relics, blessings and skills.
 
 ---
 

@@ -7,6 +7,7 @@ import { SKILLS, TIER_LABEL, describeSkill, ownedSkill, skillTitle, statsAt, tra
 import type { ActMap, EventView, GameState, MapNode, Notice, PlayerEntity, RestPick, RestState, RunInfo, VoteState } from '../shared/types.ts';
 import { blessingsHtml, relicsHtml } from './inventory.ts';
 import { send } from './net.ts';
+import { NODE_SPRITES, SPRITE_PX, artKey, iconHtml, spriteHtml, spritesOn } from './sprites.ts';
 import { isAuto, me, store } from './store.ts';
 import { $, esc } from './util.ts';
 
@@ -276,6 +277,7 @@ function renderMap(view: HTMLElement, s: GameState, run: RunInfo) {
     vote && [vote.options, vote.votes, vote.endsInMs === null],
     notice,
     s.players.map((p) => [p.id, p.name, p.color, p.connected]),
+    artKey(),
   ]);
   if (key !== mapKey) {
     mapKey = key;
@@ -321,7 +323,7 @@ function mapHtml(s: GameState, run: RunInfo, vote: VoteState | null, notice: Not
   const types = new Set(run.map.nodes.map((n) => n.type));
   const legend = (Object.keys(NODE_INFO) as (keyof typeof NODE_INFO)[])
     .filter((t) => types.has(t))
-    .map((t) => `<span class="rv-leg t-${t}"><span class="rv-leg-ic">${NODE_INFO[t].icon}</span>${NODE_INFO[t].name}</span>`)
+    .map((t) => `<span class="rv-leg t-${t}"><span class="rv-leg-ic">${iconHtml(NODE_SPRITES[t], NODE_INFO[t].icon, SPRITE_PX)}</span>${NODE_INFO[t].name}</span>`)
     .join('');
 
   return `<div class="rv-top">
@@ -449,10 +451,18 @@ function nodeSvg(p: Placed, state: NodeState, mine: boolean, focus: boolean, vot
     ${opt ? `<circle class="rv-hit" r="${p.r + 12}"/><circle class="rv-halo" r="${p.r + 5}"/>` : ''}
     ${state === 'current' ? `<circle class="rv-cur" r="${p.r + 7}"/>` : ''}
     <circle class="rv-disc" r="${p.r}"/>
-    <text class="rv-icon" dy="0.35em">${info.icon}</text>
+    ${nodeIcon(p)}
     ${mine ? `<circle class="rv-mine" r="${p.r + 5}"/>` : ''}
     ${dotsSvg(voters, p.r)}
   </g>`;
+}
+
+/** A node's icon: its sprite at 2x (3x for the boss) in a box over the disc, or the emoji when there's no art. */
+function nodeIcon(p: Placed): string {
+  const px = p.boss ? 3 * SPRITE_PX : 2 * SPRITE_PX;
+  const sprite = spritesOn() ? spriteHtml(NODE_SPRITES[p.node.type], px) : '';
+  if (!sprite) return `<text class="rv-icon" dy="0.35em">${nodeInfo(p.node).icon}</text>`;
+  return `<foreignObject class="rv-sprite" x="${-px / 2}" y="${-px / 2}" width="${px}" height="${px}">${sprite}</foreignObject>`;
 }
 
 /** Voter dots in a small arc above a node. */

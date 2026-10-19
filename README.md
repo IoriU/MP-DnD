@@ -100,6 +100,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **At 0 HP** you fall unconscious and roll death saves on your turn. Healing (a potion, Healing Word or Second Wind) gets you back up. If the party wins the fight, everyone gets back up, even the dead.
 - **Between rooms:** HP carries over. Drink potions, or heal a friend by picking a heal and clicking their party card.
 - **Camera:** the mouse wheel zooms and right-drag pans.
+- **Graphics:** pixel art by default; press **G** to switch to the classic emoji look (it's remembered).
 - **🤖 Auto-play:** press **P** (or the 🤖 Auto button) and the AI plays your hero until you switch it off. That's handy when you're AFK. Players who disconnect are auto-played until they come back. Auto heroes never vote while a human is at the keyboard; they follow the group.
 - **Bots:** the host can click **🤖 Add bot** in the tavern to fill empty seats with computer-controlled heroes.
 - **Saving:** runs save themselves at every step on the map (in the `saves/` folder next to the game). Close the server whenever you like. Next time, pick the run under **📜 Continue a saved run** on the home screen, or just reopen your old tab. Type the same name as your hero and you get them back; a friend who can't make it is auto-played until they return. A fight that was interrupted starts over from the beginning. Won and lost runs move to `saves/archive/`.
@@ -137,6 +138,8 @@ shared/surfaces.ts the battlefield: ground, clouds, props, the combo engine, haz
 shared/items.ts    equipment, consumables, relics, blessings and prices
 shared/elites.ts   elite traits, NPC allies, and who is on whose side
 shared/grid.ts     line of sight, pathfinding
+client/sprites.ts  which sprite draws each class, monster, wall, floor, prop, item and map icon
+client/assets/     sprite sheets (DawnLike, see CREDITS.md), served at the site root
 shared/types.ts    the game state sent from server to clients
 server/game.ts     the "Dungeon Master": the run, voting, rooms, turns, combat, monster AI
 server/actmap.ts   Slay-the-Spire-style act map generator
@@ -154,6 +157,10 @@ client/lobby.ts    home screen and tavern lobby
 ```
 
 The server is authoritative: it rolls every die and validates every move, so players can't cheat and all clients stay in sync. Clients only send intents ("move here", "use Fire Bolt on that goblin") and draw the state they get back.
+
+### Credits
+
+Art: [DawnLike](https://opengameart.org/content/dawnlike-16x16-universal-rogue-like-tileset-v181) by DragonDePlatino, palette by DawnBringer (CC-BY 4.0). See [CREDITS.md](CREDITS.md).
 
 ### What's next
 

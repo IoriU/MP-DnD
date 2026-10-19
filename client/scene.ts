@@ -1,5 +1,6 @@
 // Phaser scene that draws the current battle room. It only renders server state; every rule lives on the server.
-// No image assets: tiles are drawn shapes and creatures are emoji, so you can swap in real art later.
+// Pixel art (DawnLike, see sprites.ts) for the room and the creatures. With the art switched off, or a sheet missing,
+// tiles are drawn shapes and creatures are emoji.
 
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
@@ -14,12 +15,22 @@ import { advantageText, attackAdvantage, dirTo, isBehind, isFlanking, netAdvanta
 import type { Entity, Fx, GameState, MonsterEntity, PlayerEntity, Pos } from '../shared/types.ts';
 import { send } from './net.ts';
 import {
-  aimAt, attackProblem, bestAttack, bestPropAttack, currentEntity, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, select, store, subscribe,
+  ACT_TILES, CLASS_SPRITES, DECOR_SHARE, FLAME, MONSTER_SPRITES, PLATINO, PROP_SPRITES, SHEETS, SPRITE_PX, WALK_ROW,
+  floorFrame, markMissing, onGraphicsMode, platinoFor, sheetFiles, sheetKeys, spritesOn, wallFrame, type SheetId,
+} from './sprites.ts';
+import {
+  aimAt, attackProblem, bestAttack, bestPropAttack, currentEntity, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, refresh, select, store, subscribe,
   validTarget,
 } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
 const T = 32; // tile size in pixels
+const ART = T / SPRITE_PX; // DawnLike sprites are 16x16, drawn at 2x so one fills a tile
+const ART_Y = -2; // creature art sits a little above the tile centre, so its feet stand on the ring
+const WALK_MS = 95; // a hero's walking frame (4 per cycle)
+const IDLE_MS = 500; // a monster's 2-frame idle: about 2 frames per second
+const FLASH_MS = 80; // the white flash when something takes damage
+const FADE_MS = 400; // a defeated monster fading out
 const UI_FONT = 'system-ui, "Segoe UI", sans-serif';
 const EMOJI_FONT = '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
 const BG = 0x0b0a09;
@@ -37,6 +48,16 @@ const hash = (x: number, y: number) => {
   const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
   return n - Math.floor(n);
 };
+/** A well-mixed unsigned 32-bit hash of an integer (the same everywhere, so decorations stay put between redraws). */
+const hash32 = (n: number) => {
+  let h = Math.imul(n + 0x9e3779b9, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  return (h ^ (h >>> 16)) >>> 0;
+};
+const strHash = (text: string) => [...text].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7);
+/** The walk-sheet row for the way a hero faces; diagonals use their horizontal part. */
+const walkRow = (f: Pos) => (f.x > 0 ? WALK_ROW.right : f.x < 0 ? WALK_ROW.left : f.y < 0 ? WALK_ROW.up : WALK_ROW.down);
 
 /** How each surface pool looks: its color (oil darkened so it reads as a slick) and opacity. */
 const GROUND_LOOK: Record<GroundId, { color: number; alpha: number }> = {
@@ -60,17 +81,43 @@ const ALLY = 0x6fe07a; // NPC allies: a green ring, so they don't read as enemie
 const ELEMENTS: Element[] = ['physical', 'fire', 'cold', 'lightning', 'poison', 'radiant', 'force'];
 const RESIST_ORDER: Resist[] = ['immune', 'absorb', 'resist', 'weak'];
 
-interface Sprite {
+/** The sprite-sheet tile a creature is drawn with. Walk sheets (the heroes) pick their row and frame as they go. */
+interface ArtSpec {
+  sheet: SheetId;
+  frame: number;
+  walk: boolean;
+}
+
+/** Everything drawn for one creature: a ring, its art (or an emoji glyph), bars and tags. */
+interface Token {
   c: Phaser.GameObjects.Container;
   ring: Phaser.GameObjects.Graphics;
   face: Phaser.GameObjects.Graphics; // the facing arrow on the ring
   glyph: Phaser.GameObjects.Text;
+  art: Phaser.GameObjects.Sprite | null; // null: the emoji glyph is shown instead
+  spec: ArtSpec | null;
   bar: Phaser.GameObjects.Graphics;
   tags: Phaser.GameObjects.Text; // status icons
   tagBg: Phaser.GameObjects.Graphics;
   traits: Phaser.GameObjects.Text; // an elite's trait icons, under its HP bar
   traitBg: Phaser.GameObjects.Graphics;
   key: string;
+  kind: Entity['kind'];
+  hp: number; // the last HP seen, to flash when it drops
+  tint: number | null; // the status tint (frozen) to go back to after a flash
+  flash: Phaser.Time.TimerEvent | null; // set while the white flash is on
+  walking: boolean; // a move tween is running
+  dir: number; // a hero's walk row
+  frame: number; // the art frame showing now
+  phase: number; // offsets idle animations so creatures don't blink in step
+}
+
+/** A flame sprite on a burning tile. */
+interface Flame {
+  img: Phaser.GameObjects.Image;
+  n: number;
+  fade: boolean;
+  frame: number;
 }
 
 /** A ground or cloud tile, as the per-frame animation needs it. */
@@ -152,8 +199,12 @@ class DungeonScene extends Phaser.Scene {
   private overlayG!: Phaser.GameObjects.Graphics;
   private turnG!: Phaser.GameObjects.Graphics;
   private cursorG!: Phaser.GameObjects.Graphics;
-  private sprites = new Map<string, Sprite>();
-  private propTexts: Phaser.GameObjects.Text[] = [];
+  private sprites = new Map<string, Token>();
+  private ghosts = new Set<Phaser.GameObjects.Container>(); // defeated monsters on their way out
+  private ready = new Set<SheetId>(); // the sheets that loaded; anything on a missing one falls back to emoji
+  private tileObjs: Phaser.GameObjects.GameObject[] = []; // the room's floor, wall and decoration sprites
+  private flames: Flame[] = [];
+  private propTexts: Phaser.GameObjects.GameObject[] = []; // prop sprites (or emoji when there's no art)
   private braziers: number[] = [];
   private groundTiles: FieldTile<GroundId>[] = [];
   private cloudTiles: FieldTile<CloudId>[] = [];
@@ -173,7 +224,26 @@ class DungeonScene extends Phaser.Scene {
     super('dungeon');
   }
 
+  /** Loads every sheet. A sheet that fails just isn't marked ready, and whatever needs it is drawn with emoji instead. */
+  preload() {
+    this.load.on('loaderror', (file: Phaser.Loader.File) => console.warn(`Couldn't load the art ${file.src}: using emoji for it`));
+    for (const id of Object.keys(SHEETS) as SheetId[]) {
+      const keys = sheetKeys(id);
+      sheetFiles(id).forEach((url, i) => this.load.spritesheet(keys[i], url, { frameWidth: SPRITE_PX, frameHeight: SPRITE_PX }));
+    }
+  }
+
   create() {
+    // Pixel art needs nearest-neighbour filtering. Only these textures get it: the emoji text stays smooth.
+    for (const id of Object.keys(SHEETS) as SheetId[]) {
+      const keys = sheetKeys(id);
+      if (!keys.every((k) => this.textures.exists(k))) continue;
+      for (const k of keys) this.textures.get(k).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      this.ready.add(id);
+    }
+    // Sheets that didn't load: the HTML icons that use them fall back to emoji too.
+    const lost = (Object.keys(SHEETS) as SheetId[]).filter((id) => !this.ready.has(id));
+    if (lost.length) markMissing(lost);
     this.cameras.main.setBackgroundColor(BG);
     this.mapG = this.add.graphics().setDepth(0);
     for (const id of Object.keys(GROUNDS) as GroundId[]) this.groundG.set(id, this.add.graphics().setDepth(1));
@@ -215,11 +285,14 @@ class DungeonScene extends Phaser.Scene {
     Object.assign(window, { delvers: { scene: this, store } }); // handy for debugging in the browser console
     const offState = subscribe(() => this.sync());
     const offFx = onFx((fx) => this.playFx(fx));
+    const offMode = onGraphicsMode(() => this.redrawAll());
     this.events.once('shutdown', () => {
       offState();
       offFx();
+      offMode();
     });
     this.sync();
+    if (lost.length) refresh();
   }
 
   update(time: number) {
@@ -230,7 +303,17 @@ class DungeonScene extends Phaser.Scene {
     if (sp && store.state?.phase === 'combat') {
       g.lineStyle(3, 0xffd84d, 0.55 + 0.45 * Math.sin(time / 160)).strokeCircle(sp.c.x, sp.c.y, 17);
     }
+    for (const t of this.sprites.values()) this.animate(t, time);
     this.drawField(time);
+  }
+
+  /** The art was switched on or off: draw the room and every creature again. */
+  private redrawAll() {
+    this.mapKey = '';
+    this.groundKey = '';
+    for (const t of this.sprites.values()) this.dropToken(t);
+    this.sprites.clear();
+    this.sync();
   }
 
   // ---------------------------------------------------------------- state -> pixels
@@ -286,20 +369,41 @@ class DungeonScene extends Phaser.Scene {
     this.cloudG.clear();
     this.overlayG.clear();
     this.cursorG.clear();
-    for (const t of this.propTexts) t.destroy();
-    this.propTexts = [];
+    this.clearTiles();
+    this.clearFlames();
     $('#tooltip').hidden = true;
-    for (const sp of this.sprites.values()) sp.c.destroy();
+    for (const t of this.sprites.values()) this.dropToken(t);
     this.sprites.clear();
+    for (const c of this.ghosts) {
+      this.tweens.killTweensOf(c);
+      c.destroy();
+    }
+    this.ghosts.clear();
+  }
+
+  private clearTiles() {
+    for (const o of [...this.tileObjs, ...this.propTexts]) o.destroy();
+    this.tileObjs = [];
+    this.propTexts = [];
+  }
+
+  private clearFlames() {
+    for (const f of this.flames) f.img.destroy();
+    this.flames = [];
+  }
+
+  /** Is this sheet loaded, with the art switched on? */
+  private art(id: SheetId): boolean {
+    return spritesOn() && this.ready.has(id);
   }
 
   private drawMap(s: GameState) {
+    this.clearTiles();
+    this.braziers = [];
+    if (this.art('floor') && this.art('wall')) return this.drawArtMap(s);
     const pal = PALETTES[Math.min(PALETTES.length, s.run?.act ?? 1) - 1];
     const props = s.props ?? {};
     const g = this.mapG.clear();
-    for (const t of this.propTexts) t.destroy();
-    this.propTexts = [];
-    this.braziers = [];
     for (let y = 0; y < s.height; y++) {
       for (let x = 0; x < s.width; x++) {
         const px = x * T;
@@ -329,6 +433,50 @@ class DungeonScene extends Phaser.Scene {
     }
   }
 
+  /** The room from sprites: auto-tiled walls, floor tiles, a few decorations, and props standing on the floor. */
+  private drawArtMap(s: GameState) {
+    const act = s.run?.act ?? 1;
+    const props = s.props ?? {};
+    const w = s.width;
+    const g = this.mapG.clear();
+    // Props sit on '#' tiles (they block like walls) but they are furniture, not wall: they don't join the wall lines.
+    const wall = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < s.height && s.tiles[y * w + x] === '#' && !props[y * w + x];
+    const put = (sheet: SheetId, frame: number, x: number, y: number, depth: number) => {
+      const img = this.add.image(x * T, y * T, sheetKeys(sheet)[0], frame).setOrigin(0).setScale(ART).setDepth(depth);
+      this.tileObjs.push(img);
+      return img;
+    };
+    const decor = this.art('decor') ? (ACT_TILES[act] ?? ACT_TILES[1]).decor : [];
+    for (let y = 0; y < s.height; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (wall(x, y)) {
+          const mask = (wall(x, y - 1) ? 1 : 0) | (wall(x + 1, y) ? 2 : 0) | (wall(x, y + 1) ? 4 : 0) | (wall(x - 1, y) ? 8 : 0);
+          put('wall', wallFrame(act, mask), x, y, 0);
+          continue;
+        }
+        put('floor', floorFrame(act), x, y, 0);
+        const prop = props[i];
+        if (prop) {
+          g.fillStyle(0x000000, 0.4).fillEllipse(x * T + T / 2, y * T + T * 0.8, 22, 7);
+          const sp = PROP_SPRITES[prop];
+          const img = sp && this.art(sp.sheet)
+            ? this.add.image(x * T + T / 2, y * T + T / 2, sheetKeys(sp.sheet)[0], sp.frame).setScale(ART)
+            : this.add.text(x * T + T / 2, y * T + T / 2 - 1, PROPS[prop].icon, { fontFamily: EMOJI_FONT, fontSize: '20px', resolution: 2 }).setOrigin(0.5);
+          this.propTexts.push(img.setDepth(3));
+          if (prop === 'brazier') this.braziers.push(i);
+          continue;
+        }
+        // About DECOR_SHARE of the floor tiles get a skull, some vines or the like, drawn under the pools and the creatures.
+        const h = hash32(i);
+        if (decor.length && (h % 1000) / 1000 < DECOR_SHARE) {
+          const d = decor[(h >>> 10) % decor.length];
+          put(d.sheet, d.frame, x, y, 0.5).setAlpha(0.8);
+        }
+      }
+    }
+  }
+
   /** Collects the ground and cloud tiles for the animation, and redraws the ground pools when they changed. */
   private syncField(s: GameState) {
     this.groundTiles = [];
@@ -353,6 +501,17 @@ class DungeonScene extends Phaser.Scene {
   private drawGround(s: GameState) {
     for (const g of this.groundG.values()) g.clear();
     const w = s.width;
+    // A 2-frame flame sprite on each burning tile, on top of the pool and under the creatures (animated in drawField).
+    this.clearFlames();
+    if (this.art(FLAME.sheet)) {
+      for (const t of this.groundTiles) {
+        if (t.id !== 'fire') continue;
+        const x = t.i % w;
+        const y = (t.i - x) / w;
+        const img = this.add.image(x * T + T / 2, y * T + T / 2, sheetKeys(FLAME.sheet)[0], FLAME.frame).setScale(ART).setDepth(2.5);
+        this.flames.push({ img, n: hash(x, y), fade: t.fade, frame: 0 });
+      }
+    }
     const same = (x: number, y: number, id: GroundId) => x >= 0 && y >= 0 && x < w && y < s.height && s.ground[y * w + x]?.id === id;
     const R = 9;
     for (const t of this.groundTiles) {
@@ -400,6 +559,11 @@ class DungeonScene extends Phaser.Scene {
     if (!s?.tiles || !this.mapKey) return;
     this.groundG.get('fire')!.setAlpha(0.82 + 0.18 * Math.sin(time / 83) * Math.sin(time / 137));
     this.groundG.get('lava')!.setAlpha(0.85 + 0.15 * Math.sin(time / 650));
+    for (const f of this.flames) {
+      const frame = Math.floor(time / 230 + f.n * 4) % 2;
+      if (frame !== f.frame) f.img.setTexture(sheetKeys(FLAME.sheet)[(f.frame = frame)], FLAME.frame);
+      f.img.setAlpha((0.6 + 0.25 * Math.sin(time / 110 + f.n * 30)) * (f.fade ? 0.5 : 1));
+    }
     const w = s.width;
     for (const t of this.groundTiles) {
       const x = t.i % w;
@@ -527,40 +691,125 @@ class DungeonScene extends Phaser.Scene {
       const px = e.x * T + T / 2;
       const py = e.y * T + T / 2;
       let sp = this.sprites.get(e.id);
+      let hurt = false;
       if (!sp) {
         sp = this.makeSprite(e);
         sp.c.setPosition(px, py);
         this.sprites.set(e.id, sp);
-      } else if (sp.c.x !== px || sp.c.y !== py) {
-        this.tweens.killTweensOf(sp.c);
-        const far = Math.abs(sp.c.x - px) > T * 1.5 || Math.abs(sp.c.y - py) > T * 1.5;
-        if (far) sp.c.setPosition(px, py);
-        else this.tweens.add({ targets: sp.c, x: px, y: py, duration: 110 });
+      } else {
+        hurt = e.hp < sp.hp;
+        if (sp.c.x !== px || sp.c.y !== py) this.walkTo(sp, px, py);
       }
+      sp.hp = e.hp;
       this.styleSprite(sp, e);
+      if (hurt) this.flash(sp);
     }
     for (const [id, sp] of this.sprites) {
       if (seen.has(id)) continue;
-      sp.c.destroy();
       this.sprites.delete(id);
+      if (sp.kind === 'monster') this.fadeOut(sp);
+      else this.dropToken(sp);
     }
   }
 
-  private makeSprite(e: Entity): Sprite {
+  /** Slides a creature to its new tile (while the hero's walk frames play); a long jump just snaps. */
+  private walkTo(t: Token, px: number, py: number) {
+    this.tweens.killTweensOf(t.c);
+    const far = Math.abs(t.c.x - px) > T * 1.5 || Math.abs(t.c.y - py) > T * 1.5;
+    t.walking = !far;
+    if (far) t.c.setPosition(px, py);
+    else this.tweens.add({ targets: t.c, x: px, y: py, duration: 110, onComplete: () => (t.walking = false) });
+  }
+
+  private dropToken(t: Token) {
+    this.tweens.killTweensOf(t.c);
+    t.flash?.remove();
+    t.c.destroy();
+  }
+
+  /** A defeated monster or ally: a white flash, then it fades and sinks a few pixels. Its bars and tags go at once. */
+  private fadeOut(t: Token) {
+    this.tweens.killTweensOf(t.c);
+    for (const o of [t.ring, t.face, t.bar, t.tagBg, t.tags, t.traitBg, t.traits]) o.setVisible(false);
+    this.flash(t);
+    this.ghosts.add(t.c);
+    this.tweens.add({
+      targets: t.c, alpha: 0, y: t.c.y + 5, duration: FADE_MS, delay: FLASH_MS, ease: 'Sine.easeIn',
+      onComplete: () => {
+        this.ghosts.delete(t.c);
+        this.dropToken(t);
+      },
+    });
+  }
+
+  /** What a creature is drawn with: its sprite, if the art is on and that sheet loaded. Else null (the emoji glyph). */
+  private artFor(e: Entity): ArtSpec | null {
+    if (!spritesOn()) return null;
+    const sheet = e.kind === 'player' ? CLASS_SPRITES[e.classId] : undefined;
+    const mon = e.kind === 'monster' ? (platinoFor(e.type, e.id) ? PLATINO : MONSTER_SPRITES[e.type]) : undefined;
+    const spec = sheet ? { sheet, frame: 0, walk: true } : mon ? { sheet: mon.sheet, frame: mon.frame, walk: false } : null;
+    return spec && this.ready.has(spec.sheet) ? spec : null;
+  }
+
+  /** The sprite's scale: elites a bit bigger, bosses bigger still. */
+  private artScale(e: Entity): number {
+    return e.kind === 'monster' ? (e.boss ? ART * 1.4 : e.elite ? ART * 1.2 : ART) : ART;
+  }
+
+  /** Per frame: heroes walk while they move and bob a pixel when idle; monsters flip between their 2 idle frames. */
+  private animate(t: Token, time: number) {
+    const art = t.art;
+    const spec = t.spec;
+    if (!art || !spec || !art.visible) return;
+    if (spec.walk) {
+      const frame = t.dir * 4 + (t.walking ? Math.floor(time / WALK_MS) % 4 : 0);
+      if (frame !== t.frame) art.setFrame((t.frame = frame));
+      art.y = ART_Y - (t.walking || Math.sin(time / 420 + t.phase * 6.283) < 0.35 ? 0 : 1);
+    } else {
+      const f = Math.floor(time / IDLE_MS + t.phase * 2) % 2;
+      if (f !== t.frame) art.setTexture(sheetKeys(spec.sheet)[(t.frame = f)], spec.frame);
+    }
+  }
+
+  /** Puts the art (or glyph) back to its normal look: no tint, or the status tint. Not while the flash is on. */
+  private applyTint(t: Token) {
+    if (t.flash) return;
+    const o = t.art ?? t.glyph;
+    o.clearTint();
+    if (t.tint !== null) o.setTint(t.tint);
+  }
+
+  /** The white flash of a hit. Hits in quick succession just restart it. */
+  private flash(t: Token) {
+    const o = t.art ?? t.glyph;
+    o.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
+    t.flash?.remove();
+    t.flash = this.time.delayedCall(FLASH_MS, () => {
+      t.flash = null;
+      if (t.c.active) this.applyTint(t);
+    });
+  }
+
+  private makeSprite(e: Entity): Token {
     const ring = this.add.graphics();
     const face = this.add.graphics();
     const big = e.kind === 'monster' && (e.boss || e.elite);
-    const glyph = this.add.text(0, -1, e.glyph, { fontFamily: EMOJI_FONT, fontSize: big ? '26px' : '19px', resolution: 2 }).setOrigin(0.5);
+    const spec = this.artFor(e);
+    const glyph = this.add.text(0, -1, e.glyph, { fontFamily: EMOJI_FONT, fontSize: big ? '26px' : '19px', resolution: 2 }).setOrigin(0.5).setVisible(!spec);
+    const art = spec ? this.add.sprite(0, ART_Y, sheetKeys(spec.sheet)[0], spec.frame).setScale(this.artScale(e)) : null;
     const bar = this.add.graphics();
     const tagBg = this.add.graphics();
     const tags = this.add.text(0, 0, '', { fontFamily: EMOJI_FONT, fontSize: '9px', resolution: 2 }).setOrigin(0.5, 0);
     const traitBg = this.add.graphics();
     const traits = this.add.text(0, 0, '', { fontFamily: EMOJI_FONT, fontSize: '9px', resolution: 2 }).setOrigin(0.5, 0);
-    const c = this.add.container(0, 0, [ring, face, glyph, bar, tagBg, tags, traitBg, traits]).setDepth(e.kind === 'player' ? 11 : 10);
-    return { c, ring, face, glyph, bar, tags, tagBg, traits, traitBg, key: '' };
+    const c = this.add.container(0, 0, [ring, face, glyph, ...(art ? [art] : []), bar, tagBg, tags, traitBg, traits]).setDepth(e.kind === 'player' ? 11 : 10);
+    return {
+      c, ring, face, glyph, art, spec, bar, tags, tagBg, traits, traitBg, key: '', kind: e.kind, hp: e.hp, tint: null, flash: null, walking: false,
+      dir: WALK_ROW.down, frame: -1, phase: (hash32(strHash(e.id)) % 1000) / 1000,
+    };
   }
 
-  private styleSprite(sp: Sprite, e: Entity) {
+  private styleSprite(sp: Token, e: Entity) {
     const dead = e.kind === 'player' && e.dead;
     const down = e.kind === 'player' && e.downed;
     const soak = e.kind === 'player' ? e.tempHp : (e.ward ?? 0); // damage a hero's temp HP or a Shielded elite's ward still soaks
@@ -570,16 +819,21 @@ class DungeonScene extends Phaser.Scene {
     sp.key = key;
     const big = e.kind === 'monster' && (e.boss || e.elite);
     const ally = isAllyNpc(e);
-    const r = big ? 19 : 14;
+    const art = sp.art;
+    const r = big ? (art && e.kind === 'monster' && e.boss ? 21 : 19) : 14; // a boss's sprite is drawn bigger, so its ring is too
     const color = e.kind === 'player' ? hexColor(e.color) : ally ? ALLY : big ? 0xe8b04a : 0xd94a3a;
     // Frozen solid: an icy disc and a blue tint, so you can tell at a glance who's losing a turn.
     const frozen = !dead && hasStatus(e, 'frozen');
     sp.ring.clear().fillStyle(frozen ? 0x9fdcff : 0x000000, frozen ? 0.45 : 0.55).fillCircle(0, 0, r).lineStyle(big ? 3 : 2, color, dead ? 0.3 : 1).strokeCircle(0, 0, r);
     if (ally) sp.ring.lineStyle(1.5, ALLY, 0.45).strokeCircle(0, 0, r + 3); // a second, fainter ring marks the party's side
     // Hidden heroes fade out. A small arrow on the ring shows which way the creature faces (attacks from behind have advantage).
-    sp.glyph.setText(dead ? '🪦' : e.glyph).setAlpha(down ? 0.5 : hasStatus(e, 'hidden') ? 0.55 : 1).setAngle(down ? 90 : 0);
-    if (frozen) sp.glyph.setTint(0xa8dcff);
-    else sp.glyph.clearTint();
+    // A fallen hero is a grave (the glyph) even with the art on; a downed one lies on its side.
+    const alpha = down ? 0.5 : hasStatus(e, 'hidden') ? 0.55 : 1;
+    sp.glyph.setText(dead ? '🪦' : e.glyph).setAlpha(alpha).setAngle(down ? 90 : 0).setVisible(!art || dead);
+    if (art) art.setAlpha(alpha).setAngle(down ? 90 : 0).setVisible(!dead);
+    sp.tint = frozen ? 0xa8dcff : null;
+    this.applyTint(sp);
+    if (sp.spec?.walk) sp.dir = walkRow(e.facing);
     sp.face.clear();
     const f = e.facing;
     if (!dead && !down && f && (f.x || f.y)) {
@@ -604,9 +858,10 @@ class DungeonScene extends Phaser.Scene {
     }
     // Status icons across the top of the token, on a dark pill so they read over the emoji.
     const icons = shown.map((x) => STATUSES[x.id].icon).join('') + (!dead && e.statuses.length > MAX_TAGS ? '+' : '');
-    sp.tags.setText(icons).setPosition(0, -T / 2 + 1);
+    const top = art && big ? -r - 1 : -T / 2; // a big sprite sticks out above the tile: the pill goes above it
+    sp.tags.setText(icons).setPosition(0, top + 1);
     sp.tagBg.clear();
-    if (icons) sp.tagBg.fillStyle(0x000000, 0.7).fillRoundedRect(-sp.tags.width / 2 - 2, -T / 2, sp.tags.width + 4, sp.tags.height + 2, 4);
+    if (icons) sp.tagBg.fillStyle(0x000000, 0.7).fillRoundedRect(-sp.tags.width / 2 - 2, top, sp.tags.width + 4, sp.tags.height + 2, 4);
     // An elite's traits sit in a matching pill just under its HP bar.
     const marks = dead ? '' : traitIcons(e);
     sp.traits.setText(marks).setPosition(0, r + 4);

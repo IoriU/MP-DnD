@@ -1,7 +1,7 @@
 // The sidebar: turn order, party, your skills, the dice log and chat.
 
 import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
-import { BAG_SIZE } from '../shared/items.ts';
+import { BAG_SIZE, type ItemId } from '../shared/items.ts';
 import { CLASSES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
   canHitProps, describeSkill, hasStatus, hitsArea, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
@@ -9,10 +9,11 @@ import {
 } from '../shared/skills.ts';
 import { COMBOS, PROPS } from '../shared/surfaces.ts';
 import type { GameState, LogLine, PlayerEntity, StatusInst } from '../shared/types.ts';
-import { alliesHtml, blessingsHtml, gearIconsHtml, relicsHtml, toggleInventory } from './inventory.ts';
+import { alliesHtml, blessingsHtml, gearIconsHtml, itemIcon, relicsHtml, toggleInventory } from './inventory.ts';
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
-import { aimAt, blockReason, currentEntity, inApproach, isAuto, isMyTurn, me, mySkillStats, select, store, validTarget } from './store.ts';
+import { onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
+import { aimAt, blockReason, currentEntity, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
 let lastLogId = -1;
@@ -62,6 +63,12 @@ export function useSkill(id: SkillId) {
   }
 }
 
+/** The G key and the Art button: pixel art or the classic emoji look. */
+export function toggleGraphics() {
+  toggleSprites();
+  toast(spritesOn() ? '🎨 Pixel art' : '🎨 Classic emoji look');
+}
+
 export function toggleAuto() {
   const info = store.state?.players.find((p) => p.id === store.playerId);
   if (info) send('setAuto', !info.auto);
@@ -83,6 +90,14 @@ function comboLegend(): string {
 export function initHud() {
   document.querySelector('.help ul')?.insertAdjacentHTML('beforeend', comboLegend());
   $('#auto-btn').addEventListener('click', toggleAuto);
+  const gfx = $('#gfx-btn');
+  gfx.addEventListener('click', toggleGraphics);
+  const showGfx = () => gfx.setAttribute('aria-pressed', String(spritesOn()));
+  showGfx();
+  onGraphicsMode(() => {
+    showGfx();
+    refresh(); // the HUD, map, shop and bag are HTML: draw them again with the other icons
+  });
   $('#bag-btn').addEventListener('click', () => toggleInventory());
   $('#ability-bar').addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-skill]');
@@ -268,13 +283,14 @@ function skillButton(m: PlayerEntity, id: SkillId, n: number): string {
   const reason = blockReason(id);
   const tip = `${skillTitle(own)}\n${describeSkill(id, own.tier, own.branch, m)}${reason ? `\n\n⛔ ${reason}` : ''}`;
   const cd = own.cd > 0 ? `<span class="cd-ov">⏱${own.cd}</span>` : '';
+  const icon = id === 'potion' || def.kind === 'item' ? itemIcon(id as ItemId | 'potion', st.icon) : st.icon; // potions and consumables have item art
   const meta = [
     `<span class="cost ${st.cost}">${COST_LABEL[st.cost]}</span>`,
     def.kind === 'spell' ? `<span class="slotcost">🔮${slotCost(st)}</span>` : '',
     id === 'potion' ? `<span class="uses">×${m.potions}</span>` : def.kind === 'item' ? `<span class="uses" title="In your bag">×${m.bag.filter((b) => b === id).length}</span>` : '',
   ].join('');
   return `<button type="button" class="ability kind-${def.kind}${reason ? ' off' : ''}${store.selected === id ? ' selected' : ''}" data-skill="${id}" title="${esc(tip)}">
-    <span class="ab-icon">${st.icon}${cd}</span>
+    <span class="ab-icon">${icon}${cd}</span>
     <span class="ab-main"><span class="aname">${esc(id === 'potion' ? 'Potion' : skillTitle(own))}</span><span class="ab-meta">${meta}</span></span>
     ${n <= 10 ? `<span class="key">${n % 10}</span>` : ''}
   </button>`;

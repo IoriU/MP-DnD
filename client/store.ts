@@ -18,6 +18,9 @@ function emit() {
   for (const fn of listeners) fn();
 }
 
+/** Tells every subscriber to draw again with the same state (the graphics mode changed, so the HTML needs redrawing). */
+export const refresh = emit;
+
 export function setState(s: GameState | null) {
   if (s?.phase !== store.state?.phase) store.selected = null; // a selected skill never carries over to a new screen
   store.state = s;

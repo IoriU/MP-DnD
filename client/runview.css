@@ -139,6 +139,8 @@
   user-select: none;
 }
 .rv-node.boss .rv-icon { font-size: 34px; }
+.rv-sprite { pointer-events: none; overflow: visible; }
+.rv-sprite .sprite { display: block; }
 .rv-node.boss .rv-disc { stroke-width: 3; fill: color-mix(in srgb, var(--c) 22%, #100d0a); }
 
 .rv-node.locked { opacity: 0.3; }
@@ -346,6 +348,7 @@
 }
 .sh-row.sold { opacity: 0.5; }
 .sh-ic { font-size: 24px; line-height: 1; width: 30px; text-align: center; }
+.sh-ic:has(.sprite) { width: 32px; }
 .sh-main { min-width: 0; display: grid; gap: 1px; overflow-wrap: anywhere; }
 .sh-tag { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-left: 4px; }
 .sh-desc { font-size: 12px; color: var(--muted); white-space: pre-line; }

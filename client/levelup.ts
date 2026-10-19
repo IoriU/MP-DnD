@@ -10,7 +10,9 @@ import {
   type SkillId, type SkillKind,
 } from '../shared/skills.ts';
 import type { GameState, OfferCard, PickRequest, PlayerEntity } from '../shared/types.ts';
+import { itemIcon } from './inventory.ts';
 import { send } from './net.ts';
+import { artKey } from './sprites.ts';
 import { me, store } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
@@ -59,7 +61,7 @@ function cardView(m: PlayerEntity, c: OfferCard): CardView {
     const g = gearDef(c.item);
     if (!g) return { icon: '❔', title: 'Unknown gear', badge: 'Gear', kind: 'gear', body: '' }; // renamed or removed since a save was made
     return {
-      icon: g.icon, title: g.name, badge: SLOT_NAME[g.slot], kind: 'gear', color: RARITY_COLOR[g.rarity],
+      icon: itemIcon(c.item, g.icon), title: g.name, badge: SLOT_NAME[g.slot], kind: 'gear', color: RARITY_COLOR[g.rarity],
       body: `<div class="lu-tier">${g.rarity} ${SLOT_NAME[g.slot].toLowerCase()}</div>${desc(describeStats(g.stats))}${g.note ? desc(g.note) : ''}<div class="lu-note">🎒 Goes into your bag</div>`,
     };
   }
@@ -186,7 +188,7 @@ export function renderLevelUp(s: GameState) {
     lockUntil = 0;
   }
   const isOpen = open ?? s.phase !== 'combat';
-  const key = JSON.stringify([isOpen, forgetCard, m.levelUps, m.elitePicks, m.offerKind, m.level, offerKey, bagRoom(m), m.skills.map((o) => [o.id, o.tier, o.branch])]);
+  const key = JSON.stringify([isOpen, forgetCard, m.levelUps, m.elitePicks, m.offerKind, m.level, offerKey, bagRoom(m), m.skills.map((o) => [o.id, o.tier, o.branch]), artKey()]);
   el.hidden = false;
   el.classList.toggle('collapsed', !isOpen);
   if (key === lastKey) return;

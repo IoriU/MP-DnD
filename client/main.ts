@@ -1,6 +1,6 @@
 import './style.css';
 import { hotbar } from '../shared/skills.ts';
-import { initHud, renderHud, toggleAuto, useSkill } from './hud.ts';
+import { initHud, renderHud, toggleAuto, toggleGraphics, useSkill } from './hud.ts';
 import { initInventory, isInventoryOpen, renderInventory, toggleInventory } from './inventory.ts';
 import { initLevelUp, renderLevelUp, toggleLevelUp } from './levelup.ts';
 import { initLobby, renderRoom } from './lobby.ts';
@@ -90,6 +90,9 @@ window.addEventListener('keydown', (ev) => {
       break;
     case 'p':
       toggleAuto();
+      break;
+    case 'g':
+      toggleGraphics();
       break;
     case 'l':
       toggleLevelUp();

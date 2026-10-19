@@ -85,7 +85,10 @@
             <div id="hud-title"></div>
             <div id="hud-sub" class="muted"></div>
           </div>
-          <button id="leave-game" class="btn ghost small" type="button" title="Leave game">Leave</button>
+          <div class="hud-btns">
+            <button id="gfx-btn" class="btn ghost small" type="button" aria-pressed="true" title="Switch between pixel art and the classic emoji look">🎨 <kbd>G</kbd></button>
+            <button id="leave-game" class="btn ghost small" type="button" title="Leave game">Leave</button>
+          </div>
         </header>
         <section id="relics" hidden></section>
         <section id="initiative" hidden></section>
@@ -126,7 +129,8 @@
             <li><b>Dice:</b> attacks roll d20 + bonus vs the target's AC. A natural 20 crits.</li>
             <li><b>At 0 HP</b> you fall and make death saves. Allies can heal you back up. Everyone gets back up after a won fight.</li>
             <li><b>Between rooms:</b> HP carries over. Drink potions, or heal friends by picking a heal and clicking their card.</li>
-            <li><b>Keys:</b> <kbd>Space</kbd> end turn · <kbd>Esc</kbd> cancel aiming · <kbd>I</kbd> bag · <kbd>L</kbd> level-up and spoils · <kbd>P</kbd> auto-play · <kbd>Enter</kbd> chat.</li>
+            <li><b>Keys:</b> <kbd>Space</kbd> end turn · <kbd>Esc</kbd> cancel aiming · <kbd>I</kbd> bag · <kbd>L</kbd> level-up and spoils · <kbd>P</kbd> auto-play · <kbd>G</kbd> pixel art or classic emoji look · <kbd>Enter</kbd> chat.</li>
+            <li><b>Art:</b> <a href="https://opengameart.org/content/dawnlike-16x16-universal-rogue-like-tileset-v181" target="_blank" rel="noopener">DawnLike</a> by DragonDePlatino, palette by DawnBringer (CC-BY 4.0).</li>
           </ul>
         </details>
       </aside>

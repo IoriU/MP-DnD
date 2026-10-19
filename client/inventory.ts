@@ -12,6 +12,7 @@ import { MONSTERS } from '../shared/rules.ts';
 import { SKILLS, describeSkill, itemInfo } from '../shared/skills.ts';
 import type { AllyState, GameState, ItemRequest, MonsterEntity, PlayerEntity } from '../shared/types.ts';
 import { send } from './net.ts';
+import { ITEM_SPRITES, artKey, iconHtml } from './sprites.ts';
 import { me, store } from './store.ts';
 import { $, esc } from './util.ts';
 
@@ -25,6 +26,9 @@ export const isInventoryOpen = () => open;
 // ---------------------------------------------------------------- shared snippets
 
 export const rarityColor = (r: Rarity) => RARITY_COLOR[r];
+
+/** An item's icon: its pixel-art sprite while the art is on, else its emoji. `px` is the drawn size (a multiple of 16 stays crisp). */
+export const itemIcon = (id: ItemId | 'potion', emoji: string, px = 32) => iconHtml(ITEM_SPRITES[id], emoji, px);
 
 /** A relic is rare-ish or a boss reward: map it onto the item rarity colors. */
 export const relicColor = (id: RelicId) => RARITY_COLOR[RELICS[id].rarity === 'boss' ? 'legendary' : RELICS[id].rarity === 'rare' ? 'rare' : 'common'];
@@ -88,7 +92,7 @@ export function gearIconsHtml(p: PlayerEntity): string {
     const id = p.gear?.[slot];
     if (!id || !isItemId(id)) return `<span class="gear-ic empty" title="${SLOT_NAME[slot]}: empty">·</span>`;
     const i = itemInfo(id);
-    return `<span class="gear-ic" title="${esc(`${SLOT_NAME[slot]}: ${itemTip(id)}`)}">${i.icon}</span>`;
+    return `<span class="gear-ic" title="${esc(`${SLOT_NAME[slot]}: ${itemTip(id)}`)}">${itemIcon(id, i.icon, 16)}</span>`;
   }).join('');
 }
 
@@ -160,7 +164,7 @@ export function renderInventory(s: GameState) {
 
   const mates = s.entities.filter((e): e is PlayerEntity => e.kind === 'player' && e.id !== m.id && !e.dead);
   const fight = s.phase === 'combat';
-  const key = JSON.stringify([s.phase, m.gear, m.bag, m.potions, mates.map((h) => [h.id, h.name, h.color]), giving, dropping, s.run?.gold]);
+  const key = JSON.stringify([s.phase, m.gear, m.bag, m.potions, mates.map((h) => [h.id, h.name, h.color]), giving, dropping, s.run?.gold, artKey()]);
   if (key === lastKey) return;
   lastKey = key;
   const card = view.querySelector('.inv-card');
@@ -212,7 +216,7 @@ function inventoryHtml(s: GameState, m: PlayerEntity, mates: PlayerEntity[], fig
 
   const potion = SKILLS.potion.base;
   const potionRow = `<li class="inv-row" title="${esc(`${potion.name}\n${describeSkill('potion', 1, undefined, m)}`)}">
-      <span class="inv-ic">${potion.icon}</span>
+      <span class="inv-ic">${itemIcon('potion', potion.icon)}</span>
       <span class="inv-main"><span><b>${esc(potion.name)}s</b> <span class="muted">×${m.potions}</span></span><span class="inv-desc">${esc(describeSkill('potion', 1, undefined, m))}</span></span>
       <span class="inv-acts"><button type="button" class="btn small" data-inv="give-open" data-item="potion"${fight ? why(true) : m.potions > 0 && mates.length ? '' : ` disabled title="${m.potions > 0 ? 'No one else to give it to' : 'No potions left'}"`}>Give…</button></span>
       ${giving === 'potion' ? giveHtml('potion', mates) : ''}
@@ -237,7 +241,7 @@ function inventoryHtml(s: GameState, m: PlayerEntity, mates: PlayerEntity[], fig
 function itemRow(id: ItemId, slotTag: string, count: string, extraTip: string, actions: string, sub = ''): string {
   const i = itemInfo(id);
   return `<li class="inv-row" title="${esc(itemTip(id, extraTip))}">
-    <span class="inv-ic">${i.icon}</span>
+    <span class="inv-ic">${itemIcon(id, i.icon)}</span>
     <span class="inv-main"><span><b style="color:${rarityColor(i.rarity)}">${esc(i.name)}</b><span class="muted">${count}</span> ${slotTag}</span><span class="inv-desc">${esc(i.desc)}</span></span>
     <span class="inv-acts">${actions}</span>
     ${sub}

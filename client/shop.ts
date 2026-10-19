@@ -5,8 +5,9 @@
 import { BAG_SIZE, RELICS, SLOT_NAME, bagRoom, isItemId, isRelicId, sellPrice, type ItemId, type RelicId } from '../shared/items.ts';
 import { SKILLS, TIER_LABEL, describeSkill, itemInfo, skillTitle, statsOf, trainOptions, type SkillId } from '../shared/skills.ts';
 import type { GameState, PlayerEntity, RunInfo, ShopOffer, ShopRequest, ShopView } from '../shared/types.ts';
-import { bagGroups, itemTip, rarityColor, relicColor, relicsHtml, toggleInventory } from './inventory.ts';
+import { bagGroups, itemIcon, itemTip, rarityColor, relicColor, relicsHtml, toggleInventory } from './inventory.ts';
 import { send } from './net.ts';
+import { artKey } from './sprites.ts';
 import { isAuto, me, store } from './store.ts';
 import { $, esc } from './util.ts';
 import { timerHtml, trainHtml } from './runview.ts';
@@ -88,6 +89,7 @@ export function renderShop(s: GameState): void {
     run.gold, run.relics, service, forgetPick,
     m && [m.bag, m.gear, m.potions, m.level, m.skills.map((o) => [o.id, o.tier, o.branch])],
     s.players.map((p) => [p.id, p.name, p.color, p.connected, p.auto, p.bot]),
+    artKey(),
   ]);
   if (key === shopKey) return;
   shopKey = key;
@@ -129,7 +131,7 @@ function offerView(o: ShopOffer, m: PlayerEntity | undefined): OfferView | null 
     const i = itemInfo(o.id);
     const worn = i.slot && m?.gear[i.slot];
     return {
-      icon: i.icon, name: i.name, color: rarityColor(i.rarity), desc: i.desc, tip: itemTip(o.id, `\nSells for ${sellPrice(o.id)} gold.`),
+      icon: itemIcon(o.id, i.icon), name: i.name, color: rarityColor(i.rarity), desc: i.desc, tip: itemTip(o.id, `\nSells for ${sellPrice(o.id)} gold.`),
       tag: `${i.slot ? SLOT_NAME[i.slot] : 'Consumable'} · ${i.rarity}`,
       note: worn && isItemId(worn) ? `You wear: ${itemInfo(worn).name}` : '',
     };
@@ -141,7 +143,7 @@ function offerView(o: ShopOffer, m: PlayerEntity | undefined): OfferView | null 
   if (o.kind === 'potion') {
     const p = SKILLS.potion.base;
     const desc = describeSkill('potion', 1, undefined, m);
-    return { icon: p.icon, name: p.name, color: '#c9d1d9', desc, tip: `${p.name}\n${desc}`, tag: 'Consumable', note: m ? `You have ${m.potions}` : '' };
+    return { icon: itemIcon('potion', p.icon), name: p.name, color: '#c9d1d9', desc, tip: `${p.name}\n${desc}`, tag: 'Consumable', note: m ? `You have ${m.potions}` : '' };
   }
   return null;
 }
@@ -178,7 +180,7 @@ function sellRows(m: PlayerEntity): string {
     .map(([id, n]) => {
       const i = itemInfo(id);
       return `<li class="sh-row sell" title="${esc(itemTip(id))}">
-        <span class="sh-ic">${i.icon}</span>
+        <span class="sh-ic">${itemIcon(id, i.icon)}</span>
         <span class="sh-main"><span><b style="color:${rarityColor(i.rarity)}">${esc(i.name)}</b>${n > 1 ? ` <span class="muted">×${n}</span>` : ''} <span class="sh-tag">${i.slot ? SLOT_NAME[i.slot] : 'Consumable'}</span></span></span>
         <span class="sh-buy"><button type="button" class="btn small" data-sh="sell" data-item="${id}" title="Sell one for ${sellPrice(id)} gold">Sell 💰 +${sellPrice(id)}</button></span>
       </li>`;
