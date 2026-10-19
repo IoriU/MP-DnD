@@ -4,18 +4,18 @@
 
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
-import { dist, hasLOS, reachable } from '../shared/grid.ts';
-import { diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
+import { LOW_COVER, dist, hasLOS, reachable } from '../shared/grid.ts';
+import { FULL_COVER, HALF_COVER, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
   CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planWalk, previewField, reactionSummary,
   resistance, tilePos, tilesAround, type CloudId, type FieldLike, type FieldPreview, type GroundId,
 } from '../shared/surfaces.ts';
-import { advantageText, attackAdvantage, dirTo, isBehind, isFlanking, netAdvantage, turnsToFace, type AdvantageInfo } from '../shared/tactics.ts';
+import { advantageText, attackAdvantage, coverFrom, coverWord, dirTo, isBehind, isFlanking, netAdvantage, turnsToFace, type AdvantageInfo } from '../shared/tactics.ts';
 import type { Entity, Fx, GameState, MonsterEntity, PlayerEntity, Pos } from '../shared/types.ts';
 import { send } from './net.ts';
 import {
-  ACT_TILES, CLASS_SPRITES, DECOR_SHARE, FLAME, MONSTER_SPRITES, PLATINO, PROP_SPRITES, SHEETS, SPRITE_PX, WALK_ROW,
+  ACT_TILES, CLASS_SPRITES, COVER_LOOKS, DECOR_SHARE, FLAME, MONSTER_SPRITES, PLATINO, PROP_SPRITES, SHEETS, SPRITE_PX, WALK_ROW,
   floorFrame, markMissing, onGraphicsMode, platinoFor, sheetFiles, sheetKeys, sheetsReady, spritesOn, wallFrame, type SheetId,
 } from './sprites.ts';
 import {
@@ -212,6 +212,48 @@ function hazardWords(f: FieldLike, tiles: Pos[], who: Entity): string {
 
 /** A walk only needs confirming again if it would go through different hazards. */
 const walkKey = (w: WalkPlan) => `${w.to.x},${w.to.y}|${w.hazards.map((p) => `${p.x},${p.y}`).join(';')}`;
+
+/** Does the walk get all the way there this turn (and not just as far as the movement lasts)? */
+function arrives(w: WalkPlan): boolean {
+  const end = w.path[w.path.length - 1];
+  return end.x === w.to.x && end.y === w.to.y;
+}
+
+/** Low cover is a crate or a heap of rubble, picked by tile so it looks the same every redraw. */
+const coverLook = (i: number) => COVER_LOOKS[hash32(i) % COVER_LOOKS.length];
+
+const SIDES = [
+  { dx: 0, dy: -1, name: 'north' }, { dx: 1, dy: 0, name: 'east' }, { dx: 0, dy: 1, name: 'south' }, { dx: -1, dy: 0, name: 'west' },
+] as const;
+interface CoverSide {
+  dx: number;
+  dy: number;
+  name: string;
+  cover: number; // HALF_COVER or FULL_COVER
+}
+
+/** The sides of a tile that have cover. Asks coverFrom about a shooter two tiles out on each side, so the rules stay in one place. */
+function coverSides(s: GameState, t: Pos): CoverSide[] {
+  return SIDES.map((d) => ({ ...d, cover: coverFrom(s, { x: t.x + d.dx * 2, y: t.y + d.dy * 2 }, t) })).filter((d) => d.cover > 0);
+}
+
+/** "🛡️ Cover: full to the east, half to the north and south (vs ranged attacks from those sides)"; no line without any cover. */
+function coverLines(s: GameState, t: Pos): string[] {
+  const sides = coverSides(s, t);
+  const part = (full: boolean) => {
+    const names = sides.filter((d) => (d.cover >= FULL_COVER) === full).map((d) => d.name);
+    const where = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+    return names.length ? `${full ? 'full' : 'half'} to the ${where}` : '';
+  };
+  const words = [part(true), part(false)].filter(Boolean).join(', ');
+  return words ? [`<span class="tip-cover"><b>🛡️ Cover: ${words}</b> (vs ranged attacks from ${sides.length > 1 ? 'those sides' : 'that side'})</span>`] : [];
+}
+
+/** What cover a monster has against my attack: "🛡️ Behind a wall: +5 AC", or named when several are in a blast: "🛡️ Goblin is in cover: +2 on its DEX save". */
+function coverNote(n: { foe: MonsterEntity; cover: number; vs: string }, named: boolean): string {
+  const word = coverWord(n.cover);
+  return `<span class="tip-adv down">🛡️ ${named ? `${esc(n.foe.name)} is ${word}` : word[0].toUpperCase() + word.slice(1)}: +${n.cover} ${n.vs}</span>`;
+}
 
 /** The tiles, ignoring props: blowing up a barrel changes `tiles` but it's still the same room. */
 function roomKey(s: GameState): string {
@@ -494,6 +536,10 @@ class DungeonScene extends Phaser.Scene {
         }
         g.fillStyle(n < 0.5 ? pal.floorA : pal.floorB).fillRect(px, py, T, T);
         g.lineStyle(1, 0x000000, 0.35).strokeRect(px + 0.5, py + 0.5, T - 1, T - 1);
+        if (s.tiles[i] === LOW_COVER) {
+          this.drawCover(g, x, y, i);
+          continue;
+        }
         if (prop) {
           // Props stand on '#' tiles (they block like walls) but they're things on the floor, not wall.
           g.fillStyle(0x000000, 0.4).fillEllipse(px + T / 2, py + T * 0.8, 22, 7);
@@ -507,7 +553,19 @@ class DungeonScene extends Phaser.Scene {
     }
   }
 
-  /** The room from sprites: auto-tiled walls, floor tiles, a few decorations, and props standing on the floor. */
+  /** Low cover: a crate or a heap of rubble on the floor, with a shadow like a prop's. Blocks walking, not sight (so it isn't wall). */
+  private drawCover(g: Phaser.GameObjects.Graphics, x: number, y: number, i: number) {
+    const look = coverLook(i);
+    const cx = x * T + T / 2;
+    const cy = y * T + T / 2;
+    g.fillStyle(0x000000, 0.4).fillEllipse(cx, y * T + T * 0.8, 24, 7);
+    const img = this.art(look.sprite.sheet)
+      ? this.add.image(cx, cy, sheetKeys(look.sprite.sheet)[0], look.sprite.frame).setScale(ART)
+      : this.add.text(cx, cy - 1, look.emoji, { fontFamily: EMOJI_FONT, fontSize: '20px', resolution: 2 }).setOrigin(0.5);
+    this.propTexts.push(img.setDepth(3));
+  }
+
+  /** The room from sprites: auto-tiled walls, floor tiles, a few decorations, low cover and props standing on the floor. */
   private drawArtMap(s: GameState) {
     const act = s.run?.act ?? 1;
     const props = s.props ?? {};
@@ -530,6 +588,10 @@ class DungeonScene extends Phaser.Scene {
           continue;
         }
         put('floor', floorFrame(act), x, y, 0);
+        if (s.tiles[i] === LOW_COVER) {
+          this.drawCover(g, x, y, i);
+          continue;
+        }
         const prop = props[i];
         if (prop) {
           g.fillStyle(0x000000, 0.4).fillEllipse(x * T + T / 2, y * T + T * 0.8, 22, 7);
@@ -967,7 +1029,7 @@ class DungeonScene extends Phaser.Scene {
     const out = new Set<number>();
     for (let y = Math.max(0, m.y - range); y <= Math.min(s.height - 1, m.y + range); y++) {
       for (let x = Math.max(0, m.x - range); x <= Math.min(s.width - 1, m.x + range); x++) {
-        if (s.tiles[y * s.width + x] === '#') continue;
+        if (s.tiles[y * s.width + x] === '#') continue; // low cover stays in: it blocks walking, not sight, and a blast can land on it
         if (range > 1 && !hasLOS(s, m, { x, y })) continue;
         out.add(y * s.width + x);
       }
@@ -1202,6 +1264,7 @@ class DungeonScene extends Phaser.Scene {
     }
     const under = this.standingIn(s, e);
     if (under) lines.push(under);
+    if (s.phase === 'combat') lines.push(...coverLines(s, e));
     const m = me();
     if (isFoe(e) && m && s.phase === 'combat') {
       const sel = store.selected;
@@ -1214,6 +1277,9 @@ class DungeonScene extends Phaser.Scene {
       // Already covered by the "from behind" reason when it's in the preview; otherwise (not your turn, or a skill that doesn't roll to hit) say it here.
       if (isBehind(e, m) && !adv?.adv.includes('from behind')) lines.push('<span class="tip-adv up">🔙 facing away from you</span>');
       const plan = this.plan?.kind === 'aim' ? this.plan : null;
+      // Blasts name who is in cover in aimLines; a single target's cover goes with its advantage.
+      const note = plan && plan.st.target !== 'area' ? this.coverNotes(s, m, plan).find((n) => n.foe.id === e.id) : undefined;
+      if (note) lines.push(coverNote(note, false));
       const use = inApproach(s)
         ? 'Choose Sneak or Charge first'
         : sel
@@ -1221,7 +1287,7 @@ class DungeonScene extends Phaser.Scene {
           : atk ? `Click to attack (${mySkillStats(m, atk)?.name})` : attackProblem(m);
       if (use) lines.push(`<span class="muted">${esc(use)}</span>`);
     }
-    if (m && this.plan?.kind === 'aim') lines.push(...this.aimLines(m, this.plan, false));
+    if (m && this.plan?.kind === 'aim') lines.push(...this.aimLines(s, m, this.plan, false));
     return lines;
   }
 
@@ -1259,6 +1325,7 @@ class DungeonScene extends Phaser.Scene {
     const g = s.ground[i];
     const c = s.clouds[i];
     if (prop) lines.push(`<b>${PROPS[prop].icon} ${PROPS[prop].name}</b>`, desc(PROPS[prop].desc));
+    if (s.tiles[i] === LOW_COVER) lines.push(`<b>${coverLook(i).emoji} Low cover</b>`, desc(`Can't walk through it, but you can shoot over it. Stand next to it: +${HALF_COVER} AC against ranged attacks from its side.`));
     const trap = s.traps?.[i];
     if (trap) {
       const by = s.entities.find((e) => e.id === trap.by)?.name;
@@ -1274,6 +1341,7 @@ class DungeonScene extends Phaser.Scene {
     const plan = this.plan;
     if (!m || !plan) return lines;
     if (plan.kind === 'walk') {
+      if (arrives(plan)) lines.push(...coverLines(s, h));
       if (plan.hazards.length) {
         lines.push(`<span class="tip-adv down">⚠ Walks through ${esc(hazardWords(s, plan.hazards, m))}</span>`);
         lines.push(`<span class="muted">${this.pendingWalk === walkKey(plan) ? 'Click again to go' : 'Click twice to walk through it'}</span>`);
@@ -1281,7 +1349,7 @@ class DungeonScene extends Phaser.Scene {
       return lines;
     }
     if (prop && typeof plan.res !== 'string') lines.push(`<span class="muted">Click to ${store.selected ? 'use' : 'hit it with'} ${esc(plan.st.name)}</span>`);
-    lines.push(...this.aimLines(m, plan, !prop));
+    lines.push(...this.aimLines(s, m, plan, !prop));
     return lines;
   }
 
@@ -1289,12 +1357,13 @@ class DungeonScene extends Phaser.Scene {
    * The aiming preview in words: who an area attack hits (heroes in red), what the battlefield will do
    * ("🔥 Ignited! (6 tiles)"), and who gets caught in it. `header` names the skill when nothing else on the tooltip does.
    */
-  private aimLines(m: PlayerEntity, p: AimPlan, header: boolean): string[] {
+  private aimLines(s: GameState, m: PlayerEntity, p: AimPlan, header: boolean): string[] {
     const res = p.res;
     if (typeof res === 'string') return store.selected ? [`<span class="muted">${esc(res)}</span>`] : [];
     const lines: string[] = [];
     if (header) lines.push(`<b>${p.st.icon} ${esc(p.st.name)}</b>`);
     if (hitsArea(p.st)) lines.push(res.foes.length ? `Hits ${names(res.foes, m)}` : '<span class="muted">No enemies in the area</span>');
+    if (p.st.target === 'area') lines.push(...this.coverNotes(s, m, p).map((n) => coverNote(n, true)));
     if (res.caught?.length) lines.push(`<span class="tip-adv down">⚠ Friendly fire: ${res.caught.map((e) => (e.id === m.id ? 'you' : esc(e.name))).join(', ')}</span>`);
     const f = p.field;
     if (f) {
@@ -1305,6 +1374,20 @@ class DungeonScene extends Phaser.Scene {
       if (f.exposed.length) lines.push(`⚠ Caught in it: ${names(f.exposed, m)}`);
     }
     return lines;
+  }
+
+  /**
+   * The cover the monsters this aim would hit have against it. Only attack rolls (+AC) and DEX saves (+to the save) get any.
+   * An attack comes from me; a blast's save from where it lands (the hovered tile).
+   */
+  private coverNotes(s: GameState, m: PlayerEntity, p: AimPlan): { foe: MonsterEntity; cover: number; vs: string }[] {
+    const res = p.res;
+    const dex = p.st.roll === 'save' && (p.st.save ?? 'dex') === 'dex';
+    if (typeof res === 'string' || (p.st.roll !== 'attack' && !dex)) return [];
+    const from = dex && p.st.target === 'area' ? res.center : m;
+    return res.foes
+      .map((foe) => ({ foe, cover: coverFrom(s, from, foe), vs: dex ? 'on its DEX save' : 'AC' }))
+      .filter((n) => n.cover > 0);
   }
 
   /**
@@ -1331,10 +1414,14 @@ class DungeonScene extends Phaser.Scene {
     const h = this.hover;
     if (!s?.tiles || !h || !this.inRoom(s, h)) return;
     const prop = s.props[h.y * s.width + h.x];
-    if (s.tiles[h.y * s.width + h.x] === '#' && !prop) return;
+    const tile = s.tiles[h.y * s.width + h.x];
+    if ((tile === '#' && !prop) || (tile === LOW_COVER && !this.plan)) return; // walls and crates get no cursor, unless a blast can land there
     const e = this.entityAt(s, h);
     const plan = this.plan;
-    if (plan?.kind === 'walk') this.drawWalk(g, s, plan);
+    if (plan?.kind === 'walk') {
+      this.drawWalk(g, s, plan);
+      if (arrives(plan)) this.drawShields(g, plan.to, coverSides(s, plan.to));
+    }
     if (plan?.kind === 'aim') {
       if (typeof plan.res === 'string' && plan.st.target === 'area') {
         g.lineStyle(2, 0x8c8478, 0.8).strokeRect(h.x * T + 1, h.y * T + 1, T - 2, T - 2); // out of range or no line of sight
@@ -1361,7 +1448,34 @@ class DungeonScene extends Phaser.Scene {
     }
     // Not enough movement to get all the way: mark where the walk stops.
     const end = plan.path[plan.path.length - 1];
-    if (end.x !== plan.to.x || end.y !== plan.to.y) g.fillStyle(0xf4ead5, 0.8).fillCircle(end.x * T + T / 2, end.y * T + T / 2, 4);
+    if (!arrives(plan)) g.fillStyle(0xf4ead5, 0.8).fillCircle(end.x * T + T / 2, end.y * T + T / 2, 4);
+  }
+
+  /**
+   * XCOM-style shields on the sides of a tile that have cover, just inside its edge: a whole shield for a wall, one with
+   * only its lower half filled for low cover or a prop. Shields only: high ground, if it comes, needs its own look.
+   */
+  private drawShields(g: Phaser.GameObjects.Graphics, t: Pos, sides: CoverSide[]) {
+    const SHIELD = [[-6.5, -8], [6.5, -8], [6.5, 0], [4, 5.5], [0, 9], [-4, 5.5], [-6.5, 0]] as const;
+    const LOWER = [[-6.5, 0], [6.5, 0], [4, 5.5], [0, 9], [-4, 5.5]] as const; // the half that is filled on a half shield
+    for (const d of sides) {
+      // In a corner the shields would pile up: slide each along its edge, away from the covered side next to it.
+      const next = sides.filter((o) => o.dx * d.dx + o.dy * d.dy === 0);
+      const cx = t.x * T + T / 2 + d.dx * 8 - next.reduce((n, o) => n + o.dx, 0) * 3.5;
+      const cy = t.y * T + T / 2 + d.dy * 7 - next.reduce((n, o) => n + o.dy, 0) * 3.5;
+      const trace = (pts: readonly (readonly [number, number])[]) => {
+        g.beginPath();
+        pts.forEach(([x, y], k) => (k ? g.lineTo(cx + x, cy + y) : g.moveTo(cx + x, cy + y)));
+        g.closePath();
+      };
+      trace(SHIELD);
+      g.fillStyle(0x0b1a26, 0.85).fillPath();
+      trace(d.cover >= FULL_COVER ? SHIELD : LOWER);
+      g.fillStyle(0x5fb8ff, 1).fillPath();
+      trace(SHIELD);
+      g.lineStyle(3.5, 0x000000, 0.6).strokePath();
+      g.lineStyle(1.5, 0xe8f4ff, 1).strokePath();
+    }
   }
 
   /** An aimed skill: the area, the monsters it hits, allies caught in it, and the tiles the battlefield reaction reaches. */

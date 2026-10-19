@@ -2,9 +2,39 @@
 // The server rolls with these, the client previews them on hover, and the hero AI plans around them.
 
 import { sameSide } from './elites.ts';
-import { dist } from './grid.ts';
+import { LOW_COVER, dist, type MapLike } from './grid.ts';
+import { FULL_COVER, HALF_COVER } from './rules.ts';
+import type { PropMap } from './surfaces.ts';
 import { hasStatus } from './skills.ts';
 import type { Entity, Pos } from './types.ts';
+
+/**
+ * Cover at `t` against an attack (or a blast) from `from`: FULL_COVER behind a wall, HALF_COVER behind low cover or a
+ * prop, on the side of `t` that faces `from`. None in melee, in the open, or when `from` is far enough round the side
+ * (more than about 60 degrees off: it flanks the cover).
+ */
+export function coverFrom(m: MapLike & { props?: PropMap }, from: Pos, t: Pos): number {
+  if (dist(from, t) <= 1) return 0;
+  const dx = from.x - t.x;
+  const dy = from.y - t.y;
+  let best = 0;
+  for (const [sx, sy] of [[Math.sign(dx), 0], [0, Math.sign(dy)]]) {
+    if (!sx && !sy) continue;
+    const along = Math.abs(sx ? dx : dy);
+    const across = Math.abs(sx ? dy : dx);
+    if (along * 2 < across) continue; // too far round the side: flanked
+    const x = t.x + sx;
+    const y = t.y + sy;
+    if (x < 0 || y < 0 || x >= m.width || y >= m.height) continue;
+    const i = y * m.width + x;
+    const tile = m.tiles[i];
+    best = Math.max(best, tile === LOW_COVER || (tile === '#' && m.props?.[i]) ? HALF_COVER : tile === '#' ? FULL_COVER : 0);
+  }
+  return best;
+}
+
+/** "behind a wall" / "in cover" for the log. */
+export const coverWord = (c: number) => (c >= FULL_COVER ? 'behind a wall' : c > 0 ? 'in cover' : '');
 
 /** The 8-way step from `from` toward `to` ({0,0} on the same tile). */
 export const dirTo = (from: Pos, to: Pos): Pos => ({ x: Math.sign(to.x - from.x), y: Math.sign(to.y - from.y) });

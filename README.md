@@ -48,6 +48,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - Click a tile to walk, or use WASD / arrow keys (Q E Z C for diagonals). Press **Space** to end your turn.
   - **Attack:** click a monster; your basic weapon attack in range is picked for you.
   - **Skills:** keys **1–9** (or the buttons), then click a highlighted target (or a spot, for area spells). Esc or right-click cancels.
+  - **Big rooms, different starts:** fight rooms are 24×16 tiles (elites 26×17, bosses 28×18), with walls, crates and rubble to fight around. Fights start in different ways, and the log says so when it isn't the classic **line** (you on the left, the monsters on the right): **scattered** groups, a **pincer** (the monsters close in from both ends), **surrounded** (every ambush starts like this) or **their camp** (they wait in the middle and you come in from three sides). Bosses always start as a line.
 - **Skills:** every class has three kinds, each with its own class flavor (the Fighter's spells are Maneuvers paid with Grit, for example):
   - ⏱ **Cantrips** have a cooldown of a few turns and reset every fight. Use them freely.
   - 🔮 **Spells** cost slots, which only come back with a Long Rest (or an act boss kill). Much stronger: save them for elites, bosses and emergencies.
@@ -57,6 +58,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - Everyone faces the way they last moved or attacked; an arrow shows which way.
   - Attacks from behind and flanking attacks (a friend directly across the target) have **advantage**. Hover a monster to see it before you attack.
   - A monster turns to face whoever walks up to it or hits it in melee, so backstabs need teamwork: hit it from behind while it's busy with someone else, shoot it in the back, or Hide first.
+  - **🛡️ Cover:** crates and rubble (low cover) block movement but not arrows. Standing next to one, or next to a wall, on the side a shooter is coming from makes you harder to hit: +2 AC behind low cover, +5 behind a wall, and the same on DEX saves against blasts from that side. Barrels and braziers count as low cover too. Melee and flanking ignore it. Hover a tile you can walk to and shields mark the sides that have cover (a whole shield for a wall, a half one for low cover); hover a monster to see the cover it has against you.
   - **Shove** (everyone, 1 AP) knocks an enemy back.
 - **The battlefield** (elements & surfaces, like Divinity: Original Sin):
   - The ground can hold 💧 water, 🧊 ice, 🔥 fire, 🛢️ oil, ☠️ poison or 🌋 lava, and the air ♨️ steam, 🌫️ smoke or 🤢 poison gas. Steam and smoke block line of sight. Hover a tile to see what's on it.
@@ -166,7 +168,7 @@ To test multiplayer alone, open several browser tabs. Each new tab is a new play
 shared/rules.ts    classes, monsters, acts, dice, XP and balance numbers  ← start here to tweak the game
 shared/skills.ts   every skill and passive (tiers I/II/III-A/III-B), statuses, targeting, descriptions
 shared/subclasses.ts  the two subclasses of each class (picked at level 3) and their signature skills
-shared/tactics.ts  facing, back attacks, flanking: every reason a roll has advantage
+shared/tactics.ts  facing, back attacks, flanking (every reason a roll has advantage) and cover
 shared/surfaces.ts the battlefield: ground, clouds, props, the combo engine, hazards, previews
 shared/items.ts    equipment, consumables, relics, blessings and prices
 shared/elites.ts   elite traits, NPC allies, and who is on whose side

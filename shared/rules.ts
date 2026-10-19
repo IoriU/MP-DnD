@@ -146,6 +146,12 @@ export const POTION_ODDS_STEP = 10;
 // revive but your own death saves leaves you Groggy (you lose your next turn). A hero who dies (3 failed death saves) is
 // back after the fight with an Injury: -20% max HP for each death (up to 3), until the next rest site or act.
 export const HELP_UP_HP = 0.25;
+
+// Cover (decided 2026-10-19, XCOM style: harder to hit). Low cover (crates, rubble, barrels) or a wall on the side of
+// you that faces a ranged attacker adds to your AC, and to DEX saves against a blast from that side. Melee ignores it,
+// and so does an attacker far enough round the side (flanking you). See coverFrom in shared/tactics.ts.
+export const HALF_COVER = 2;
+export const FULL_COVER = 5;
 export const INJURY_PCT = 0.2;
 export const MAX_INJURIES = 3;
 

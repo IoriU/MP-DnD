@@ -489,6 +489,8 @@ button.tag.lvl:hover { background: var(--accent-2); }
 .tip-trait b { color: var(--accent-2); }
 .tip-role { display: inline-block; max-width: 260px; white-space: normal; color: var(--muted); }
 .tip-role b { color: var(--text); }
+.tip-cover { display: inline-block; max-width: 260px; white-space: normal; color: var(--muted); }
+.tip-cover b { color: #8fd0ff; }
 
 /* A DawnLike sprite tile (see sprites.ts): its sheet is the background, scaled up without smoothing. */
 .sprite {

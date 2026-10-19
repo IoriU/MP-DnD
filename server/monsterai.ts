@@ -14,12 +14,12 @@ import { ALLIES, ENRAGED_DMG, auraOf, hasTrait, isAllyNpc, isFoe, sameSide } fro
 import { DIRS, canStep, dist, hasLOS } from '../shared/grid.ts';
 import { gearBonus } from '../shared/items.ts';
 import {
-  CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
+  CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
   type Difficulty, type OrderId, type Role,
 } from '../shared/rules.ts';
 import { ROOTED, SKILLS, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, statsOf, type Element, type StatusApply } from '../shared/skills.ts';
 import { EXPLOSION, damageFactor, fieldElement, hazardAt, previewField, type FieldLike } from '../shared/surfaces.ts';
-import { attackAdvantage, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
+import { attackAdvantage, coverFrom, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import type { Entity, MonsterEntity, Pos } from '../shared/types.ts';
 
 export interface MonsterView {
@@ -68,6 +68,7 @@ const OTHER_PACK = 0.5; // a friend hunting someone else might still take a swin
 const ORDER_MIN = 1; // an order has to be worth at least this to be shouted
 const CLUSTER = 0.5; // per friend next to it when a hero can blast an area (Fireball): don't bunch up
 const CLUSTER_NEAR = 0.15; // per friend two tiles away (one blast can still catch both)
+const COVER: Record<Role, number> = { brute: 0.2, skirmisher: 0.4, archer: 1, support: 1, coward: 0.8 }; // full cover from one hero who shoots
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
@@ -102,6 +103,15 @@ const movesOf = (m: MonsterEntity) =>
 /** Could it get to `t` and hit it on its next turn (walls aside)? */
 const reaches = (m: MonsterEntity, t: Pos) => dist(m, t) <= movesOf(m) + rangeOf(m);
 /** Roughly what an enemy deals in a round: a hero by level, an NPC ally by its stat block. */
+/** A hero who fights from range (a bow, a ranged spell): monsters like cover from them. */
+const shootsFar = (e: Entity) =>
+  e.kind === 'player' &&
+  e.skills.some((o) => {
+    if (SKILLS[o.id].kind === 'passive') return false;
+    const s = statsOf(o);
+    return (s.target === 'enemy' || s.target === 'area') && s.range >= 4;
+  });
+
 /** A hero who can blast an area (Fireball, Shatter, a bomb's worth of spell): monsters spread out against them. */
 const blasts = (e: Entity) =>
   e.kind === 'player' &&
@@ -498,6 +508,7 @@ function candidates(v: MonsterView): Candidates {
 
     const sentinels = enemies.filter((e) => e.kind === 'player' && passiveOf(e, 'sentinel') && dist(e, me) <= 1 && !hasStatus(e, 'surprised'));
     const spread = smart && enemies.some(blasts);
+    const shooters = smart ? enemies.filter(shootsFar) : [];
     const support = def.support;
     const list: Candidate[] = [];
 
@@ -512,6 +523,8 @@ function candidates(v: MonsterView): Candidates {
         base -= DANGER[role] * adjacent.length + (role === 'archer' || role === 'support' ? 0.4 * enemies.filter((e) => dist(e, at) === 2).length : 0);
         base -= SENTINEL_RISK * sentinels.filter((s) => dist(s, at) > 1).length;
         if (role === 'brute' && adjacent.length) base += FRONT;
+        // Behind a wall or a crate from the heroes who shoot.
+        for (const h of shooters) if (dist(h, at) > 1) base += (COVER[role] * coverFrom(map, h, at)) / FULL_COVER;
         // Bunched up, one Fireball takes the whole pack.
         if (spread) base -= CLUSTER * friends.filter((f) => dist(f, at) <= 1).length + CLUSTER_NEAR * friends.filter((f) => dist(f, at) === 2).length;
         // A fire imp in the flames: the heroes have to step in to reach it.
@@ -540,7 +553,7 @@ function candidates(v: MonsterView): Candidates {
         const others = entities.map((e) => (e.id === me.id ? meAt : e.id === t.id ? tNow : e));
         const why = attackAdvantage(meAt, tNow, others);
         // On instinct it doesn't look for flanks or backs: it just takes the shortest way in.
-        const p = hitChance(atkOf(me), acOf(t), smart ? netAdvantage(why) : 0);
+        const p = hitChance(atkOf(me), acOf(t) + coverFrom(map, at, t), smart ? netAdvantage(why) : 0);
         const ev = attacksOf(me) * p * dmgOf(me) * damageFactor(t, elementOf(me));
         const bite = Math.min(ev, ehp(t)) + KILL_BONUS * clamp(ev / ehp(t), 0, 1) ** 2;
         let score = base + weight(t) * bite + groundValue(tileOf(t));

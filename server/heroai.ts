@@ -9,8 +9,8 @@
 // friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
 import { DIRS, canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
-import { AP_GAIN, AP_MAX, ATTACK_AP, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
-import { attackAdvantage, canReact, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
+import { AP_GAIN, AP_MAX, ATTACK_AP, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
+import { attackAdvantage, canReact, coverFrom, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
   CLEANSED,
   SKILLS,
@@ -96,6 +96,7 @@ const MOVE_MARGIN = 0.3; // don't shuffle around for tiny gains
 const STEP_COST = 0.05; // per tile walked
 const POTION_PRICE = 6; // potions are scarce: drink when it really helps
 const REVIVE = 25; // getting a downed friend back up beats almost anything
+const COVER_LIKE = 0.6; // full cover from a shooter that could hit you next round (half cover: less)
 const FLANK_GIFT = 0.3; // standing across a monster from a friend gives them advantage on it too
 const DOWN_PRICE = 25; // a friend (or you) going down: about what getting them back up is worth
 const SETUP_ODDS_CAP = 0.7; // oil or water waits for a spark: someone has to bring it before it's gone (or the monsters walk off)
@@ -420,8 +421,11 @@ const factorOf = (e: Entity, el: Element | undefined) => (el && el !== 'physical
  * Expected damage, kill chance and landing chance of a damaging skill against one monster. Resistances scale the damage:
  * nothing against an immune monster, negative (it heals) against one that drinks the element in.
  */
-/** `scale`: the share of the damage it takes (half on the outer ring of a Fireball). */
-function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: boolean, scale = 1): Strike {
+/**
+ * `scale`: the share of the damage it takes (half on the outer ring of a Fireball). `origin`: where a DEX save's blast
+ * comes from, for cover (attack rolls are from where you stand).
+ */
+function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: boolean, scale = 1, origin: Pos = sim.me): Strike {
   const me = sim.me;
   if (!s.roll) return { dmg: 0, kill: 0, land: 1 }; // no roll: its effects always apply
   if (s.roll === 'contest') return { dmg: 0, kill: 0, land: shoveOdds(me, s, m).win };
@@ -435,7 +439,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   let honed = 0; // expected extra damage on the first hit
   if (s.roll === 'attack') {
     const bonus = attackBonus(me, s) + (hasStatus(me, 'blessed') ? 2 : 0) - (hasStatus(me, 'dazed') ? 2 : 0);
-    const base = d20(bonus, acOf(m));
+    const base = d20(bonus, acOf(m) + coverFrom(sim.ctx.map, sim.me, m));
     // Focus and hiding go into the first attack roll of the skill; flanking, the back arc and marks stay.
     const spent = without(without(me, 'focused'), 'hidden');
     const first = netAdvantage(attackAdvantage(main ? me : spent, m, sim.ctx.entities, !!s.adv));
@@ -455,7 +459,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   } else {
     let p = 1;
     if (s.roll === 'save') {
-      const mod = MONSTERS[m.type]?.[s.save ?? 'dex'] ?? 0;
+      const mod = (MONSTERS[m.type]?.[s.save ?? 'dex'] ?? 0) + ((s.save ?? 'dex') === 'dex' ? coverFrom(sim.ctx.map, origin, m) : 0);
       p = clamp((saveDc(me.classId, me.level) - 1 - mod) / 20, 0, 1); // fails on d20 + mod < DC
     }
     for (let i = 0; i < hits; i++) {
@@ -680,7 +684,7 @@ function foeValue(
   sim: Sim, id: SkillId, s: SkillStats, res: AimResult, m: MonsterEntity, main: boolean, from: Pos, own: Preview | null, stunned: Set<string>,
 ): number {
   if (s.roll === 'contest') return shoveValue(sim, s, m);
-  const hit = strike(sim, id, s, m, main, atEdge(s, res.center, m) ? 0.5 : 1);
+  const hit = strike(sim, id, s, m, main, atEdge(s, res.center, m) ? 0.5 : 1, s.target === 'area' ? res.center : sim.me);
   // Damage up to its HP; healing (a Magma Imp drinking fire) up to what it's missing.
   // Damage into Block or a ward is worth a little (it's gone for the next hit), the rest counts up to its HP.
   const soak = soakOf(m);
@@ -749,6 +753,11 @@ function danger(sim: Sim): number {
   let d = 0;
   for (const m of sim.monsters) {
     const r = dist(sim.me, m);
+    // Cover from the archers that can shoot this tile: they need more to hit you.
+    if (!isMelee(m) && r > 1 && r <= reachOf(m)) {
+      const cover = coverFrom(sim.ctx.map, m, sim.me);
+      if (cover) d -= COVER_LIKE * (cover / FULL_COVER) * clamp(threat(m) / 3, 0.5, 3) * Math.max(floor, aimedAt(sim, m, sim.me));
+    }
     if (!isMelee(m) || r > 2) continue;
     let w = clamp(threat(m) / 3, 0.5, 3) * Math.max(floor, aimedAt(sim, m, sim.me));
     if (r <= 1 && isFlanking(m, sim.me, sim.ctx.entities)) w *= 1.4;

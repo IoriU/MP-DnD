@@ -288,7 +288,7 @@ export interface GameState {
   roomKind: NodeType | null; // combat, elite or boss while a fight is on
   width: number; // current room; 0 when not in a room
   height: number;
-  tiles: string; // '#' wall, '.' floor; index = y * width + x
+  tiles: string; // '#' wall, 'o' low cover (blocks movement, not sight), '.' floor; index = y * width + x
   ground: GroundMap; // the battlefield (shared/surfaces.ts): water, ice, fire, oil, poison, lava under the creatures
   clouds: CloudMap; // steam, smoke and poison gas above them
   props: PropMap; // oil barrels and braziers, standing on '#' tiles

@@ -7,9 +7,9 @@ import { generateRoom, type RoomLayout } from '../server/room.ts';
 
 const ROOMS = 200;
 const SIZES: [NodeType, number, number][] = [
-  ['combat', 18, 12],
-  ['elite', 20, 13],
-  ['boss', 22, 14],
+  ['combat', 24, 16],
+  ['elite', 26, 17],
+  ['boss', 28, 18],
 ];
 
 const floor = (room: RoomLayout, x: number, y: number) => room.tiles[y * room.width + x] === '.';
@@ -69,7 +69,7 @@ test('rooms have obstacles and vary', () => {
   for (let seed = 0; seed < 50; seed++) {
     const room = generateRoom('combat', makeRng(seed));
     layouts.add(room.tiles);
-    walls += [...room.tiles].filter((t) => t === '#').length - 2 * (18 + 12 - 2);
+    walls += [...room.tiles].filter((t) => t === '#').length - 2 * (room.width + room.height - 2);
   }
   assert.ok(layouts.size >= 45, `only ${layouts.size} distinct layouts`);
   assert.ok(walls > 0);
@@ -82,8 +82,8 @@ test('same rng seed gives the same room', () => {
 test('other node kinds and the default rng give a combat-sized room', () => {
   for (const kind of ['event', 'rest', 'treasure', 'shop'] as const) {
     const room = generateRoom(kind);
-    assert.equal(room.width, 18);
-    assert.equal(room.height, 12);
-    assert.equal(room.tiles.length, 18 * 12);
+    assert.equal(room.width, 24);
+    assert.equal(room.height, 16);
+    assert.equal(room.tiles.length, 24 * 16);
   }
 });

@@ -76,6 +76,8 @@ const HERO_RES: [string, RegExp][] = [
   ['frightened', / flees in terror/], ['blood paid', / HP in blood\./], ['thorns', / spiked shield: /], ['smite heals', /The smite's light flows/],
   ['help ups', /^🤝 .+ hauls /], ['heal revives', / is back on their feet, but groggy/], ['groggy turns lost', / is still groggy /],
   ['injuries', /^🩹 .+ is back, but injured/], ['blast edges', /edge of the blast/],
+  ['rolls vs cover', /\((behind a wall|in cover)\)|\+\d (in cover|behind a wall) vs DC/], ['starts scattered', /^🌫️ The party comes in by two ways/],
+  ['starts pincer', /^⚠️ A pincer!/], ['starts surrounded', /^⚠️ Surrounded!/], ['starts at a camp', /^🔥 You come upon their camp/],
 ];
 const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")

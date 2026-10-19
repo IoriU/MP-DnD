@@ -1502,7 +1502,7 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
       if (!ctx.inCombat) return 'Only in combat';
       if (!inRange(center)) return dist(caster, center) > s.range ? `Out of range (${s.name} reaches ${s.range} tiles).` : 'No line of sight.';
       if (s.trap && ctx.entities.some((e) => e.x === center.x && e.y === center.y && !(e.kind === 'player' && e.dead))) return 'Pick an empty spot.';
-      if (s.trap && ctx.map.tiles[center.y * ctx.map.width + center.x] === '#') return 'Pick an open spot.';
+      if (s.trap && ctx.map.tiles[center.y * ctx.map.width + center.x] !== '.') return 'Pick an open spot.';
       // Sculpt Spells: an Evoker's blasts go around friends (and NPC allies, with Careful Weave).
       const sculpt = caster.kind === 'player' && caster.skills ? passiveOf(caster, 'sculpt_spells') : null;
       const spared = (e: Entity) => !!sculpt && (e.kind === 'player' || hasBranch(caster as PlayerEntity, 'sculpt_spells', 'B'));

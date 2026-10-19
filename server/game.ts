@@ -180,7 +180,7 @@ import type {
   RunInfo,
   TurnState,
 } from '../shared/types.ts';
-import { attackAdvantage, canReact, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
+import { attackAdvantage, canReact, coverFrom, coverWord, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
   EXPLOSION,
   FIELD_STATUS_TURNS,
@@ -217,7 +217,7 @@ import { monsterPolicy } from './policy.ts';
 import { applyLevelUps, applyPick, dealOffer, killShares, picksLeft, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
 import { SUBCLASS_LEVEL } from '../shared/subclasses.ts';
 import { pick, randInt, rng, shuffle } from './rng.ts';
-import { generateRoom } from './room.ts';
+import { generateRoom, pickDeployment, type Deployment } from './room.ts';
 import { SAVE_VERSION, archiveSave, dumpFight, writeSave, type SaveFile, type SavePoint } from './saves.ts';
 
 /**
@@ -238,6 +238,14 @@ const POST_FIGHT_HEAL = 0.2; // short rest after every won fight, so damage does
 const AUTO_DELAY_MS = 700; // pause before auto heroes vote, pick or use potions between rooms
 const SHOP_MS = 90_000; // the shop closes this long after the first person is done shopping
 const AWAY_MS = 20_000; // ...or this long after everyone left is someone who dropped out (a reload shouldn't close it)
+/** What the log says about where a fight starts (the classic line says nothing). */
+const DEPLOYMENT_LINE: Partial<Record<Deployment, string>> = {
+  scattered: '🌫️ The party comes in by two ways, and the monsters are spread around the room.',
+  pincer: "⚠️ A pincer! They're coming at you from both ends of the room.",
+  surrounded: '⚠️ Surrounded! They come at you from every corner.',
+  camp: '🔥 You come upon their camp from three sides at once.',
+};
+
 /** The icon a pick's log line starts with, by kind. */
 const PICK_ICON = { level: '⬆️', elite: '💀', reward: '🏆' } as const;
 
@@ -1347,7 +1355,8 @@ export class Game {
    */
   private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge') {
     this.dispose();
-    const layout = generateRoom(kind, rng, this.run?.act ?? 1);
+    const deployment = pickDeployment(kind, start, rng);
+    const layout = generateRoom(kind, rng, this.run?.act ?? 1, deployment);
     this.width = layout.width;
     this.height = layout.height;
     this.tiles = layout.tiles;
@@ -1362,7 +1371,7 @@ export class Game {
       h.x = t.x;
       h.y = t.y;
     });
-    this.entities = heroes;
+    this.entities = [...heroes]; // a copy: the monsters spawned below must not join the party list
     const spots = [...layout.enemySpawns];
     for (const type of monsters) {
       const spot = spots.shift();
@@ -1373,6 +1382,7 @@ export class Game {
     const counted = [...new Set(names)].map((n) => `${n}${names.filter((x) => x === n).length > 1 ? ` ×${names.filter((x) => x === n).length}` : ''}`);
     const icon = kind === 'boss' ? '👑' : kind === 'elite' ? '💀' : '⚔️';
     this.addLog('system', `${icon} ${name}: ${counted.join(', ')}!`);
+    if (DEPLOYMENT_LINE[deployment]) this.addLog('info', DEPLOYMENT_LINE[deployment]!);
     for (const m of this.monsters()) {
       if (m.traits?.length) this.addLog('info', `${m.traits.map((t) => TRAITS[t].icon).join('')} ${m.name}: ${m.traits.map((t) => `${TRAITS[t].name} (${TRAITS[t].desc})`).join(' ')}`);
     }
@@ -1383,12 +1393,11 @@ export class Game {
       if (spot) this.spawnAlly(a, spot);
     }
     if (this.allies().length) this.addLog('info', `🤝 Fighting alongside you: ${this.allies().map((a) => a.name).join(', ')}.`);
-    // Each side starts out looking at the other.
-    const centre = (es: Entity[]) => ({ x: es.reduce((a, e) => a + e.x, 0) / es.length, y: es.reduce((a, e) => a + e.y, 0) / es.length });
-    const foes = centre(this.monsters());
-    const party = centre(heroes);
-    for (const h of [...heroes, ...this.allies()]) this.face(h, foes);
-    for (const m of this.monsters()) this.face(m, party);
+    // Everyone starts out looking at the nearest enemy.
+    const nearest = (e: Entity, of: Entity[]) => of.reduce((b, x) => (dist(e, x) < dist(e, b) ? x : b), of[0]);
+    const party = [...heroes, ...this.allies()];
+    for (const h of party) if (this.monsters().length) this.face(h, nearest(h, this.monsters()));
+    for (const m of this.monsters()) this.face(m, nearest(m, party));
     this.phase = 'combat';
     if (start === 'vote') {
       this.approachDc = stealthDc(this.monsters().map((m) => m.type));
@@ -1844,7 +1853,7 @@ export class Game {
     let n = 0;
     for (let y = center.y - r; y <= center.y + r; y++) {
       for (let x = center.x - r; x <= center.x + r; x++) {
-        if (x < 0 || y < 0 || x >= this.width || y >= this.height || this.tiles[y * this.width + x] === '#') continue;
+        if (x < 0 || y < 0 || x >= this.width || y >= this.height || this.tiles[y * this.width + x] !== '.') continue;
         if (this.entities.some((e) => e.x === x && e.y === y && !(e.kind === 'player' && e.dead))) continue;
         const extra = hasBranch(p, 'ambusher', 'B') ? { n: (trap.dmg?.n ?? 0) + 1, d: 6 } : trap.dmg; // Snare Master
         this.traps.set(y * this.width + x, { by: p.id, cast, status: trap.status, dmg: extra });
@@ -2538,11 +2547,12 @@ export class Game {
       const r2 = rollDie(20);
       const d20 = net > 0 ? Math.max(r1, r2) : net < 0 ? Math.min(r1, r2) : r1;
       const bonus = MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + this.rallyOf(m);
-      const ac = this.acOf(t);
+      const cover = coverFrom(this, m, t);
+      const ac = this.acOf(t) + cover;
       landed = d20 === 20 || (d20 !== 1 && d20 + bonus >= ac);
       if (why.adv.includes('distracted')) t.statuses = t.statuses.filter((s) => s.id !== 'distracted');
       const rolled = net ? `🎲${r1}|${r2}→${d20}` : `🎲${d20}`;
-      this.addLog(landed ? 'hit' : 'miss', `${what}: ${rolled}${fmtMod(bonus)}=${d20 + bonus} vs AC ${ac}, ${landed ? 'hit' : 'miss'}.`);
+      this.addLog(landed ? 'hit' : 'miss', `${what}: ${rolled}${fmtMod(bonus)}=${d20 + bonus} vs AC ${ac}${cover ? ` (${coverWord(cover)})` : ''}, ${landed ? 'hit' : 'miss'}.`);
     }
     if (!landed) {
       this.float(t, 'dodged', '#9aa0a6');
@@ -2775,7 +2785,8 @@ export class Game {
       else if (s.roll === 'contest') landed = f.kind === 'monster' && this.contestHit(p, f, s, name);
       else {
         for (let i = 0; i < hitsOf(p, s) && this.entities.includes(f) && !(f.kind === 'player' && !this.standing(f)); i++) {
-          const hit = s.roll === 'save' ? this.saveHit(p, f, s, name, color, atEdge(s, res.center, f)) : this.weaponHit(p, f, s, name, color, basic);
+          const hit =
+            s.roll === 'save' ? this.saveHit(p, f, s, name, color, atEdge(s, res.center, f), s.target === 'area' ? res.center : p) : this.weaponHit(p, f, s, name, color, basic);
           landed ||= hit;
         }
       }
@@ -2868,19 +2879,23 @@ export class Game {
   }
 
   /** A saving-throw skill against one creature (a hero, if caught in friendly fire). Returns true if it failed the save. */
-  /** A save against a hero's skill. `edge`: on the outer ring of a blast with falloff (Fireball), half damage. */
-  private saveHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string, edge = false): boolean {
+  /**
+   * A save against a hero's skill. `edge`: on the outer ring of a blast with falloff (Fireball), half damage. `origin`:
+   * where it comes from (the caster, or the blast's center), for cover on a DEX save.
+   */
+  private saveHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string, edge = false, origin: Pos = p): boolean {
     const save = s.save ?? 'dex';
     const { total, text: rolled } = this.creatureSave(f, save);
+    const cover = save === 'dex' ? coverFrom(this, origin, f) : 0;
     const dc = heroDc(p);
-    const saved = total >= dc;
+    const saved = total + cover >= dc;
     this.shot(p, f, color);
     let dmg = s.dmg ? rollDice(s.dmg) + damageMod(p, s) + this.bonusDamage(p, f, s.element ?? 'physical') : 0;
     if (edge) dmg = Math.floor(dmg / 2);
     const evasion = f.kind === 'player' && s.target === 'area' && hasBranch(f, 'opportunist', 'B');
     if (saved) dmg = s.half && !evasion ? Math.floor(dmg / 2) : 0;
     else if (evasion) dmg = Math.floor(dmg / 2);
-    const roll = `${save.toUpperCase()} save ${rolled} vs DC ${dc}${edge ? ', edge of the blast' : ''}`;
+    const roll = `${save.toUpperCase()} save ${rolled}${cover ? ` +${cover} ${coverWord(cover)}` : ''} vs DC ${dc}${edge ? ', edge of the blast' : ''}`;
     this.addLog(saved ? 'miss' : 'hit', `${f.name} ${saved ? 'resists' : 'is caught by'} ${p.name}'s ${name} (${roll})${dmg ? `: ${dmg}${elementWord(s.element)}` : ''}.`);
     if (dmg > 0) this.damage(f, dmg, p, s.element ?? 'physical', s.target === 'area');
     else if (saved) this.float(f, 'saved', '#9aa0a6');
@@ -3111,7 +3126,8 @@ export class Game {
       reroll = ` 🍀→${d20}`;
     }
     const bonus = o.bonus + (hasStatus(a, 'blessed') ? 2 : 0) - (hasStatus(a, 'dazed') ? 2 : 0) + rally;
-    const ac = this.acOf(t);
+    const cover = coverFrom(this, a, t); // ducking behind a wall or a crate (none in melee)
+    const ac = this.acOf(t) + cover;
     const critRange = hero && (hasBranch(hero, 'lucky', 'B') || this.hasRelic('loaded_dice')) ? 19 : 20;
     const crit = d20 >= critRange || (!!o.critFull && t.hp >= t.maxHp);
     const hit = crit || (d20 !== 1 && d20 + bonus >= ac);
@@ -3124,7 +3140,7 @@ export class Game {
       if (hasBranch(hero, 'strike_and_fade', 'B')) this.applyStatus(hero, { id: 'shielded', turns: 1, power: 2 }, hero);
     }
     const what = `${a.name} ${o.verb} ${t.name}${o.weapon ? ` (${o.weapon})` : ''}`;
-    const roll = `${rolled}${reroll}${fmtMod(bonus)}=${d20 + bonus} vs AC ${ac}`;
+    const roll = `${rolled}${reroll}${fmtMod(bonus)}=${d20 + bonus} vs AC ${ac}${cover ? ` (${coverWord(cover)})` : ''}`;
     if (!hit) {
       this.addLog('miss', `${what}: ${roll}, miss${d20 === 1 ? ' (natural 1!)' : ''}`);
       this.float(t, 'miss', '#9aa0a6');

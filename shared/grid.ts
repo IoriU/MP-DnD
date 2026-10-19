@@ -22,14 +22,21 @@ export const DIRS: ReadonlyArray<readonly [number, number]> = [
 /** Grid distance where diagonals count as 1 (the 5e "every square is 5 ft" rule). */
 export const dist = (a: Pos, b: Pos) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 
+/** Walls (and props, which stand on wall tiles) block movement and sight. */
 export function isWall(m: MapLike, x: number, y: number): boolean {
   return x < 0 || y < 0 || x >= m.width || y >= m.height || m.tiles[y * m.width + x] === '#';
 }
 
+/** Low cover (crates, rubble, a broken wall): blocks movement but not sight, and gives half cover (shared/tactics.ts). */
+export const LOW_COVER = 'o';
+
+/** Nobody can stand here: a wall, a prop or low cover. */
+export const isBlocked = (m: MapLike, x: number, y: number): boolean => isWall(m, x, y) || m.tiles[y * m.width + x] === LOW_COVER;
+
 /** Can you step from `from` by (dx, dy)? Diagonal steps may not squeeze past wall corners. */
 export function canStep(m: MapLike, from: Pos, dx: number, dy: number): boolean {
-  if (isWall(m, from.x + dx, from.y + dy)) return false;
-  if (dx !== 0 && dy !== 0 && (isWall(m, from.x + dx, from.y) || isWall(m, from.x, from.y + dy))) return false;
+  if (isBlocked(m, from.x + dx, from.y + dy)) return false;
+  if (dx !== 0 && dy !== 0 && (isBlocked(m, from.x + dx, from.y) || isBlocked(m, from.x, from.y + dy))) return false;
   return true;
 }
 

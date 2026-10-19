@@ -305,7 +305,7 @@ test('a rest site or a new act heals every Injury, and the max HP comes back', (
   p.finishAct();
   assert.equal(p.run.act, 2);
   assert.equal(bob.injuries, 0);
-  assert.equal(bob.maxHp, 12);
+  assert.equal(bob.maxHp, 12 + (p.run.relics.includes('dragon_heart') ? 10 : 0), 'the boss relic may be the Dragon Heart (+10)');
 });
 
 // ---------------------------------------------------------------- Fireball falloff

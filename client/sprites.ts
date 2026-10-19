@@ -298,6 +298,13 @@ export const PROP_SPRITES: Record<PropId, Sprite> = {
   brazier: s('decor', 67),
 };
 
+/** Low cover (shared/grid.ts LOW_COVER) is a crate or a heap of rubble, picked per tile: the sprite, and the emoji for the classic look. */
+export const COVER_LOOKS: { sprite: Sprite; emoji: string }[] = [
+  { sprite: s('decor', 75), emoji: '📦' },
+  { sprite: s('rock', 10), emoji: '🪨' },
+  { sprite: s('rock', 11), emoji: '🪨' },
+];
+
 /** A flame drawn on burning tiles, on top of the procedural fire pool. */
 export const FLAME: Sprite = s('effect', 169);
 

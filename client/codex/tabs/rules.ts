@@ -1,6 +1,6 @@
 // Rules: statuses, the battlefield (grounds, clouds, props, element reactions) and monster roles.
 
-import { MONSTERS, NODE_INFO, ROLES, diceText, roleOf } from '../../../shared/rules.ts';
+import { FULL_COVER, HALF_COVER, HELP_UP_HP, INJURY_PCT, MAX_INJURIES, MONSTERS, NODE_INFO, ROLES, diceText, roleOf } from '../../../shared/rules.ts';
 import { CLEANSED, ROOTED, SKIP_TURN, SLOWED, STATUSES, type StatusId } from '../../../shared/skills.ts';
 import {
   CLOUDS, COMBOS, EXPLOSION, ELECTRIFIED, FIELD_STATUS_TURNS, GROUNDS, HAZARD_DICE, ICE_DC, OIL_FIRE_TURNS, PROPS, REACTIONS, SHOCK_TURNS, type CloudId, type GroundId,
@@ -64,6 +64,9 @@ const surfaceNumbers = () =>
     ['Shock', `electrified water and steam last ${SHOCK_TURNS} round`, srcConst('SHOCK_TURNS', 'surfaces')],
     ['Burning oil', `${OIL_FIRE_TURNS} rounds`, srcConst('OIL_FIRE_TURNS', 'surfaces')],
     ['Field statuses', `last ${FIELD_STATUS_TURNS} of the creature's turns`, srcConst('FIELD_STATUS_TURNS', 'surfaces')],
+    ['Cover', `+${HALF_COVER} AC behind low cover or a prop, +${FULL_COVER} behind a wall, against ranged attacks (and on DEX saves against blasts) from that side; none in melee or when flanked`, srcConst('FULL_COVER')],
+    ['Help Up', `a downed friend next to you gets up with ${HELP_UP_HP * 100}% of their max HP, Groggy`, srcConst('HELP_UP_HP')],
+    ['Injury', `-${INJURY_PCT * 100}% max HP per death, up to ${MAX_INJURIES}, until the next rest site`, srcConst('INJURY_PCT')],
   ]);
 
 function roles(): string {
