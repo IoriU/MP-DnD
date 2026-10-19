@@ -19,6 +19,7 @@ import {
   LEVEL_CAP,
   MAX_ACT,
   MAX_PLAYERS,
+  MIN_PARTY,
   MONSTERS,
   PLAYER_COLORS,
   REST_HEAL,
@@ -32,6 +33,7 @@ import {
   encounterBudget,
   fmtMod,
   isDifficulty,
+  partyScaling,
   rollDice,
   rollDie,
   roomGold,
@@ -50,6 +52,7 @@ import {
   CLEANSED,
   STATUSES,
   attackBonus,
+  avgDice,
   damageMod,
   hasBranch,
   hasStatus,
@@ -469,8 +472,17 @@ export class Game {
     return this.run?.difficulty ?? this.difficulty;
   }
 
+  /** Every run has at least MIN_PARTY heroes: bots take the empty seats, with the classes the party doesn't have yet. */
+  private fillParty() {
+    const missing = MIN_PARTY - this.players.length;
+    if (missing <= 0 || !this.hostId) return;
+    for (let i = 0; i < missing; i++) this.addBot(this.hostId);
+    this.addLog('system', `🤖 Every party has at least ${MIN_PARTY} heroes, so ${missing === 1 ? 'a bot takes the empty seat' : `${missing} bots take the empty seats`}.`);
+  }
+
   start(playerId: string) {
     if (this.phase !== 'lobby' || playerId !== this.hostId) return;
+    this.fillParty();
     if (this.resumeFrom) return this.resumeRun(this.resumeFrom);
     this.createdAt = Date.now();
     this.log = [];
@@ -1347,12 +1359,15 @@ export class Game {
     const def = MONSTERS[type];
     const boss = ACTS.some((a) => a.boss === type);
     const elite = !boss && (ACTS.some((a) => a.elites.includes(type)) || type === 'mimic');
+    // Bigger parties: regular monsters get more HP (elites and bosses have their own curve), everyone hits harder.
     const d = DIFFICULTIES[this.diff];
-    const hp = Math.max(1, Math.round((boss || elite ? scaledHp(def.hp, partySize, boss) : def.hp) * d.hp));
+    const party = partyScaling(partySize);
+    const hp = Math.max(1, Math.round((boss || elite ? scaledHp(def.hp, partySize, boss) : def.hp * party.hp) * d.hp));
+    const dmg = d.dmg + Math.round(avgDice(def.dmg) * (party.dmg - 1));
     const m: MonsterEntity = {
       id: this.newId(), kind: 'monster', type, name: def.name, glyph: def.glyph, x: pos.x, y: pos.y,
       hp, maxHp: hp, ac: def.ac, speed: def.speed, boss, elite, statuses: [], dmgBy: {}, facing: { x: -1, y: 0 },
-      ...(d.atk ? { atkBonus: d.atk } : {}), ...(d.dmg ? { dmgBonus: d.dmg } : {}),
+      ...(d.atk ? { atkBonus: d.atk } : {}), ...(dmg ? { dmgBonus: dmg } : {}),
     };
     this.entities.push(m);
     if (elite) this.giveTraits(m);

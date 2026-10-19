@@ -1,6 +1,6 @@
 // Home screen (name, class, create/join) and the tavern lobby before a run starts.
 
-import { CLASSES, CLASS_IDS, DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, type Difficulty } from '../shared/rules.ts';
+import { CLASSES, CLASS_IDS, DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, MIN_PARTY, type Difficulty } from '../shared/rules.ts';
 import type { ClassId, GameState, PlayerInfo, ResumeView } from '../shared/types.ts';
 import { join, leave, send } from './net.ts';
 import { ago, initSaves } from './saves.ts';
@@ -172,6 +172,13 @@ export function renderRoom(s: GameState) {
         ...s.players.filter((p) => !heroIds.has(p.id)).map((p) => playerRow(s, p, isHost, [`new hero (joins at level ${joinLevel})`])),
       ].join('')
     : s.players.map((p) => playerRow(s, p, isHost)).join('');
+
+  // Every run has at least MIN_PARTY heroes: the server fills the empty seats with bots when it starts.
+  const party = r ? r.heroes.length + s.players.filter((p) => !heroIds.has(p.id)).length : s.players.length;
+  const fill = MIN_PARTY - party;
+  $('#room-fill-hint').hidden = fill <= 0;
+  $('#room-fill-hint').textContent =
+    fill > 0 ? `Every party has at least ${MIN_PARTY} heroes: ${fill === 1 ? 'a bot takes the empty seat' : `${fill} bots take the empty seats`} when the run starts.` : '';
 
   // Saved heroes keep their class; only players who join as a new hero choose one.
   $('#room-class-section').hidden = !!r && !unassigned;

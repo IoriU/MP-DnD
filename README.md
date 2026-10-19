@@ -1,6 +1,6 @@
 # Dungeon Delvers
 
-A co-op, turn-based roguelike in the browser for 1–6 friends. The run plays like Slay the Spire: three acts, each a branching map the party votes its way up. The fights play like a tabletop RPG, using simplified D&D 5e rules: d20 attack rolls against AC, initiative, actions and bonus actions, spell slots, death saves and sneak attacks.
+A co-op, turn-based roguelike in the browser for 1–6 friends (every party has at least 3 heroes: bots fill the empty seats). The run plays like Slay the Spire: three acts, each a branching map the party votes its way up. The fights play like a tabletop RPG, using simplified D&D 5e rules: d20 attack rolls against AC, initiative, actions and bonus actions, spell slots, death saves and sneak attacks.
 
 Everything here is free: Node.js, Phaser and Socket.IO are open source, the game needs no image assets (it uses drawn tiles and emoji), and you host it from your own PC.
 
@@ -110,7 +110,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **Camera:** the mouse wheel zooms and right-drag pans.
 - **Graphics:** pixel art by default; press **G** to switch to the classic emoji look (it's remembered).
 - **🤖 Auto-play:** press **P** (or the 🤖 Auto button) and the AI plays your hero until you switch it off. That's handy when you're AFK. Players who disconnect are auto-played until they come back. Auto heroes never vote while a human is at the keyboard; they follow the group.
-- **Bots:** the host can click **🤖 Add bot** in the tavern to fill empty seats with computer-controlled heroes.
+- **Bots:** every party has at least 3 heroes, so when the run starts, bots take the empty seats (a solo player gets two bot companions, with classes the party lacks). The host can also click **🤖 Add bot** in the tavern for more, up to 6 heroes. Bigger parties face more monsters, with more HP and harder hits.
 - **Saving:** runs save themselves at every step on the map (in the `saves/` folder next to the game). Close the server whenever you like. Next time, pick the run under **📜 Continue a saved run** on the home screen, or just reopen your old tab. Type the same name as your hero and you get them back; a friend who can't make it is auto-played until they return. A fight that was interrupted starts over from the beginning. Won and lost runs move to `saves/archive/`.
 - **Chat:** press Enter.
 

@@ -2,15 +2,14 @@
 
 Tracking what we build. Tick boxes as work lands; update the status in the roadmap table.
 
-**Status:** 🟢 done · 🟡 in progress · ⚪ not started · 🧪 experiment (may be dropped) · ⏸️ parked
+**Status:** 🟢 done · 🟡 in progress · ⚪ not started · 🧪 experiment (may be dropped) · ⏸️ parked · ❌ dropped
 
 ## Ground rules
 
 - **$0 forever.** Free, open-source tools only. Host on our own PC. No paid APIs or hosting.
 - **No public DNS needed.** Players connect over LAN, Tailscale, or a Cloudflare quick tunnel.
 - **The server is the rulebook.** It rolls every die and validates every move. Clients only send intents.
-- **AI never makes the rules.** LLMs only narrate; events and encounters are handwritten templates. The server checks and applies everything.
-- **The game never waits on AI.** Anything AI-driven runs in the background and has a non-AI fallback.
+- **No LLM in the game** (decided 2026-10-19). Events, encounters, barks and all other text are handwritten; the monster AI and the bots are scripted. The server checks and applies everything.
 - **Assets must be CC0, or CC-BY with credit** listed in `CREDITS.md`.
 - **Balance numbers live in `shared/rules.ts`** (XP, rewards, monsters), so tuning never needs a code dive.
 - **Balance comes last** (decided 2026-10-18). We don't tune numbers until the classes, items and skills are in; that happens in the Balance pass (Phase 13). Until then, bot runs are only for catching crashes and bugs.
@@ -36,6 +35,9 @@ A co-op tactical roguelike: a **Slay the Spire–style run map** with **BG3-styl
 | Positioning | Advantage/disadvantage, auto-facing, back attacks, flanking. | 2026-10-18 |
 | Stealth | Approach choice (sneak/charge), surprise rounds, Rogue Hide, ambush nodes. No sneaking-around gameplay. | 2026-10-18 |
 | Run length | 3 acts → needs save/resume across sessions. | 2026-10-18 |
+| Party size | **At least 3 heroes, at most 6.** Bots take the empty seats when the run starts: a solo player gets two bot companions. | 2026-10-19 |
+| Party scaling | Past 3 heroes, each extra hero makes the monsters grow on three levers: more of them, more max HP, more damage (`partyScaling`). Elites and bosses grow in HP on their own curve. | 2026-10-19 |
+| No LLM | The local-LLM narrator (Phase 10) is dropped, and so are LLM talking NPCs. | 2026-10-19 |
 
 **XP rules (starting numbers, all tunable)**
 - Each monster has an XP value.
@@ -116,7 +118,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 7 | Elites, blessings & NPC allies | 🟢 |
 | 8 | Real art *(independent; can be done anytime)* | 🟢 |
 | 9 | Smarter enemy AI + difficulty | 🟢 |
-| 10 | AI Dungeon Master (local LLM) | ⚪ |
+| 10 | ~~AI Dungeon Master (local LLM)~~ | ❌ |
 | 11 | Experiments: RL enemies/companions, talking NPCs | 🧪 |
 | 12 | Content backlog | ⚪ |
 | 13 | Balance pass | ⚪ |
@@ -515,7 +517,7 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 **Goal:** monsters fight as a squad, but stay readable and beatable. Scripted "utility AI", no machine learning.
 
 - [x] Squad director (`squadPlan` in `server/monsterai.ts`): the monsters pick their targets together and keep them while they're still a good pick. The client marks each hunted hero with a red 🎯 reticle, and the turn order and party cards name them.
-  - **Scales with the party:** fights grow with party size (`partyFactor`, the same factor as the encounter budget), so the monsters split into packs (`packsFor`: 1 pack for 1–2 heroes, 2 for 3–4, 3 for 5–6), each hunting its own hero. A 6-hero party doesn't get a whole 6-hero fight dropped on one hero.
+  - **Scales with the party:** bigger parties face more and tougher monsters, so the monsters split into packs (`packsFor`: about one per two heroes, so 2 packs for 3–4 heroes and 3 for 5–6), each hunting its own hero. A 6-hero party doesn't get a whole 6-hero fight dropped on one hero.
   - Each monster joins the nearest pack that still has room, so the packs come out about the same size.
 - [x] Roles (`role` on each stat block, shown on the monster tooltip):
   - [x] brute: pushes to the front and holds it (Hobgoblin, Orc, Ogre, Wight, the bosses...)
@@ -550,7 +552,7 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
     - Tactics: Story fights on instinct (the closest hero, no squad); Normal slips back to instinct on 15% of monster turns; Hard never does.
   - **Placeholder numbers until Phase 13.**
 - [x] The balance harness reports per difficulty and per party size:
-  - `DIFF=all node scripts/balance.ts 12 1,2,4,6 6` gives a wins table by difficulty × party size.
+  - `DIFF=all node scripts/balance.ts 12 3,4,5,6 6` gives a wins table by difficulty × party size.
   - It also counts target calls, flees, shoves, ground shots, monster heals and buffs.
 - [x] The same AI drives NPC allies:
   - They pick one target of their own (faint green brackets on it).
@@ -577,16 +579,30 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 **Notes**
 - Shots at the ground are rare in real fights: when the party stands in oil, shooting a hero sets it off anyway (as it should). They show up with gas clouds, or when no hero in the pool can be hit.
 - Shoves are rare too: they need a hazard right behind a hero, and a back attack often scores better.
-- Solo heroes die in act 1 on every difficulty: two rats flanking a level-1 hero is enough, and nobody can revive them. Solo was already the weakest size before this phase; the smarter monsters make it worse. Phase 13.
+- Solo heroes died in act 1 on every difficulty (two rats flanking a level-1 hero is enough, and nobody can revive them). Fixed by the follow-up below: every party now has at least 3 heroes.
 - Parties of 3–6 won every run on every difficulty, so Hard needs to bite harder for them. Phase 13; the harness now gives the table to tune against.
 - Two bugs the tests caught and that are fixed:
   - A far-off target used to lose out to a nearer one, because its higher weight also multiplied the walking penalty. Now a target that matters more pulls harder; a taunter pulls hardest.
   - A pack could end up empty. Now every pack gets its fair share first.
 - Story fights on pure instinct: the shortest way to the closest hero, with no hunting for flanks or backs.
 
+**Follow-up (2026-10-19, your call):**
+- [x] **At least 3 heroes** (`MIN_PARTY`): when the run starts, bots take the empty seats, with classes the party doesn't have yet. A solo player gets two bot companions. The tavern says so before the start, and saved runs with fewer heroes get topped up when they continue.
+- [x] **Party scaling on three levers** (`partyScaling` in shared/rules.ts, per hero past 3, placeholders for Phase 13):
+  - more monsters (encounter budget +15%);
+  - more max HP for regular monsters (+10%);
+  - more damage for every monster (+10%, as a flat bonus per hit).
+  - A 3-hero party's fights are unchanged. Elites and bosses keep their own HP curve (`scaledHp`).
+  - The room cap of 6 monsters stops the count from growing in big parties, but HP and damage keep growing.
+- [x] The harness records the real party size (smaller sizes are topped up with bots).
+- [x] Test: a solo player's party starts with 3 heroes of 3 different classes; the save tests now expect 3 heroes (331 tests).
+- **Bot runs:** 24 runs, solo starts (topped up to 3) and 4, 5 and 6 heroes × 3 difficulties; 0 anomalies, 0 rejected actions, 0 server errors. Story and Normal won 15 of 16; Hard won 4 of 8, and big parties now lose there too, which the old count-only scaling never did.
+
 ---
 
-## Phase 10: AI Dungeon Master (local LLM) ⚪
+## Phase 10: AI Dungeon Master (local LLM) ❌ Dropped
+
+**Dropped 2026-10-19:** we're not using a local LLM. The game's text stays handwritten (events, barks, logs). The original plan is kept below for reference.
 
 **Goal:** an optional, free, offline **narrator** that runs on this laptop (RTX 3050 4 GB VRAM, 16 GB RAM).
 
@@ -608,7 +624,7 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
   - Export to ONNX and run it in the server with `onnxruntime-node`
   - Compare against the Phase 9 AI and keep whichever is more fun
 - **AI companions:** basic bot players arrive in Phase 1b; this experiment is about making them feel like real teammates (personalities, callouts, smarter RL-trained play).
-- **Talking NPCs:** chat with specific NPCs inside events. The LLM can only call tools we define (`roll_check`, `give_item`, `join_party`, `turn_hostile`).
+- ~~**Talking NPCs:** chat with specific NPCs inside events. The LLM can only call tools we define (`roll_check`, `give_item`, `join_party`, `turn_hostile`).~~ Dropped with Phase 10 (no LLM).
 
 ---
 
@@ -629,11 +645,11 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 **When:** after the classes, items and skills are in (Phases 2–7 and enough of Phase 12). Before that, balance is deliberately ignored.
 
-- [ ] Use `npm run balance` (many full bot runs) to measure win rate, where parties die, and kills/XP/levels per class, for party sizes 1–6
-- [ ] Tune the difficulty curve. Known so far: act 1 elites are deadly while acts 2–3 are too easy; small parties without a healer struggle; solo heroes die in act 1 even on Story.
+- [ ] Use `npm run balance` (many full bot runs) to measure win rate, where parties die, and kills/XP/levels per class, for party sizes 3–6
+- [ ] Tune the difficulty curve. Known so far: act 1 elites are deadly while acts 2–3 are too easy; small parties without a healer struggle; 3–6 hero parties win every run even on Hard (Phase 9).
 - [ ] Tune XP (kill bonus vs shared base), slots per level, rest healing, gold and item prices
 - [ ] Check the design goals: supports keep up with killers, Long Rest vs Train is a real choice, every class gets picked
-- [ ] Difficulty settings (Phase 9) feel distinct: Story / Normal / Hard, for every party size 1–6. `DIFF=all node scripts/balance.ts N 1,2,3,4,5,6` gives the table; the knobs are `DIFFICULTIES`, `partyFactor` and `packsFor` in shared/rules.ts
+- [ ] Difficulty settings (Phase 9) feel distinct: Story / Normal / Hard, for every party size 3–6. `DIFF=all node scripts/balance.ts N 3,4,5,6` gives the table; the knobs are `DIFFICULTIES`, `PARTY_SCALING`, `scaledHp` and `packsFor` in shared/rules.ts
 - [ ] Playtest with real people, then adjust
 
 ---
@@ -653,9 +669,9 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 - **Level cap** across 3 acts (e.g. 12?).
 - **Gold:** personal or shared purse?
 - **Vote timer length**, and whether the host can override.
-- **Party size:** keep the max at 6, or cap at 4 for balance?
+- **Party size:** at least 3 (bots fill in; decided 2026-10-19). Keep the max at 6, or cap at 4 for balance?
 - **Art style:** your pick (Phase 8).
-- **Main goal:** a fun game, or also learning RL/LLMs? This decides how deep Phase 11 goes.
+- **Main goal:** a fun game, or also learning RL? This decides how deep Phase 11 goes (LLMs are out, see Phase 10).
 
 ## Known issues / tech debt
 

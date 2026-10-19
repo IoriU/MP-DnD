@@ -7,6 +7,7 @@ import type { CloudId, GroundId } from './surfaces.ts';
 import type { BoonId, ClassId, NodeType } from './types.ts';
 
 export const MAX_PLAYERS = 6;
+export const MIN_PARTY = 3; // every run starts with at least this many heroes: bots take the empty seats
 export const MAX_ACT = 3;
 export const ACT_ROWS = 12; // map rows per act before the boss
 export const MAP_COLS = 7;
@@ -374,18 +375,32 @@ export const DIFFICULTIES: Record<Difficulty, DifficultyDef> = {
 export const DIFFICULTY_IDS = Object.keys(DIFFICULTIES) as Difficulty[];
 export const isDifficulty = (x: unknown): x is Difficulty => typeof x === 'string' && Object.hasOwn(DIFFICULTIES, x);
 
-/** How much bigger fights get with more heroes: a solo hero is 1, a party of 6 faces 3 times as much. */
-export const partyFactor = (partySize: number) => 0.6 + 0.4 * partySize;
+/**
+ * How the monsters grow with each hero past MIN_PARTY, on three levers: more of them (the encounter budget), more max
+ * HP and more damage. A room holds at most 6 monsters, so in big parties HP and damage keep growing after the count
+ * stops. Elites and bosses get their HP from scaledHp instead (they fight alone, so HP is their lever).
+ * Placeholder numbers until the balance pass (Phase 13).
+ */
+export const PARTY_SCALING = { count: 0.15, hp: 0.1, dmg: 0.1 };
+
+const pastMin = (partySize: number) => Math.max(0, partySize - MIN_PARTY);
+export const partyScaling = (partySize: number) => ({
+  count: 1 + PARTY_SCALING.count * pastMin(partySize), // encounter budget multiplier
+  hp: 1 + PARTY_SCALING.hp * pastMin(partySize), // regular monsters' max HP multiplier
+  dmg: 1 + PARTY_SCALING.dmg * pastMin(partySize), // every monster's damage multiplier (as a flat bonus per hit, see game.ts)
+});
+
+const MIN_PARTY_BUDGET = 1.8; // a 3-hero party's fights, as they were when budgets were counted from a solo hero
 
 /** Threat budget for a regular fight. Grows with the act, the map row and the party size. */
 export const encounterBudget = (act: number, row: number, partySize: number) =>
-  (3 + 2 * (act - 1) + Math.floor(row / 3)) * partyFactor(partySize);
+  (3 + 2 * (act - 1) + Math.floor(row / 3)) * MIN_PARTY_BUDGET * partyScaling(partySize).count;
 
 /**
  * The monsters split into this many packs against a party (server/monsterai.ts squadPlan), each hunting its own hero:
- * one pack per "solo hero's worth" of monsters (partyFactor), so no one hero takes the whole fight. 3 at most.
+ * about one pack per two heroes, 3 at most, so no one hero takes the whole fight.
  */
-export const packsFor = (partySize: number) => Math.min(3, Math.max(1, Math.round(partyFactor(partySize))));
+export const packsFor = (partySize: number) => Math.min(3, Math.max(1, Math.round(partySize / 2)));
 
 /** Elites and bosses get extra HP for every hero beyond the first. */
 export const scaledHp = (hp: number, partySize: number, boss: boolean) =>

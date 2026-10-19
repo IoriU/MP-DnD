@@ -44,7 +44,7 @@ test('a run is saved on the map and comes back with the same heroes and map', as
   const save = readSave('SAVE');
   assert.ok(save, 'a save file was written');
   assert.deepEqual(save.at, { kind: 'map' });
-  assert.equal(save.heroes.length, 2);
+  assert.equal(save.heroes.length, 3, 'Ann and her bot, plus a bot for the third seat (MIN_PARTY)');
   g.dispose();
 
   // The server restarts: the room comes back from disk and waits in the tavern.
@@ -52,7 +52,7 @@ test('a run is saved on the map and comes back with the same heroes and map', as
   assert.equal(join(back.g, 'ann'), ann, 'typing the same name (any case) reclaims the hero');
   const lobby = await back.state();
   assert.equal(lobby.phase, 'lobby');
-  assert.equal(lobby.resume?.heroes.length, 2);
+  assert.equal(lobby.resume?.heroes.length, 3);
   back.g.start(ann);
   const after = await back.state();
   assert.equal(after.phase, 'map');
@@ -103,10 +103,11 @@ test('a newcomer can take over a saved hero whose player is away', async () => {
   s = await back.state();
   assert.ok(s.resume?.heroes.some((h) => h.playerId === bob), 'Cid now belongs to Bob');
   assert.equal(s.players.find((p) => p.id === bob)?.name, 'Cid');
-  assert.equal(s.players.length, 2);
+  assert.equal(s.players.length, 3, 'Ann, Bob playing Cid, and the bot that filled the third seat');
   back.g.start(ann2);
   s = await back.state();
-  assert.deepEqual(heroes(s).map((h) => h.name).sort(), ['Ann', 'Cid']);
+  assert.equal(heroes(s).length, 3);
+  assert.ok(['Ann', 'Cid'].every((n) => heroes(s).some((h) => h.name === n)));
 });
 
 test('saves are listed newest first and archived runs leave the list', async () => {
@@ -117,4 +118,16 @@ test('saves are listed newest first and archived runs leave the list', async () 
   assert.ok(!listSaves().some((s) => s.code === 'CLAI'));
   assert.ok(fs.readdirSync(path.join(process.env.DELVERS_SAVES!, 'archive')).some((n) => n.startsWith('CLAI-abandoned')));
   assert.equal(readSave('../etc'), null, 'codes are four letters, nothing else');
+});
+
+test('a party starts with at least 3 heroes: bots take the empty seats, with classes the party lacks', async () => {
+  const { g, state } = room('FILL');
+  const ann = join(g, 'Ann'); // a wizard
+  g.start(ann);
+  const s = await state();
+  const party = heroes(s);
+  assert.equal(party.length, 3);
+  assert.equal(s.players.filter((p) => p.bot).length, 2);
+  assert.equal(new Set(party.map((h) => h.classId)).size, 3, 'the bots pick classes nobody has');
+  g.dispose();
 });

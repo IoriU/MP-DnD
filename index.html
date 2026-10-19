@@ -52,6 +52,7 @@
         </div>
         <h3>Party</h3>
         <ul id="room-players" class="room-players"></ul>
+        <p id="room-fill-hint" class="muted" hidden></p>
         <div id="room-class-section">
           <h3>Your class</h3>
           <p id="room-class-hint" class="muted" hidden>You are not one of the saved heroes. This class is used if you join the run as a new hero.</p>
@@ -122,6 +123,7 @@
             <li><b>Facing and back attacks:</b> every creature faces the way it last moved or attacked (the little arrow on its ring). Attack from the 3 tiles behind it and the roll has <b>advantage</b>. Monsters can do the same to you, so watch your back.</li>
             <li><b>Flanking:</b> attack in melee while a friend stands on the tile directly across from the target and you have <b>advantage</b>. Monsters flank too. On your turn, gold dots on the blue tiles show where you would get advantage; hover a dot to see why. Hover a monster to preview advantage or disadvantage before you attack.</li>
             <li><b>🤫 Sneak or ⚔️ Charge:</b> before most fights the party votes. <b>Sneak</b> is a group Stealth check (each hero rolls d20 + DEX, Rogues add their proficiency; at least half must pass): win and the monsters are <b>Surprised</b> and lose their first turn, fail and you are. <b>Charge</b> is a normal start. Boss fights and events skip the vote. Some fights are <b>⚠️ ambushes</b>: you start Surprised. The ⏰ Alert passive can't be surprised.</li>
+            <li><b>Party:</b> every party has at least 3 heroes: bots take the empty seats when the run starts (alone, you get two bot companions). Bigger parties face more monsters, with more HP and harder hits.</li>
             <li><b>Difficulty:</b> the host picks 📖 Story, ⚔️ Normal or 💀 Hard in the tavern, and the whole run keeps it (it shows next to the act name). On Story the monsters are weaker and fight on instinct: each one goes for whoever is closest. On Normal and Hard they fight as a squad, and Hard hits harder and brings more of them.</li>
             <li><b>🎯 Monster squads:</b> on Normal and Hard the monsters call a target and all go for it. A red 🎯 reticle marks each hunted hero (a big party gets several packs, each hunting its own hero) and the turn order names them, so heal them, block for them or draw the monsters off. Every monster has a role (hover one to read it): 🛡️ <b>brutes</b> hold the front, 🗡️ <b>skirmishers</b> circle for flanks and back attacks, 🏹 <b>archers</b> keep their distance, ✨ <b>supports</b> (Goblin Shaman, Necromancer, Dragon Priest) heal and buff from the back, and 💨 <b>cowards</b> run when they are hurt. Some shove you into fire. They also shout while they do it, in italics in the log. Kill the supports first.</li>
             <li><b>👤 Hide</b> (Rogue cantrip, bonus action, not next to an enemy): monsters go for someone else if they can, and your next attack has advantage and gives you away.</li>

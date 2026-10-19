@@ -306,6 +306,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     opts.onStart?.(res.code);
     socket.emit('start');
     await waitFor('the run to start', () => !!box.s && box.s.phase !== 'lobby');
+    r.party = box.s!.entities.filter((e) => e.kind === 'player').length; // small parties get bots on top (MIN_PARTY)
   };
   setup().catch((err) => fail(`setup failed: ${err instanceof Error ? err.message : String(err)}`));
   const timer = setTimeout(() => finish('timeout'), opts.timeoutS * 1000);
@@ -471,7 +472,8 @@ skills used (${uses.size} different):`);
 async function main(): Promise<number> {
   const int = (v: string | undefined, def: number) => (Number(v) > 0 ? Math.floor(Number(v)) : def);
   const RUNS = int(process.argv[2], 8);
-  // Party size, or a list like 1,2,4,6 to spread the runs over several sizes (each size gets every difficulty in DIFF).
+  // Party size, or a list like 3,4,5,6 to spread the runs over several sizes (each size gets every difficulty in DIFF).
+  // Fewer than MIN_PARTY (3) still plays: the server fills the party up with bots, and the report counts the real size.
   const SIZES = (process.argv[3] ?? '4').split(',').map((v) => Math.min(MAX_PLAYERS, int(v, 4)));
   const CONCURRENCY = Math.min(RUNS, int(process.argv[4], 4));
   const TIMEOUT_S = int(process.env.RUN_TIMEOUT_S, 900);

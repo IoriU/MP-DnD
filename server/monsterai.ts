@@ -165,9 +165,9 @@ export interface SquadPlan {
 }
 
 /**
- * The monsters' squad director. Bigger parties face more monsters (encounterBudget grows with partyFactor), so the
- * monsters split into packs (packsFor: one per "solo hero's worth" of monsters, 3 at most), each hunting its own
- * target: the pressure on any one hero stays about what a solo hero faces, instead of the whole fight landing on one.
+ * The monsters' squad director. Bigger parties face more and tougher monsters (partyScaling), so the monsters split
+ * into packs (packsFor: about one per two heroes, 3 at most), each hunting its own target, instead of the whole fight
+ * landing on one hero.
  * Targets are kept while they're still a decent pick (the client marks them 🎯), and the packs come out the same
  * size give or take one, each monster in the nearest pack that has room.
  */
