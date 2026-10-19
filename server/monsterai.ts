@@ -17,7 +17,7 @@ import {
   CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
   type Difficulty, type OrderId, type Role,
 } from '../shared/rules.ts';
-import { ROOTED, SKIP_TURN, SLOWED, avgDice, hasStatus, passiveOf, type Element, type StatusApply } from '../shared/skills.ts';
+import { ROOTED, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, type Element, type StatusApply } from '../shared/skills.ts';
 import { EXPLOSION, damageFactor, fieldElement, hazardAt, previewField, type FieldLike } from '../shared/surfaces.ts';
 import { attackAdvantage, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import type { Entity, MonsterEntity, Pos } from '../shared/types.ts';
@@ -81,8 +81,8 @@ export function hitChance(bonus: number, ac: number, net: -1 | 0 | 1 = 0): numbe
 }
 
 const acOf = (e: Entity) => e.ac + e.statuses.reduce((s, x) => s + (x.id === 'shielded' ? (x.power ?? 2) : 0), 0) - (hasStatus(e, 'shocked') ? 2 : 0);
-/** HP that has to go before it drops: temp HP and an elite's ward count. */
-const ehp = (e: Entity) => Math.max(1, e.hp + (e.kind === 'player' ? e.tempHp : (e.ward ?? 0)));
+/** HP that has to go before it drops: Block, temp HP and an elite's ward count. */
+const ehp = (e: Entity) => Math.max(1, e.hp + blockOf(e) + (e.kind === 'player' ? e.tempHp : (e.ward ?? 0)));
 const enraged = (m: MonsterEntity) => hasTrait(m, 'enraged') && m.hp < m.maxHp / 2;
 const rallyOf = (e: Entity) => e.statuses.find((x) => x.id === 'rallied')?.power ?? 0;
 const atkOf = (m: MonsterEntity) => MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + rallyOf(m);

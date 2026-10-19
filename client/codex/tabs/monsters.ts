@@ -33,6 +33,7 @@ const SAVE = { dex: 'DEX', str: 'STR', wis: 'WIS' };
 function tricks(m: MonsterDef): string[] {
   const out: string[] = [];
   if (m.leader) out.push(chip('📯 Leader', 'warn', 'Gives its side orders (Elites & allies tab)'));
+  if (m.block) out.push(chip(`🧱 Block ${m.block}`, 'good', 'A shield: this much Block at the start of each of its turns'));
   const t = m.trick;
   if (t) {
     const how = t.save ? `${SAVE[t.save]} save DC ${t.dc}` : 'attack roll';
@@ -46,7 +47,7 @@ function tricks(m: MonsterDef): string[] {
 
 /** What a monster has, for the Ability filter. */
 const hasTokens = (m: MonsterDef) =>
-  [m.trick && 'trick', m.rider && 'rider', m.leader && 'leader', m.breath && 'breath', m.shove && 'shove', m.support && 'support', m.death && 'death', canHelp(m) && 'help'].filter(Boolean).join(' ');
+  [m.trick && 'trick', m.rider && 'rider', m.leader && 'leader', m.block && 'block', m.breath && 'breath', m.shove && 'shove', m.support && 'support', m.death && 'death', canHelp(m) && 'help'].filter(Boolean).join(' ');
 
 /** The "where it appears" cell: one line per act, then NPC ally and event lines. */
 function where(u: Usage): string {
@@ -101,7 +102,7 @@ export const monsters: TabDef = {
   filters: [
     { key: 'act', label: 'Act', options: [...ACTS.map((a, i): [string, string] => [String(i + 1), `${a.glyph} Act ${i + 1}`]), ['ally', 'NPC allies'], ['none', 'Used nowhere']] },
     { key: 'role', label: 'Role', options: Object.entries(ROLES).map(([id, r]): [string, string] => [id, `${r.icon} ${r.name}`]) },
-    { key: 'has', label: 'Ability', options: [['trick', 'Trick'], ['rider', 'Rider'], ['leader', 'Leader'], ['breath', 'Breath'], ['shove', 'Shoves'], ['support', 'Support spells'], ['death', 'Death effect'], ['help', 'Can help']] },
+    { key: 'has', label: 'Ability', options: [['trick', 'Trick'], ['rider', 'Rider'], ['leader', 'Leader'], ['block', 'Block (shield)'], ['breath', 'Breath'], ['shove', 'Shoves'], ['support', 'Support spells'], ['death', 'Death effect'], ['help', 'Can help']] },
   ],
   render() {
     const head = [

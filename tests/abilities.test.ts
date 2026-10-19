@@ -35,7 +35,7 @@ const status = (id: StatusId, turns = 2) => ({ id, turns });
 const has = (e: Entity, id: StatusId) => e.statuses.some((s) => s.id === id);
 const powerOf = (e: Entity, id: StatusId) => e.statuses.find((s) => s.id === id)?.power;
 const ids = (...es: Entity[]) => es.map((e) => e.id);
-const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false });
+const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
 
 /** A hero of a class at a tile, level 1 (override with `extra`). */
 function hero(classId: ClassId, x: number, y: number, extra: Partial<PlayerEntity> = {}): PlayerEntity {
@@ -106,7 +106,7 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false };
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
   p.turnOwner = heroes[0].id;
   p.runMonster = async () => {}; // a monster's turn would be played on real timers: the tests drive the rules themselves
   const foe = (type: string, x: number, y: number): MonsterEntity => {
@@ -157,7 +157,7 @@ test('netted: it cannot move on its turn, and Cut Free on itself gives the movem
   assert.equal(p.handleSkill(ann.playerId, 'cut_free', ann.id), true);
   assert.ok(!has(ann, 'netted'));
   assert.equal(movesLeft(p), ann.speed);
-  assert.equal(p.turn.bonusUsed, true, 'Cut Free is a bonus action');
+  assert.equal(p.turn.ap, 2, 'Cut Free costs 1 AP');
   assert.equal(p.heldMoves, 0);
 });
 
@@ -166,7 +166,7 @@ test('Cut Free is refused on someone who is not stuck, and works on a net or a w
   const friend = hero('wizard', 5, 3);
   const ctx = { map: room(), entities: [caster, friend] as Entity[], inCombat: true };
   const cut = statsAt('cut_free');
-  assert.equal(cut.cost, 'bonus');
+  assert.equal(cut.ap, 1);
   assert.equal(resolveAim(cut, caster, friend.id, ctx), `${friend.name} isn't stuck.`);
   assert.equal(resolveAim(cut, caster, caster.id, ctx), "You aren't stuck.");
   for (const id of ROOTED) {
@@ -175,7 +175,7 @@ test('Cut Free is refused on someone who is not stuck, and works on a net or a w
     assert.ok(typeof res !== 'string' && res.friends[0] === friend, `${id}: cut free`);
   }
   assert.ok(ownedSkill(caster, 'cut_free'), 'every hero has it');
-  assert.equal(skillBlockReason(caster, 'cut_free', true, { ...freshTurn(), bonusUsed: true }, true), 'Bonus action already used this turn');
+  assert.equal(skillBlockReason(caster, 'cut_free', true, { ...freshTurn(), ap: 0 }, true), 'Needs 1 AP (0 left)');
 });
 
 test('webbed: attacks against it have advantage and its own have disadvantage', () => {
@@ -228,7 +228,7 @@ test('webbed and netted are cleansed by Purifying Touch, and a hero who cleanses
   assert.equal(p.handleSkill(bob.playerId, 'healing_touch', ann.id), true);
   assert.deepEqual(ann.statuses, []);
   assert.equal(movesLeft(p), 0, 'cleansing a friend does not free the caster');
-  p.turn.bonusUsed = false;
+  p.turn.ap = 3;
   bob.skills[0].cd = 0;
   assert.equal(p.handleSkill(bob.playerId, 'healing_touch', bob.id), true);
   assert.ok(!has(bob, 'netted'));

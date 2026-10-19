@@ -1,6 +1,6 @@
 # Dungeon Delvers
 
-A co-op, turn-based roguelike in the browser for 1–6 friends (every party has at least 3 heroes: bots fill the empty seats). The run plays like Slay the Spire: three acts, each a branching map the party votes its way up. The fights play like a tabletop RPG, using simplified D&D 5e rules: d20 attack rolls against AC, initiative, actions and bonus actions, spell slots, death saves and sneak attacks.
+A co-op, turn-based roguelike in the browser for 1–6 friends (every party has at least 3 heroes: bots fill the empty seats). The run plays like Slay the Spire: three acts, each a branching map the party votes its way up. The fights play like a tabletop RPG, using simplified D&D 5e rules: d20 attack rolls against AC, initiative, spell slots, death saves and sneak attacks. Turns use action points (AP) like Divinity: Original Sin and Slay the Spire, with Block to soak hits.
 
 Everything here is free: Node.js, Phaser and Socket.IO are open source, the game needs no image assets (it uses drawn tiles and emoji), and you host it from your own PC.
 
@@ -43,7 +43,8 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - 🛒 **Shop:** spend the party's gold (see below).
   - 👑 **Boss:** ends the act. Beat all 3 acts to win.
 - **Fights:**
-  - On your turn you get movement (the blue tiles), one **A**ction and one **B**onus action.
+  - On your turn you get movement (the blue tiles) and **⚡ 3 AP**. Attacks and most spells cost 2 AP, quick skills 1, the biggest spells (Fireball, Shatter...) 3. AP you don't spend carries over, but a turn starts with at most 5. Walking is free; **👟 Dash** (everyone, 1 AP) adds 3 tiles.
+  - **🧱 Block** soaks damage before HP and temporary HP, until the start of the turn of whoever gave it. **Brace** (everyone, 1 AP, once per turn) gives 1d6; Fighter and Paladin skills, some gear and shield-carrying monsters have more.
   - Click a tile to walk, or use WASD / arrow keys (Q E Z C for diagonals). Press **Space** to end your turn.
   - **Attack:** click a monster; your basic weapon attack in range is picked for you.
   - **Skills:** keys **1–9** (or the buttons), then click a highlighted target (or a spot, for area spells). Esc or right-click cancels.
@@ -56,7 +57,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - Everyone faces the way they last moved or attacked; an arrow shows which way.
   - Attacks from behind and flanking attacks (a friend directly across the target) have **advantage**. Hover a monster to see it before you attack.
   - A monster turns to face whoever walks up to it or hits it in melee, so backstabs need teamwork: hit it from behind while it's busy with someone else, shoot it in the back, or Hide first.
-  - **Shove** (everyone, bonus action) knocks an enemy back.
+  - **Shove** (everyone, 1 AP) knocks an enemy back.
 - **The battlefield** (elements & surfaces, like Divinity: Original Sin):
   - The ground can hold 💧 water, 🧊 ice, 🔥 fire, 🛢️ oil, ☠️ poison or 🌋 lava, and the air ♨️ steam, 🌫️ smoke or 🤢 poison gas. Steam and smoke block line of sight. Hover a tile to see what's on it.
   - Stepping into fire, poison or lava (or starting your turn there) hurts. Ice can make you slip and lose your move. Water makes you **Wet**.

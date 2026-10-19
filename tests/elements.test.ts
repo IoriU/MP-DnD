@@ -80,7 +80,7 @@ function arena(opts: { classes?: ClassId[]; rows?: string[] } = {}) {
   p.phase = 'combat';
   p.roomKind = 'combat';
   p.entities = [...heroes];
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false };
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
   p.turnOwner = heroes[0].id;
 
   const at = (x: number, y: number) => y * g.width + x;
@@ -209,7 +209,7 @@ test('a frozen hero cannot walk or cast', () => {
   a.g.handleStep(a.pid, 0, 1);
   assert.deepEqual([a.hero.x, a.hero.y], [2, 3]);
   assert.equal(a.g.handleSkill(a.pid, 'dagger', m.id), false);
-  assert.equal(a.p.turn.actionUsed, false);
+  assert.equal(a.p.turn.ap, 3);
   assert.equal(m.hp, 100);
 });
 
@@ -509,7 +509,7 @@ test('Grease then Fire Bolt: a combo across two actions', () => {
   assert.equal(gid(a, 9, 6), undefined);
   assert.equal(A.hp + B.hp + C.hp, 300, 'Grease hurts nobody');
   assert.equal(a.hero.slots, 4);
-  a.p.turn.actionUsed = false;
+  a.p.turn.ap = 3;
   withRandom(MID, () => a.g.handleSkill(a.pid, 'fire_bolt', A.id));
   assert.ok(has(A, 'burning') && has(B, 'burning'), 'everyone in the grease burns');
   assert.ok(!has(C, 'burning'));
@@ -571,7 +571,7 @@ test('Fire Bolt aimed at an oil barrel explodes it: the tile opens up, the barre
   assert.ok(has(next, 'burning'));
   assert.equal(far.hp, 100);
   assert.equal(a.hero.hp, 40);
-  assert.equal(a.p.turn.actionUsed, true);
+  assert.equal(a.p.turn.ap, 1);
   assert.ok(logged(a, /hits the Oil Barrel with Fire Bolt/));
   assert.ok(logged(a, /It explodes/));
 });
@@ -606,7 +606,7 @@ test('a barrel out of range, or behind smoke, cannot be targeted and costs nothi
   const a = arena();
   a.prop(9, 3, 'barrel');
   assert.equal(a.g.handleSkill(a.pid, 'dagger', { x: 9, y: 3 }), false, 'a dagger reaches 4 tiles');
-  assert.equal(a.p.turn.actionUsed, false);
+  assert.equal(a.p.turn.ap, 3);
   assert.equal(a.g.props[a.at(9, 3)], 'barrel');
   a.cloud(5, 3, 'smoke');
   assert.equal(a.g.handleSkill(a.pid, 'fire_bolt', { x: 9, y: 3 }), false, 'no line of sight through smoke');
@@ -621,7 +621,7 @@ test('smoke blocks targeting through the game too', () => {
   const m = a.monster('goblin', 7, 3);
   a.cloud(4, 3, 'smoke');
   assert.equal(a.g.handleSkill(a.pid, 'fire_bolt', m.id), false);
-  assert.equal(a.p.turn.actionUsed, false);
+  assert.equal(a.p.turn.ap, 3);
   assert.equal(m.hp, 100);
   delete a.g.clouds[a.at(4, 3)];
   assert.equal(withRandom(MID, () => a.g.handleSkill(a.pid, 'fire_bolt', m.id)), true);

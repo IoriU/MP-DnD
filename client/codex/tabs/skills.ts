@@ -8,7 +8,6 @@ import { chip, esc, group, icon, q, type TabDef } from '../ui.ts';
 
 const KINDS: SkillKind[] = ['basic', 'cantrip', 'spell', 'passive', 'action', 'item'];
 const POOL_ORDER: string[] = [...CLASS_IDS, 'common'];
-const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 
 /** Range and target in a few words. */
 function reach(s: SkillStats): string {
@@ -51,7 +50,7 @@ function row(id: SkillId): string {
       <span class="sk-ic">${icon(sprite, s.icon, 28)}</span>
       <span class="sk-name"><b>${esc(s.name)}</b><code>${id}</code></span>
       <span class="sk-tags">${chip(def.kind, `kind-${def.kind}`)}${chip(def.pool, 'pool')}</span>
-      <span class="sk-cost" title="action economy">${passive ? '—' : cap(s.cost)}</span>
+      <span class="sk-cost" title="action points">${passive ? '—' : s.ap ? `${s.ap} AP` : 'Free'}</span>
       <span class="sk-cd" title="${def.kind === 'cantrip' ? 'cooldown (turns)' : def.kind === 'spell' ? 'slots' : ''}">${cd}</span>
       <span class="sk-rng">${passive ? '—' : esc(reach(s))}</span>
       <span class="sk-desc">${esc(short)}</span>

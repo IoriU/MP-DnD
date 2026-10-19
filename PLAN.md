@@ -670,7 +670,7 @@ Party losses per hero: the share of HP lost, 2 if downed, 3 if dead, averaged pe
 
 ## Phase 12: Content backlog 🟡
 
-Started 2026-10-19. Order: the codex first (to see the pools), then monster abilities, then the rest of the list.
+Started 2026-10-19. Order: the codex first (to see the pools), then monster abilities, then the new classes. Next (decided 2026-10-19): AP and Block, then subclasses, then rewards after every win, then the rest of the list.
 
 - [x] **Codex: a content dashboard** (your ask, 2026-10-19: "view + checks"). `/codex` on the played build, `/codex.html` in dev.
   - Browse every pool: heroes, skills (every tier), items, relics, blessings, monsters, acts and encounters, elites and allies, statuses and surfaces, events.
@@ -701,7 +701,33 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
     - [x] PPO run 3 (`training/runs/ppo3`, entropy bonus lowered to 0.002 after run 2's drift; stopped at update 33 of 40 by a restart). Best checkpoint vs scripted on 2,000 fights: party losses 0.057 vs 0.058, monsters win 0.80% vs 0.95%: a tie again, so the imitation copy stays. The fights are still too one-sided for PPO; worth another try after the Phase 13 balance pass.
   - Bot runs (3 batches of 18, all difficulties, 3–6 heroes): 0 anomalies, 0 rejected actions, 0 server errors. Per 18 runs: about 55 tricks (half land), 50–65 orders, 26 Cut Frees by the bots, 5–14 knockdowns, 8–20 drains; Help is rare (it only wins next to a big hitter, like Kobolds next to an Ogre).
   - Tests: `tests/abilities.test.ts` (34). It caught a bug: a netted hero could dash out of the net (dash movement now waits until it's free).
-- [ ] More monsters and elites per act; alternate bosses
+- [x] **Action points (AP) instead of action + bonus action** (decided 2026-10-19, DOS2 / Slay the Spire style)
+  - [x] 3 AP per turn (`AP_GAIN`). AP you don't spend carries over, but a turn starts with at most 5 (`AP_MAX`). A lost turn (stunned, frozen, surprised, down) gains none but keeps the savings; every fight starts from scratch.
+  - [x] Prices follow the old economy: bonus actions cost 1 AP, actions and basic attacks 2, the biggest spells 3 (Fireball, Earth Splitter, Shatter, Hail of Thorns, Guiding Bolt, Brutal Strike, Heroic Anthem). `SkillStats.ap` replaced `cost`, so a tier can change the price (Quick Grease 1, Battle Surge 0). Spell slots and cooldowns stay.
+  - [x] Walking up to your speed stays free; 👟 Dash (everyone, 1 AP) adds 3 tiles. Action Surge and Executioner give +2 AP (`gainAp`).
+  - [x] Monsters keep their turn as it is (move, one attack, tricks and orders), so the PPO policy keeps working.
+  - [x] The hero bots plan their AP (`spend` in server/heroai.ts): the best set of skills for the AP they have (a knapsack; a basic attack can repeat), then the biggest move first, quick skills after. Saving an AP is worth a little (`SAVE_AP` 0.2), so they bank AP when nothing is worth it rather than skipping useful quick skills. They Dash when it's the only way to reach a target with AP left to hit it.
+  - [x] HUD: ⚡ AP pips instead of the Action/Bonus pills, the AP cost on every hotbar button (colored 0–3); the codex and the how-to-play show AP.
+  - Tests: `tests/ap.test.ts` (7); the old action/bonus checks in 8 test files now check AP.
+- [x] **🧱 Block** (decided 2026-10-19, Slay the Spire style): Block soaks damage before temporary HP (and an elite's ward), and lasts until the start of the turn of whoever gave it ("until your next turn"), so a Paladin's Block on a friend holds through the monsters' turns. Kept per giver (`Entity.block`); going down, a new fight, or the giver leaving the fight clears it.
+  - [x] Sources: 🧱 Brace (everyone, 1 AP, once per turn: 1d6), Fighter (Bulwark Bash and Iron Wall: Block + level), Paladin (Bulwark gives a friend next to you 2d4 + level), gear that puts up Block at the start of each of your turns (🥏 Buckler 2, 🪖 Splint Mail 2, 🧱 Tower Shield 5), and shields on monsters (Skeleton 2, Hobgoblin Captain 3, Bone Knight 5, the Sellsword ally 2). The Cleric's ranged Block comes with the subclasses.
+  - [x] Both AIs count Block, temp HP and wards as HP that has to go first when they aim for kills (the hero bots didn't count wards before either). The hero bots price Block like heals: what it would soak, dearer the more hurt those hits would leave the friend.
+  - [x] Shown on party cards (+N 🧱), the HP bars, token tooltips, the log ("🧱 Bob covers Ann: 7 Block until Bob's next turn."), and the codex (monsters with shields).
+  - Tests: `tests/block.test.ts` (9). One caught that the bot kill math ignored Block (it would swing at a 4-HP skeleton behind 12 Block).
+  - **For Phase 13:** Brace is efficient next to the Shield spell (no slot); Shove now competes with Brace for the spare AP and gets used much less.
+- [ ] **Subclasses** (decided 2026-10-19): every class picks one of two at level 3, and its offers come from the class pool plus the subclass pool. Your class identities, with the Cleric protecting from range and the Paladin by touch so they don't overlap:
+
+  | Class | Subclass A | Subclass B | Own AP / Block trick |
+  |---|---|---|---|
+  | Fighter | Weapon Master: damage, cleave, counters | Guardian: Block, self-heal, thorns | Thorns: Block that soaks a melee hit hurts the attacker |
+  | Rogue | Assassin: backstab, burst combos, poison | Skirmisher: hit and run, dashes, smoke | 1-AP light attacks (move, stab, retreat) |
+  | Wizard | Evoker: big area spells | Elementalist: crowd control and elemental reactions | 3-AP big spells vs cheap setups |
+  | Cleric | Life: heals and revives | Order: buffs, Block and AC on allies from range | Protects from range |
+  | Barbarian | Berserker: hurt yourself for big damage | Juggernaut: lifesteal, taunt, soaking hits | Blood Price: pay HP for AP |
+  | Ranger | Trapper: traps that root or net, volleys | Sharpshooter: long range, big single hits | Traps cost AP now and spring on the monsters' turn |
+  | Paladin | Protection: Block on allies next to you, takes hits for them | Devotion: self-sustain, heals by touch | Protects by touch |
+  | Bard | Valor: buffs | Whispers: debuffs and crowd control | Inspiration gives an ally +1 AP |
+- [ ] **Rewards after every win** (decided 2026-10-19): each hero picks 1 of 3 cards, two skill cards and one item card. Level-ups give HP and power, and the subclass at level 3. Potions drop like Slay the Spire's: 40% after a fight, +10% after each fight without one, −10% after each one that drops.
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)
 - [ ] Traps and interactive room props (doors, levers, collapsing floors)

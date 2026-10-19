@@ -55,7 +55,7 @@ function monster(type: string, x: number, y: number, extra: Partial<MonsterEntit
 }
 const goblin = (x: number, y: number, extra: Partial<MonsterEntity> = {}) => monster('goblin', x, y, extra);
 
-const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false });
+const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
 
 function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn = freshTurn(), m = map): HeroView {
   const all = [...heroes, ...monsters];
@@ -100,13 +100,13 @@ function applyAct(v: HeroView, intent: Extract<HeroIntent, { kind: 'act' }>, r?:
   const { hero: me, turn } = v;
   const own = ownedSkill(me, intent.skill)!;
   const s = statsOf(own);
-  if (s.cost === 'action') turn.actionUsed = true;
-  if (s.cost === 'bonus') turn.bonusUsed = true;
+  turn.ap -= s.ap;
+  if (s.oncePerTurn) me.used.push(`turn:${intent.skill}`);
   if (SKILLS[intent.skill].kind === 'spell') me.slots -= slotCost(s);
   if (SKILLS[intent.skill].kind === 'cantrip') own.cd = s.cooldown ?? 0;
   if (intent.skill === 'potion') me.potions--;
-  if (s.refresh) {
-    turn.actionUsed = false;
+  if (s.gainAp) {
+    turn.ap += s.gainAp;
     me.used.push('turn:surge');
   }
   if (s.dash) turn.movesLeft += s.dash;
@@ -140,12 +140,16 @@ test('a fighter next to a goblin attacks it (stepping around to its back first i
   assert.deepEqual(firstAct(view(f, [f], [g])), { kind: 'act', skill: 'longsword', target: g.id });
 });
 
-test('a fighter far from enemies walks toward them', () => {
+test('a fighter far from enemies dashes (1 AP) when that gets them a swing this turn, and walks otherwise', () => {
   const f = hero('fighter', 1, 3);
-  const g = goblin(10, 3);
-  const intent = nextHeroIntent(view(f, [f], [g]));
-  assert.equal(intent.kind, 'move');
-  if (intent.kind === 'move') assert.ok(intent.to.x > f.x, 'moves right, toward the goblin');
+  // 9 tiles away: 6 moves and a 3-tile Dash reach it, with 2 AP left for the Longsword.
+  assert.deepEqual(nextHeroIntent(view(f, [f], [goblin(10, 3)])), { kind: 'act', skill: 'dash' });
+  // With only 2 AP the Dash would leave nothing to swing with: walk.
+  for (const turn of [{ ...freshTurn(), ap: 2 }]) {
+    const intent = nextHeroIntent(view(f, [f], [goblin(10, 3)], turn));
+    assert.equal(intent.kind, 'move');
+    if (intent.kind === 'move') assert.ok(intent.to.x > f.x, 'moves right, toward the goblin');
+  }
 });
 
 test('a wizard in melee steps away before casting', () => {
@@ -194,7 +198,7 @@ test('a badly hurt hero drinks a potion', () => {
 test('the turn ends when the action is used and nothing else helps', () => {
   const f = hero('fighter', 3, 3);
   const g = goblin(4, 3);
-  const turn = { ...freshTurn(), actionUsed: true, bonusUsed: true };
+  const turn = { ...freshTurn(), ap: 0 };
   assert.deepEqual(nextHeroIntent(view(f, [f], [g], turn)), { kind: 'end' });
 });
 
@@ -251,7 +255,7 @@ test('a wizard drops a Fireball on a cluster of three goblins', () => {
 test('a fighter follows up with Shield Bash after attacking', () => {
   const f = hero('fighter', 3, 3);
   const g = goblin(4, 3, { hp: 20, maxHp: 20 });
-  const turn = { ...freshTurn(), actionUsed: true };
+  const turn = { ...freshTurn(), ap: 1 };
   assert.deepEqual(firstAct(view(f, [f], [g], turn)), { kind: 'act', skill: 'shield_bash', target: g.id });
 });
 
@@ -279,18 +283,26 @@ test('a rogue uses Cunning Dash when that is the only way to reach a target', ()
   assert.equal(nextHeroIntent(view(r, [r], [near], freshTurn(), wide)).kind, 'move');
 });
 
-test('a wizard casts Shield when an elite is on them', () => {
+test('a wizard with an elite on them puts up every defense the AP pays for: Shield and Brace', () => {
   const w = withSkills(hero('wizard', 3, 3), [['fire_bolt'], ['shield']]);
   const hob = monster('hobgoblin', 4, 3, { elite: true });
-  const turn = { ...freshTurn(), actionUsed: true, movesLeft: 0 };
-  assert.deepEqual(nextHeroIntent(view(w, [w], [hob], turn)), { kind: 'act', skill: 'shield' });
+  const turn = { ...freshTurn(), ap: 2, movesLeft: 0 };
+  const used: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const intent = nextHeroIntent(view(w, [w], [hob], turn));
+    if (intent.kind !== 'act') break;
+    used.push(intent.skill);
+    applyAct(view(w, [w], [hob], turn), intent);
+    if (intent.skill === 'brace') w.block = { [w.id]: 3 };
+  }
+  assert.deepEqual(used.sort(), ['brace', 'shield']);
 });
 
 test('a healthy fighter taunts goblins off the wizard, a badly hurt one does not', () => {
   const f = withSkills(hero('fighter', 4, 3), [['battle_cry']]);
   const w = hero('wizard', 6, 3);
   const gs = [goblin(5, 2), goblin(5, 4)]; // as close to both: they'd go for the frailer wizard
-  const turn = () => ({ ...freshTurn(), actionUsed: true, movesLeft: 0 });
+  const turn = () => ({ ...freshTurn(), ap: 1, movesLeft: 0 });
   assert.deepEqual(nextHeroIntent(view(f, [f, w], gs, turn())), { kind: 'act', skill: 'battle_cry' });
   f.hp = 3;
   const hurt = nextHeroIntent(view(f, [f, w], gs, turn()));
@@ -405,7 +417,7 @@ test('after attacking, a rogue slips away from the goblin and hides', () => {
   const r = withSkills(hero('rogue', 6, 3), [['hide']]);
   const f = hero('fighter', 6, 4);
   const g = goblin(7, 3, { hp: 20, maxHp: 20 });
-  const v = view(r, [r, f], [g], { ...freshTurn(), actionUsed: true });
+  const v = view(r, [r, f], [g], { ...freshTurn(), ap: 1 });
   assert.deepEqual(firstAct(v), { kind: 'act', skill: 'hide' });
   assert.ok(dist(r, g) > 1);
 });
@@ -417,7 +429,7 @@ test('a fighter shoves a goblin off a downed friend, but Shield Bashes when it c
     const f = hero('fighter', 4, 4, { potions: 0 }); // no potion to feed them
     if (!bashReady) f.skills.find((s) => s.id === 'shield_bash')!.cd = 1;
     const g = goblin(4, 3, { hp: 20, maxHp: 20 });
-    const v = view(f, [f, down, c], [g], { ...freshTurn(), actionUsed: true });
+    const v = view(f, [f, down, c], [g], { ...freshTurn(), ap: 1 });
     const intent = firstAct(v);
     assert.deepEqual(intent, { kind: 'act', skill: bashReady ? 'shield_bash' : 'shove', target: g.id });
     assert.equal(validAct(v, intent), null);
@@ -429,7 +441,7 @@ test('a fighter shoves a goblin off the wizard', () => {
   const f = hero('fighter', 5, 2);
   f.skills.find((s) => s.id === 'shield_bash')!.cd = 1;
   const g = goblin(6, 3, { hp: 20, maxHp: 20 });
-  const v = view(f, [f, w], [g], { ...freshTurn(), actionUsed: true });
+  const v = view(f, [f, w], [g], { ...freshTurn(), ap: 1 });
   assert.deepEqual(firstAct(v), { kind: 'act', skill: 'shove', target: g.id });
 });
 
@@ -437,7 +449,7 @@ test('nobody bothers taunting monsters that are surprised: they lose their turn 
   const f = withSkills(hero('fighter', 4, 3), [['battle_cry']]);
   const w = hero('wizard', 6, 3);
   const gs = [goblin(5, 2), goblin(5, 4)].map((g) => ({ ...g, statuses: [{ id: 'surprised' as const, turns: 1 }] }));
-  const intent = nextHeroIntent(view(f, [f, w], gs, { ...freshTurn(), actionUsed: true, movesLeft: 0 }));
+  const intent = nextHeroIntent(view(f, [f, w], gs, { ...freshTurn(), ap: 1, movesLeft: 0 }));
   assert.ok(intent.kind !== 'act' || intent.skill !== 'battle_cry', JSON.stringify(intent));
 });
 
@@ -485,7 +497,7 @@ test('a hero standing in fire steps out of it, and stays next to the goblin', ()
   const m = field([[3, 3, 'fire']]);
   const f = hero('fighter', 3, 3);
   const g = goblin(4, 3, { hp: 20, maxHp: 20 });
-  const intent = nextHeroIntent(view(f, [f], [g], { ...freshTurn(), actionUsed: true, bonusUsed: true }, m));
+  const intent = nextHeroIntent(view(f, [f], [g], { ...freshTurn(), ap: 0 }, m));
   assert.equal(intent.kind, 'move', JSON.stringify(intent));
   if (intent.kind === 'move') {
     assert.notEqual(groundAt(m, intent.to), 'fire');
@@ -493,7 +505,7 @@ test('a hero standing in fire steps out of it, and stays next to the goblin', ()
   }
   // Without the fire it has no reason to move.
   const calm = hero('fighter', 3, 3);
-  assert.deepEqual(nextHeroIntent(view(calm, [calm], [g], { ...freshTurn(), actionUsed: true, bonusUsed: true })), { kind: 'end' });
+  assert.deepEqual(nextHeroIntent(view(calm, [calm], [g], { ...freshTurn(), ap: 0 })), { kind: 'end' });
 });
 
 test('a fighter walks around the fire to attack from a safe side, even a step further', () => {
@@ -589,7 +601,7 @@ test('frozen monsters lose their turn: nobody taunts them, Fire Bolt goes for th
   const f = withSkills(hero('fighter', 4, 3), [['battle_cry']]);
   const w = hero('wizard', 6, 3);
   const gs = [goblin(5, 2), goblin(5, 4)].map((g) => ({ ...g, statuses: [status('frozen', 1)] }));
-  const intent = nextHeroIntent(view(f, [f, w], gs, { ...freshTurn(), actionUsed: true, movesLeft: 0 }));
+  const intent = nextHeroIntent(view(f, [f, w], gs, { ...freshTurn(), ap: 1, movesLeft: 0 }));
   assert.ok(intent.kind !== 'act' || intent.skill !== 'battle_cry', JSON.stringify(intent));
   // Fire thaws: rather burn the goblin that still gets a turn.
   const w2 = withSkills(hero('wizard', 2, 3), [['fire_bolt']]);
@@ -736,7 +748,7 @@ function randomFight(seed: number) {
   // The hero whose turn it is takes every class in turn, so each class gets its share of the fights.
   const heroes = open.slice(0, nHeroes).map((p, i) => randomHero(r, p, i === 0 ? CLASS_IDS[seed % CLASS_IDS.length] : undefined));
   const monsters = open.slice(nHeroes, nHeroes + nMonsters).map((p) => randomMonster(r, p));
-  const turn: TurnState = { ...freshTurn(), movesLeft: r.int(0, 8), actionUsed: r.chance(0.25), bonusUsed: r.chance(0.25) };
+  const turn: TurnState = { ...freshTurn(), movesLeft: r.int(0, 8), ap: r.int(0, 5) };
   return { r, map: m, heroes, monsters, turn, me: heroes[0] };
 }
 
@@ -786,8 +798,9 @@ test(`whole turns in ${FIGHTS} random fights end without a rejected act or a loo
       applyAct(v, intent, f.r);
     }
   }
-  // The new tricks do come up in random fights (so the checks above cover them).
-  for (const id of ['hide', 'shove']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
+  // The new tricks do come up in random fights (so the checks above cover them). Shove mostly comes up on the messy
+  // battlefield below (into fire, off ledges of oil): with AP, a spare AP here usually goes on Brace.
+  for (const id of ['hide', 'brace', 'dash']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
 });
 
 // ---------------------------------------------------------------- the same on a messy battlefield (Phase 5)
@@ -865,5 +878,5 @@ test(`whole turns in ${FIGHTS} random fights on a messy battlefield end without 
     }
   }
   // Barrels get smashed and the setups get cast (so the checks above cover them).
-  for (const id of ['prop', 'grease', 'create_water']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
+  for (const id of ['prop', 'grease', 'create_water', 'shove']) assert.ok(used.get(id), `never used ${id}: ${JSON.stringify([...used])}`);
 });

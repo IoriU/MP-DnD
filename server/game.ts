@@ -14,6 +14,8 @@ import {
   BREATH_DC,
   CLASSES,
   CLASS_IDS,
+  AP_GAIN,
+  AP_MAX,
   CHARGE_MOVES,
   COWARD_TURNS,
   DIFFICULTIES,
@@ -1551,6 +1553,8 @@ export class Game {
     p.statuses = p.statuses.filter((s) => s.id === 'surprised'); // an ambush or a failed sneak still counts
     p.used = [];
     p.tempHp = passiveOf(p, 'arcane_ward')?.value ?? 0;
+    p.savedAp = 0;
+    delete p.block;
     if (hasBranch(p, 'slippery', 'B') || hasBranch(p, 'alert', 'B') || this.hasRelic('eagle_eye')) p.statuses.push({ id: 'focused', turns: 99 });
   }
 
@@ -1562,7 +1566,7 @@ export class Game {
     const init: Record<string, number> = {};
     for (const e of fighters) init[e.id] = rollDie(20) + this.initBonus(e);
     const order = fighters.map((e) => e.id).sort((a, b) => init[b] - init[a]); // stable: players win ties
-    this.turn = { order, init, index: 0, round: 1, movesLeft: 0, actionUsed: false, bonusUsed: false };
+    this.turn = { order, init, index: 0, round: 1, movesLeft: 0, ap: 0 };
     this.addLog('system', `🎲 Roll for initiative! ${order.map((id) => `${this.entity(id)?.name} ${init[id]}`).join(' · ')}`);
     // A bot sizes up the foe: elites and bosses get a line of their own.
     this.chatter = newChatter();
@@ -1588,6 +1592,7 @@ export class Game {
   private removeFromOrder(id: string) {
     const t = this.turn;
     if (!t) return;
+    this.dropBlock(id); // nobody's turn will end it now
     const i = t.order.indexOf(id);
     if (i < 0) return;
     t.order.splice(i, 1);
@@ -1607,9 +1612,12 @@ export class Game {
     if (!e) return this.advanceTurn();
     this.turnOwner = e.id;
     t.movesLeft = (SLOWED.some((id) => hasStatus(e, id)) ? Math.floor(e.speed / 2) : e.speed) + (hasStatus(e, 'charging') ? CHARGE_MOVES : 0);
-    t.actionUsed = false;
-    t.bonusUsed = false;
+    t.ap = 0; // heroes get theirs below, once it's clear they get to act
+    // The Block this creature gave runs out (on itself and on friends); then shields and gear put up this turn's.
+    this.dropBlock(e.id);
     if (e.kind === 'player' && e.dead) return this.advanceTurn();
+    const wall = e.kind === 'player' ? (this.standing(e) ? gearBonus(e, 'block') : 0) : (MONSTERS[e.type]?.block ?? 0);
+    if (wall > 0) this.addBlock(e, e, wall, false);
     if (hasStatus(e, 'prone')) {
       // Getting back up costs half its movement.
       e.statuses = e.statuses.filter((s) => s.id !== 'prone');
@@ -1641,7 +1649,10 @@ export class Game {
       this.deathSave(e);
       if (e.downed) this.later(token, 1000, () => this.advanceTurn());
       // A great death save gets them back up mid-turn: auto heroes still need someone to play it.
-      else if (!e.dead && this.isAuto(e.playerId)) this.runHero(e, token);
+      else if (!e.dead) {
+        this.grantAp(e);
+        if (this.isAuto(e.playerId)) this.runHero(e, token);
+      }
     } else if (hasStatus(e, 'surprised')) {
       this.addLog('info', `😱 ${e.name} is caught by surprise and loses the turn.`);
       this.float(e, 'surprised!', '#ffd84d');
@@ -1656,10 +1667,56 @@ export class Game {
       this.later(token, 900, () => this.advanceTurn());
     } else if (e.kind === 'monster') {
       this.runMonster(e, token).catch((err) => console.error('monster AI error', err));
-    } else if (this.isAuto(e.playerId)) {
-      this.runHero(e, token);
+    } else {
+      this.grantAp(e);
+      if (this.isAuto(e.playerId)) this.runHero(e, token);
     }
     this.broadcast();
+  }
+
+  /** 🧱 Block from `by` (until the start of its next turn), on top of what the target has. */
+  private addBlock(t: Entity, by: Entity, n: number, show = true) {
+    if (n <= 0) return;
+    (t.block ??= {})[by.id] = (t.block[by.id] ?? 0) + n;
+    if (show) this.float(t, `🧱+${n}`, '#c8d1dc');
+  }
+
+  /** A hero's skill puts up Block (the dice, plus their level for some), with a line in the log. */
+  private blockFrom(p: PlayerEntity, t: Entity, dice: Dice, level?: boolean) {
+    const n = rollDice(dice) + (level ? p.level : 0);
+    this.addBlock(t, p, n);
+    this.addLog('info', t === p ? `🧱 ${p.name} gets ${n} Block until their next turn.` : `🧱 ${p.name} covers ${t.name}: ${n} Block until ${p.name}'s next turn.`);
+  }
+
+  /** The Block this creature gave runs out, wherever it is. */
+  private dropBlock(id: string) {
+    for (const e of this.entities) {
+      if (!e.block || e.block[id] === undefined) continue;
+      delete e.block[id];
+      if (!Object.keys(e.block).length) delete e.block;
+    }
+  }
+
+  /** Block soaks damage before anything else. Returns what gets through. */
+  private soakBlock(t: Entity, amount: number): number {
+    if (!t.block || amount <= 0) return amount;
+    let soaked = 0;
+    for (const [id, n] of Object.entries(t.block)) {
+      const take = Math.min(n, amount - soaked);
+      soaked += take;
+      if (n > take) t.block[id] = n - take;
+      else delete t.block[id];
+      if (soaked >= amount) break;
+    }
+    if (!Object.keys(t.block).length) delete t.block;
+    if (soaked) this.float(t, `🧱${soaked}`, '#c8d1dc');
+    return amount - soaked;
+  }
+
+  /** A hero who gets to act: this turn's AP plus what they saved last turn, up to AP_MAX. A lost turn keeps the savings. */
+  private grantAp(p: PlayerEntity) {
+    this.turn!.ap = Math.min(AP_MAX, (p.savedAp ?? 0) + AP_GAIN);
+    p.savedAp = 0;
   }
 
   /** Start of a hero's turn: cooldowns tick down, per-round effects come back, regeneration passives. */
@@ -1689,8 +1746,9 @@ export class Game {
     }
   }
 
-  /** End of a creature's turn: statuses count down. */
+  /** End of a creature's turn: statuses count down, and a hero's unspent AP is saved for the next turn. */
   private endOfTurn(e: Entity) {
+    if (e.kind === 'player' && this.turn) e.savedAp = Math.max(e.savedAp ?? 0, this.turn.ap);
     for (const s of e.statuses) s.turns--;
     e.statuses = e.statuses.filter((s) => s.turns > 0);
   }
@@ -1799,6 +1857,7 @@ export class Game {
         p.hp = Math.min(hp, p.maxHp);
       }
       p.tempHp = 0;
+      delete p.block;
       p.used = [];
       for (const s of p.skills) s.cd = 0;
       p.hp = Math.min(p.maxHp, Math.max(1, p.hp) + Math.ceil(p.maxHp * breather - 1e-9)); // (0.2 + 0.1 isn't quite 0.3)
@@ -2456,8 +2515,8 @@ export class Game {
     this.cancelWalk(p.id);
     const kind = SKILLS[skillId].kind;
     if (inCombat && this.turn) {
-      if (s.cost === 'action') this.turn.actionUsed = true;
-      else if (s.cost === 'bonus') this.turn.bonusUsed = true;
+      this.turn.ap -= s.ap;
+      if (s.oncePerTurn) p.used.push(`turn:${skillId}`);
     }
     if (kind === 'spell') p.slots -= slotCost(s);
     if (kind === 'cantrip') own.cd = (s.cooldown ?? 0) + 1; // ticks down at the start of each of your turns
@@ -2540,16 +2599,18 @@ export class Game {
         this.addLog('heal', `${s.icon} ${line}: +${healed} HP.`);
       }
       if (s.tempHp) fr.tempHp = Math.max(fr.tempHp, rollDice(s.tempHp));
+      if (s.block && this.standing(fr)) this.blockFrom(p, fr, s.block, s.blockLevel);
       if (s.cleanse) fr.statuses = fr.statuses.filter((x) => !CLEANSED.includes(x.id));
       if (s.frees) fr.statuses = fr.statuses.filter((x) => !ROOTED.includes(x.id));
       if (s.cleanse || s.frees) this.unrooted(fr);
       for (const st of s.status ?? []) this.applyStatus(fr, st, p);
-      if (s.status?.length && fr !== p) this.grantXp(p, XP_BUFF);
+      if ((s.status?.length || s.block) && fr !== p) this.grantXp(p, XP_BUFF);
     }
 
     // You. Any move against the enemy gives a hidden hero away (Smoke Bomb hides you again right after).
     if (s.target === 'enemy' || s.target === 'area' || s.target === 'around') p.statuses = p.statuses.filter((x) => x.id !== 'hidden');
     for (const st of s.selfStatus ?? []) this.applyStatus(p, st, p);
+    if (s.selfBlock) this.blockFrom(p, p, s.selfBlock, s.blockLevel);
     if (s.taunt) {
       const taunted = this.monsters().filter((m) => dist(m, p) <= s.taunt!.radius);
       for (const m of taunted) this.applyStatus(m, { id: 'taunted', turns: s.taunt.turns }, p);
@@ -2557,8 +2618,8 @@ export class Game {
     }
     if (this.turn && this.phase === 'combat' && this.current()?.id === p.id) {
       if (s.dash) this.addMoves(p, s.dash);
-      if (s.refresh) {
-        this.turn.actionUsed = false;
+      if (s.gainAp) {
+        this.turn.ap += s.gainAp;
         p.used.push('turn:surge');
       }
     }
@@ -2920,6 +2981,7 @@ export class Game {
         amount = Math.ceil(amount / 2);
         this.addLog('info', `🐍 ${t.name} twists away: half damage.`);
       }
+      amount = this.soakBlock(t, amount);
       if (t.tempHp > 0) {
         const soaked = Math.min(t.tempHp, amount);
         t.tempHp -= soaked;
@@ -2939,6 +3001,7 @@ export class Game {
         this.addLog('info', `🪨 ${t.name} refuses to fall!`);
       }
     }
+    if (t.kind === 'monster') amount = this.soakBlock(t, amount);
     if (t.kind === 'monster' && (t.ward ?? 0) > 0 && amount > 0) {
       // Shielded: the ward takes it first.
       const soaked = Math.min(t.ward ?? 0, amount);
@@ -2969,6 +3032,7 @@ export class Game {
       t.downed = true;
       t.saves = { ok: 0, fail: 0 };
       t.statuses = [];
+      delete t.block;
       this.cancelWalk(t.id);
       this.addLog('death', `🩸 ${t.name} falls unconscious! Heal them to get them back up.`);
       this.callout(this.randomBot(t), 'down', { ally: t.name });
@@ -3153,10 +3217,10 @@ export class Game {
       if (hasBranch(p, 'bloodthirsty', 'B')) for (const h of this.heroes()) if (h !== p && this.standing(h)) this.healBy(null, h, 2);
     }
     const myTurn = this.turn && this.current()?.id === p.id;
-    if (myTurn && this.turn!.actionUsed && hasBranch(p, 'opportunist', 'A') && !p.used.includes('turn:executioner')) {
+    if (myTurn && hasBranch(p, 'opportunist', 'A') && !p.used.includes('turn:executioner')) {
       p.used.push('turn:executioner');
-      this.turn!.actionUsed = false;
-      this.addLog('info', `🦊 Executioner! ${p.name} gets their action back.`);
+      this.turn!.ap += 2;
+      this.addLog('info', `🦊 Executioner! ${p.name} gets 2 AP back.`);
     }
     if (hasBranch(p, 'sentinel', 'B') && !p.used.includes('turn:cleave')) {
       const next = this.monsters().find((m) => dist(m, p) <= 1);

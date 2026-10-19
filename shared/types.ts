@@ -35,6 +35,7 @@ interface EntityBase {
   speed: number; // tiles per turn (1 tile = 5 ft)
   statuses: StatusInst[];
   facing: Pos; // 8-way direction it looks: where it last moved or attacked (never 0,0). Attacks from behind have advantage.
+  block?: Record<string, number>; // 🧱 Block, by who gave it (entity id): soaks damage before temp HP, gone at the start of the giver's next turn
 }
 
 /** A skill a hero knows. Tier 3 always has a branch. */
@@ -73,6 +74,7 @@ export interface PlayerEntity extends EntityBase {
   bonusAc: number;
   bonusSlots: number;
   tempHp: number; // soaks damage first; gone after the fight
+  savedAp?: number; // AP left at the end of their last turn in this fight, carried into the next (up to AP_MAX)
   potions: number;
   gear: Partial<Record<Slot, ItemId>>; // what the hero wears (shared/items.ts)
   bag: ItemId[]; // unequipped gear and consumables, up to BAG_SIZE
@@ -123,8 +125,7 @@ export interface TurnState {
   index: number;
   round: number;
   movesLeft: number;
-  actionUsed: boolean;
-  bonusUsed: boolean;
+  ap: number; // action points the current hero has left (0 on monster turns; shared/rules.ts AP_GAIN, AP_MAX)
   focus?: string[]; // the heroes the monsters hunt (entity ids): one per pack, more in bigger parties (server/monsterai.ts)
   allyFocus?: string | null; // the NPC allies' target
 }

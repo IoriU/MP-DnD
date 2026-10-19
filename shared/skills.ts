@@ -73,10 +73,10 @@ export const STATUSES: Record<StatusId, StatusDef> = {
   frozen: { name: 'Frozen', icon: '🧊', good: false, desc: 'Frozen solid: loses its next turn. Fire thaws it.' },
   shocked: { name: 'Shocked', icon: '⚡', good: false, desc: '−2 AC. More lightning stuns it.' },
   // Monster tricks (Phase 12): set-ups that another monster pays off.
-  netted: { name: 'Netted', icon: '🪢', good: false, desc: "Can't move, and ranged attacks against it have advantage. Cut Free (a bonus action) gets out of it." },
+  netted: { name: 'Netted', icon: '🪢', good: false, desc: "Can't move, and ranged attacks against it have advantage. Cut Free (1 AP) gets out of it." },
   webbed: {
     name: 'Webbed', icon: '🕸️', good: false,
-    desc: "Stuck in a web: can't move, attacks against it have advantage and its own have disadvantage. Cut Free (a bonus action) or fire gets out of it.",
+    desc: "Stuck in a web: can't move, attacks against it have advantage and its own have disadvantage. Cut Free (1 AP) or fire gets out of it.",
   },
   prone: { name: 'Prone', icon: '🤕', good: false, desc: 'Knocked down: melee attacks against it have advantage, ranged ones disadvantage. Getting up costs half its movement.' },
   distracted: { name: 'Distracted', icon: '👉', good: false, desc: "Someone's in its face: the next attack against it has advantage." },
@@ -90,7 +90,7 @@ export const STATUSES: Record<StatusId, StatusDef> = {
 export const SKIP_TURN: StatusId[] = ['stunned', 'frozen', 'surprised'];
 /** Statuses that halve movement. */
 export const SLOWED: StatusId[] = ['dazed', 'chilled'];
-/** Statuses that keep a creature from moving. Cut Free (a bonus action) removes them; fire burns a web away. */
+/** Statuses that keep a creature from moving. Cut Free (1 AP) removes them; fire burns a web away. */
 export const ROOTED: StatusId[] = ['netted', 'webbed'];
 /** What Purifying Touch and other cleanses remove. */
 export const CLEANSED: StatusId[] = ['burning', 'poisoned', 'dazed', 'blinded', 'chilled', 'shocked', 'frozen', 'netted', 'webbed'];
@@ -119,22 +119,22 @@ export type TargetMode = 'enemy' | 'ally' | 'self' | 'area' | 'around' | 'allies
 
 /**
  * What a skill does. The server runs it in this order:
- *  1. pay: action/bonus (or nothing for 'free'), slots, cooldown
+ *  1. pay: AP, slots, cooldown
  *  2. teleport (step next to the main target, on the far side if free), pull (enemies within `pull` tiles are
  *     dragged next to you)
  *  3. for each foe: `hits` times roll (attack roll vs AC / save vs your DC / auto-hit), deal `dmg` (+ stat mod if
  *     `mod`, + Sneak Attack once per turn if `sneak` and an ally is next to the target or you have advantage,
  *     + `execute` if the target is below half HP), then on a hit or failed save apply `onHit` and `push`
  *     Area skills (aimed at a spot) hit heroes in the blast too: friendly fire.
- *  4. for each friend: heal, temp HP, cleanse, `status`
- *  5. on you: `selfStatus`, `taunt` (enemies within radius), `dash`, `refresh`, `resetCooldowns`
+ *  4. for each friend: heal, temp HP, Block, cleanse, `status`
+ *  5. on you: `selfStatus`, `selfBlock`, `taunt` (enemies within radius), `dash`, `gainAp`, `resetCooldowns`
  *  6. the battlefield: the element reacts with the tiles it reached (where everyone stood when it was cast),
  *     then `surface` appears (see shared/surfaces.ts aimFieldOps)
  */
 export interface SkillStats {
   name: string;
   icon: string;
-  cost: 'action' | 'bonus' | 'free';
+  ap: number; // action points: 1 for quick things (the old bonus actions), 2 for attacks and most spells, 3 for the biggest
   target: TargetMode;
   range: number; // tiles; diagonals count as 1
   radius?: number; // area / around / allies
@@ -171,12 +171,16 @@ export interface SkillStats {
   cleanse?: boolean; // removes the statuses in CLEANSED
   frees?: boolean; // cuts a Netted or Webbed hero free
   tempHp?: Dice;
+  block?: Dice; // 🧱 Block on each friend affected (you, for a self skill), until the start of your next turn
+  selfBlock?: Dice; // 🧱 Block on you after the rest (Bulwark Bash), until the start of your next turn
+  blockLevel?: boolean; // + your level to the Block
   status?: StatusApply[]; // on each friend affected
   // you
   selfStatus?: StatusApply[];
   taunt?: { radius: number; turns: number };
   dash?: number; // extra movement this turn
-  refresh?: boolean; // get your action back
+  gainAp?: number; // AP back this turn, past the usual cap (Action Surge; once per turn)
+  oncePerTurn?: boolean; // usable once per turn (Brace)
   resetCooldowns?: boolean; // every other cantrip is ready again
   restoreSlots?: number; // slots back (Ether)
   // passives
@@ -194,6 +198,8 @@ export interface SkillDef {
   b?: Partial<SkillStats> & { name: string }; // tier III-B, on top of tier II
 }
 
+export const DASH_TILES = 3; // 👟 Dash (everyone, 1 AP). Here, not in rules.ts: SKILLS is built while rules.ts is still loading.
+
 const d = (n: number, sides: number, bonus?: number): Dice => (bonus ? { n, d: sides, bonus } : { n, d: sides });
 const st = (id: StatusId, turns: number, power?: number, stack?: number): StatusApply =>
   stack ? { id, turns, power: power ?? 1, stack } : power ? { id, turns, power } : { id, turns };
@@ -204,79 +210,81 @@ function passive(
   pool: SkillDef['pool'], icon: string, name: string,
   t1: PassiveTier, t2: PassiveTier, a: PassiveTier & { name: string }, b: PassiveTier & { name: string },
 ): SkillDef {
-  return { kind: 'passive', pool, base: { name, icon, cost: 'free', target: 'self', range: 0, ...t1 }, t2, a, b };
+  return { kind: 'passive', pool, base: { name, icon, ap: 0, target: 'self', range: 0, ...t1 }, t2, a, b };
 }
 
 // ---------------------------------------------------------------- content
 
 const SKILL_DEFS = {
   // ---------------------------------------------- basic attacks (free, no tiers)
-  longsword: { kind: 'basic', pool: 'fighter', base: { name: 'Longsword', icon: '⚔️', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, extraAttack: true } },
-  rapier: { kind: 'basic', pool: 'rogue', base: { name: 'Rapier', icon: '🗡️', cost: 'action', target: 'enemy', range: 1, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true, sneak: true } },
+  longsword: { kind: 'basic', pool: 'fighter', base: { name: 'Longsword', icon: '⚔️', ap: 2, target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, extraAttack: true } },
+  rapier: { kind: 'basic', pool: 'rogue', base: { name: 'Rapier', icon: '🗡️', ap: 2, target: 'enemy', range: 1, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true, sneak: true } },
   shove: {
     kind: 'action', pool: 'common',
-    base: { name: 'Shove', icon: '✋', cost: 'bonus', target: 'enemy', range: 1, stat: 'str', roll: 'contest', push: 1, note: 'Win by 5 or more and it flies 2 tiles.' },
+    base: { name: 'Shove', icon: '✋', ap: 1, target: 'enemy', range: 1, stat: 'str', roll: 'contest', push: 1, note: 'Win by 5 or more and it flies 2 tiles.' },
   },
-  shortbow: { kind: 'basic', pool: 'rogue', base: { name: 'Shortbow', icon: '🏹', cost: 'action', target: 'enemy', range: 8, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true, sneak: true } },
-  dagger: { kind: 'basic', pool: 'wizard', base: { name: 'Dagger', icon: '🔪', cost: 'action', target: 'enemy', range: 4, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, note: 'Stab, or throw it up to 4 tiles.' } },
-  mace: { kind: 'basic', pool: 'cleric', base: { name: 'Mace', icon: '🔨', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 6), mod: true } },
-  potion: { kind: 'item', pool: 'common', base: { name: 'Potion', icon: '🧪', cost: 'bonus', target: 'ally', range: 1, heal: d(2, 4, 2), note: 'Drink it, or feed it to an ally next to you.' } },
-  cut_free: { kind: 'action', pool: 'common', base: { name: 'Cut Free', icon: '✂️', cost: 'bonus', target: 'ally', range: 1, frees: true } },
+  shortbow: { kind: 'basic', pool: 'rogue', base: { name: 'Shortbow', icon: '🏹', ap: 2, target: 'enemy', range: 8, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true, sneak: true } },
+  dagger: { kind: 'basic', pool: 'wizard', base: { name: 'Dagger', icon: '🔪', ap: 2, target: 'enemy', range: 4, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, note: 'Stab, or throw it up to 4 tiles.' } },
+  mace: { kind: 'basic', pool: 'cleric', base: { name: 'Mace', icon: '🔨', ap: 2, target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 6), mod: true } },
+  potion: { kind: 'item', pool: 'common', base: { name: 'Potion', icon: '🧪', ap: 1, target: 'ally', range: 1, heal: d(2, 4, 2), note: 'Drink it, or feed it to an ally next to you.' } },
+  cut_free: { kind: 'action', pool: 'common', base: { name: 'Cut Free', icon: '✂️', ap: 1, target: 'ally', range: 1, frees: true } },
+  dash: { kind: 'action', pool: 'common', base: { name: 'Dash', icon: '👟', ap: 1, target: 'self', range: 0, dash: DASH_TILES } },
+  brace: { kind: 'action', pool: 'common', base: { name: 'Brace', icon: '🧱', ap: 1, target: 'self', range: 0, block: d(1, 6), oncePerTurn: true } }, // class skills are the big Block
 
   // ---------------------------------------------- consumables (shared/items.ts): one use each, from the bag
-  greater_potion: { kind: 'item', pool: 'common', base: { name: 'Greater Potion', icon: '🧴', cost: 'bonus', target: 'ally', range: 1, heal: d(4, 4, 4), note: 'Drink it, or feed it to an ally next to you.' } },
-  ether: { kind: 'item', pool: 'common', base: { name: 'Ether', icon: '🔮', cost: 'bonus', target: 'self', range: 0, restoreSlots: 1 } },
-  oil_flask: { kind: 'item', pool: 'common', base: { name: 'Oil Flask', icon: '🫗', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { ground: 'oil' }, note: 'Throw it, then light it.' } },
-  water_flask: { kind: 'item', pool: 'common', base: { name: 'Water Flask', icon: '🫙', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { ground: 'water' }, note: 'Puts out fires and soaks whoever is there.' } },
-  fire_bomb: { kind: 'item', pool: 'common', base: { name: 'Fire Bomb', icon: '🧨', cost: 'action', target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'fire' } },
-  frost_bomb: { kind: 'item', pool: 'common', base: { name: 'Frost Bomb', icon: '☃️', cost: 'action', target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'cold' } },
-  thunderstone: { kind: 'item', pool: 'common', base: { name: 'Thunderstone', icon: '🌩️', cost: 'action', target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'lightning' } },
-  smoke_pellet: { kind: 'item', pool: 'common', base: { name: 'Smoke Pellet', icon: '💨', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { cloud: 'smoke' } } },
-  stink_bomb: { kind: 'item', pool: 'common', base: { name: 'Stink Bomb', icon: '🦨', cost: 'bonus', target: 'area', range: 5, radius: 1, surface: { cloud: 'gas' } } },
-  scroll_healing: { kind: 'item', pool: 'common', base: { name: 'Scroll of Mass Healing', icon: '📜', cost: 'action', target: 'allies', radius: 6, range: 0, heal: d(2, 4, 2) } },
-  scroll_blessing: { kind: 'item', pool: 'common', base: { name: 'Scroll of Blessing', icon: '📃', cost: 'action', target: 'allies', radius: 4, range: 0, status: [st('blessed', 3)] } },
+  greater_potion: { kind: 'item', pool: 'common', base: { name: 'Greater Potion', icon: '🧴', ap: 1, target: 'ally', range: 1, heal: d(4, 4, 4), note: 'Drink it, or feed it to an ally next to you.' } },
+  ether: { kind: 'item', pool: 'common', base: { name: 'Ether', icon: '🔮', ap: 1, target: 'self', range: 0, restoreSlots: 1 } },
+  oil_flask: { kind: 'item', pool: 'common', base: { name: 'Oil Flask', icon: '🫗', ap: 1, target: 'area', range: 5, radius: 1, surface: { ground: 'oil' }, note: 'Throw it, then light it.' } },
+  water_flask: { kind: 'item', pool: 'common', base: { name: 'Water Flask', icon: '🫙', ap: 1, target: 'area', range: 5, radius: 1, surface: { ground: 'water' }, note: 'Puts out fires and soaks whoever is there.' } },
+  fire_bomb: { kind: 'item', pool: 'common', base: { name: 'Fire Bomb', icon: '🧨', ap: 2, target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'fire' } },
+  frost_bomb: { kind: 'item', pool: 'common', base: { name: 'Frost Bomb', icon: '☃️', ap: 2, target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'cold' } },
+  thunderstone: { kind: 'item', pool: 'common', base: { name: 'Thunderstone', icon: '🌩️', ap: 2, target: 'area', range: 5, radius: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'lightning' } },
+  smoke_pellet: { kind: 'item', pool: 'common', base: { name: 'Smoke Pellet', icon: '💨', ap: 1, target: 'area', range: 5, radius: 1, surface: { cloud: 'smoke' } } },
+  stink_bomb: { kind: 'item', pool: 'common', base: { name: 'Stink Bomb', icon: '🦨', ap: 1, target: 'area', range: 5, radius: 1, surface: { cloud: 'gas' } } },
+  scroll_healing: { kind: 'item', pool: 'common', base: { name: 'Scroll of Mass Healing', icon: '📜', ap: 2, target: 'allies', radius: 6, range: 0, heal: d(2, 4, 2) } },
+  scroll_blessing: { kind: 'item', pool: 'common', base: { name: 'Scroll of Blessing', icon: '📃', ap: 2, target: 'allies', radius: 4, range: 0, status: [st('blessed', 3)] } },
 
   // ---------------------------------------------- Fighter
   shield_bash: {
     kind: 'cantrip', pool: 'fighter',
-    base: { name: 'Shield Bash', icon: '🛡️', cost: 'bonus', target: 'enemy', range: 1, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(1, 4), mod: true, push: 1, onHit: [st('dazed', 1)] },
+    base: { name: 'Shield Bash', icon: '🛡️', ap: 1, target: 'enemy', range: 1, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(1, 4), mod: true, push: 1, onHit: [st('dazed', 1)] },
     t2: { dmg: d(1, 6), push: 2 },
     a: { name: 'Concussive Bash', onHit: [st('stunned', 1)] },
-    b: { name: 'Bulwark Bash', taunt: { radius: 2, turns: 1 }, selfStatus: [st('shielded', 1, 2)] },
+    b: { name: 'Bulwark Bash', taunt: { radius: 2, turns: 1 }, selfStatus: [], selfBlock: d(1, 6), blockLevel: true },
   },
   heavy_strike: {
     kind: 'cantrip', pool: 'fighter',
-    base: { name: 'Heavy Strike', icon: '🪓', cost: 'action', target: 'enemy', range: 1, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(2, 8), mod: true },
+    base: { name: 'Heavy Strike', icon: '🪓', ap: 2, target: 'enemy', range: 1, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(2, 8), mod: true },
     t2: { dmg: d(3, 8) },
     a: { name: 'Sunder', onHit: [st('marked', 2)] },
     b: { name: 'Execute', execute: d(2, 8) },
   },
   battle_cry: {
     kind: 'cantrip', pool: 'fighter',
-    base: { name: 'Battle Cry', icon: '📯', cost: 'bonus', target: 'self', range: 0, cooldown: 3, taunt: { radius: 2, turns: 1 }, selfStatus: [st('shielded', 1, 2)] },
+    base: { name: 'Battle Cry', icon: '📯', ap: 1, target: 'self', range: 0, cooldown: 3, taunt: { radius: 2, turns: 1 }, selfStatus: [st('shielded', 1, 2)] },
     t2: { taunt: { radius: 3, turns: 2 } },
     a: { name: 'Rallying Cry', target: 'allies', radius: 3, heal: d(1, 6), healLevel: true },
-    b: { name: 'Iron Wall', selfStatus: [st('shielded', 2, 4)] },
+    b: { name: 'Iron Wall', selfBlock: d(2, 6), blockLevel: true },
   },
   second_wind: {
     kind: 'spell', pool: 'fighter',
-    base: { name: 'Second Wind', icon: '💨', cost: 'bonus', target: 'self', range: 0, slots: 1, heal: d(1, 10), healLevel: true },
+    base: { name: 'Second Wind', icon: '💨', ap: 1, target: 'self', range: 0, slots: 1, heal: d(1, 10), healLevel: true },
     t2: { heal: d(2, 10) },
     a: { name: 'Adrenaline Rush', dash: 3, selfStatus: [st('focused', 1)] },
     b: { name: 'Rally', target: 'allies', radius: 2 },
   },
   whirlwind: {
     kind: 'spell', pool: 'fighter',
-    base: { name: 'Whirlwind', icon: '🌀', cost: 'action', target: 'around', radius: 1, range: 0, slots: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true },
+    base: { name: 'Whirlwind', icon: '🌀', ap: 2, target: 'around', radius: 1, range: 0, slots: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true },
     t2: { dmg: d(2, 8) },
     a: { name: 'Cyclone', pull: 3 },
     b: { name: 'Bladestorm', hits: 2 },
   },
   action_surge: {
     kind: 'spell', pool: 'fighter',
-    base: { name: 'Action Surge', icon: '⚡', cost: 'bonus', target: 'self', range: 0, slots: 1, refresh: true, note: 'Once per turn.' },
+    base: { name: 'Action Surge', icon: '⚡', ap: 1, target: 'self', range: 0, slots: 1, gainAp: 2, note: 'Once per turn.' },
     t2: { dash: 3 },
-    a: { name: 'Battle Surge', cost: 'free' },
+    a: { name: 'Battle Surge', ap: 0 },
     b: { name: 'Second Surge', resetCooldowns: true },
   },
   sentinel: passive('fighter', '👁️', 'Sentinel',
@@ -293,49 +301,49 @@ const SKILL_DEFS = {
   // ---------------------------------------------- Rogue
   cunning_dash: {
     kind: 'cantrip', pool: 'rogue',
-    base: { name: 'Cunning Dash', icon: '👟', cost: 'bonus', target: 'self', range: 0, cooldown: 2, dash: 6 },
+    base: { name: 'Cunning Dash', icon: '👟', ap: 1, target: 'self', range: 0, cooldown: 2, dash: 6 },
     t2: { cooldown: 1 },
     a: { name: 'Blur', selfStatus: [st('shielded', 1, 2)] },
     b: { name: 'Hit and Run', selfStatus: [st('focused', 1)] },
   },
   feint: {
     kind: 'cantrip', pool: 'rogue',
-    base: { name: 'Feint', icon: '🎭', cost: 'bonus', target: 'enemy', range: 1, cooldown: 3, selfStatus: [st('focused', 1)], note: 'No roll: it always works.' },
+    base: { name: 'Feint', icon: '🎭', ap: 1, target: 'enemy', range: 1, cooldown: 3, selfStatus: [st('focused', 1)], note: 'No roll: it always works.' },
     t2: { cooldown: 2, range: 4 },
     a: { name: 'Mark for Death', selfStatus: undefined, onHit: [st('marked', 2)] },
     b: { name: 'Riposte', selfStatus: [st('focused', 1), st('riposte', 1)] },
   },
   hide: {
     kind: 'cantrip', pool: 'rogue',
-    base: { name: 'Hide', icon: '👤', cost: 'bonus', target: 'self', range: 0, cooldown: 2, stealth: true, selfStatus: [st('hidden', 2)] },
+    base: { name: 'Hide', icon: '👤', ap: 1, target: 'self', range: 0, cooldown: 2, stealth: true, selfStatus: [st('hidden', 2)] },
     t2: { cooldown: 1 },
     a: { name: 'Shadow Strike', selfStatus: [st('hidden', 2, 2)] },
     b: { name: 'Smoke and Mirrors', stealth: false },
   },
   throwing_knives: {
     kind: 'cantrip', pool: 'rogue',
-    base: { name: 'Throwing Knives', icon: '🔪', cost: 'action', target: 'enemy', range: 5, cooldown: 2, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, hits: 2 },
+    base: { name: 'Throwing Knives', icon: '🔪', ap: 2, target: 'enemy', range: 5, cooldown: 2, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, hits: 2 },
     t2: { hits: 3 },
     a: { name: 'Fan of Knives', target: 'area', radius: 1, hits: 2 },
     b: { name: 'Poisoned Knives', onHit: [st('poisoned', 2)] },
   },
   shadow_step: {
     kind: 'spell', pool: 'rogue',
-    base: { name: 'Shadow Step', icon: '🌑', cost: 'action', target: 'enemy', range: 6, slots: 1, teleport: true, stat: 'dex', roll: 'attack', adv: true, dmg: d(1, 8), mod: true, sneak: true },
+    base: { name: 'Shadow Step', icon: '🌑', ap: 2, target: 'enemy', range: 6, slots: 1, teleport: true, stat: 'dex', roll: 'attack', adv: true, dmg: d(1, 8), mod: true, sneak: true },
     t2: { range: 9, dmg: d(2, 8) },
     a: { name: 'Assassinate', critFull: true },
     b: { name: 'Smoke Bomb', surface: { cloud: 'smoke', radius: 1, at: 'self' }, selfStatus: [st('hidden', 2)], dash: 3 },
   },
   cheap_shot: {
     kind: 'spell', pool: 'rogue',
-    base: { name: 'Cheap Shot', icon: '👊', cost: 'action', target: 'enemy', range: 1, slots: 1, stat: 'dex', roll: 'attack', adv: true, dmg: d(1, 8), mod: true, sneak: true, onHit: [st('stunned', 1)] },
+    base: { name: 'Cheap Shot', icon: '👊', ap: 2, target: 'enemy', range: 1, slots: 1, stat: 'dex', roll: 'attack', adv: true, dmg: d(1, 8), mod: true, sneak: true, onHit: [st('stunned', 1)] },
     t2: { dmg: d(2, 8) },
     a: { name: 'Knockout', onHit: [st('stunned', 2)] },
     b: { name: 'Crippling Shot', onHit: [st('stunned', 1), st('poisoned', 3)] },
   },
   hail_of_arrows: {
     kind: 'spell', pool: 'rogue',
-    base: { name: 'Hail of Arrows', icon: '🎯', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true },
+    base: { name: 'Hail of Arrows', icon: '🎯', ap: 2, target: 'area', range: 8, radius: 1, slots: 1, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true },
     t2: { dmg: d(2, 6) },
     a: { name: 'Volley', radius: 2 },
     b: { name: 'Poison Rain', onHit: [st('poisoned', 2)] },
@@ -343,7 +351,7 @@ const SKILL_DEFS = {
   opportunist: passive('rogue', '🦊', 'Opportunist',
     { value: 2, note: '+2 damage against targets below half HP.' },
     { value: 4, note: '+4 damage against targets below half HP.' },
-    { name: 'Executioner', value: 4, note: '+4 damage against targets below half HP. Once per turn, a killing blow gives you your action back.' },
+    { name: 'Executioner', value: 4, note: '+4 damage against targets below half HP. Once per turn, a killing blow gives you 2 AP back.' },
     { name: 'Evasion', value: 4, note: '+4 damage against targets below half HP. Area attacks (like breath) deal half damage to you, none on a successful save.' }),
   slippery: passive('rogue', '🐍', 'Slippery',
     { value: 1, note: '+1 movement.' },
@@ -354,49 +362,49 @@ const SKILL_DEFS = {
   // ---------------------------------------------- Wizard
   fire_bolt: {
     kind: 'cantrip', pool: 'wizard',
-    base: { name: 'Fire Bolt', icon: '🔥', cost: 'action', target: 'enemy', range: 8, cooldown: 1, roll: 'attack', dmg: d(1, 10), element: 'fire' },
+    base: { name: 'Fire Bolt', icon: '🔥', ap: 2, target: 'enemy', range: 8, cooldown: 1, roll: 'attack', dmg: d(1, 10), element: 'fire' },
     t2: { dmg: d(2, 10) },
     a: { name: 'Inferno', surface: { ground: 'fire' } },
     b: { name: 'Splitting Bolt', chain: 1 },
   },
   ray_of_frost: {
     kind: 'cantrip', pool: 'wizard',
-    base: { name: 'Ray of Frost', icon: '❄️', cost: 'action', target: 'enemy', range: 6, cooldown: 2, roll: 'attack', dmg: d(1, 8), element: 'cold' },
+    base: { name: 'Ray of Frost', icon: '❄️', ap: 2, target: 'enemy', range: 6, cooldown: 2, roll: 'attack', dmg: d(1, 8), element: 'cold' },
     t2: { dmg: d(2, 8) },
     a: { name: 'Deep Freeze', onHit: [st('frozen', 1)] },
     b: { name: 'Glacial Ray', range: 8, surface: { ground: 'ice', radius: 1 } },
   },
   shocking_grasp: {
     kind: 'cantrip', pool: 'wizard',
-    base: { name: 'Shocking Grasp', icon: '⚡', cost: 'action', target: 'enemy', range: 1, cooldown: 2, roll: 'attack', adv: true, dmg: d(1, 8), element: 'lightning', push: 2 },
+    base: { name: 'Shocking Grasp', icon: '⚡', ap: 2, target: 'enemy', range: 1, cooldown: 2, roll: 'attack', adv: true, dmg: d(1, 8), element: 'lightning', push: 2 },
     t2: { dmg: d(2, 8) },
     a: { name: 'Thunderclap', target: 'around', radius: 1 },
     b: { name: 'Chain Lightning', chain: 2 },
   },
   magic_missile: {
     kind: 'spell', pool: 'wizard',
-    base: { name: 'Magic Missile', icon: '🌟', cost: 'action', target: 'enemy', range: 8, slots: 1, roll: 'auto', dmg: d(1, 4, 1), hits: 3, element: 'force' },
+    base: { name: 'Magic Missile', icon: '🌟', ap: 2, target: 'enemy', range: 8, slots: 1, roll: 'auto', dmg: d(1, 4, 1), hits: 3, element: 'force' },
     t2: { hits: 4 },
     a: { name: 'Missile Barrage', hits: 6 },
     b: { name: 'Mind Spike', onHit: [st('dazed', 1)] },
   },
   fireball: {
     kind: 'spell', pool: 'wizard',
-    base: { name: 'Fireball', icon: '☄️', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'dex', half: true, dmg: d(3, 6), element: 'fire' },
+    base: { name: 'Fireball', icon: '☄️', ap: 3, target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'dex', half: true, dmg: d(3, 6), element: 'fire' },
     t2: { dmg: d(4, 6), radius: 2 },
     a: { name: 'Meteor', dmg: d(6, 6), slots: 2, surface: { ground: 'fire' } },
     b: { name: 'Concussive Blast', push: 1, onHit: [st('dazed', 1)] },
   },
   grease: {
     kind: 'spell', pool: 'wizard',
-    base: { name: 'Grease', icon: '🛢️', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, surface: { ground: 'oil' }, note: 'Oil burns: one spark sets all of it ablaze.' },
+    base: { name: 'Grease', icon: '🛢️', ap: 2, target: 'area', range: 8, radius: 1, slots: 1, surface: { ground: 'oil' }, note: 'Oil burns: one spark sets all of it ablaze.' },
     t2: { radius: 2 },
-    a: { name: 'Quick Grease', cost: 'bonus' },
+    a: { name: 'Quick Grease', ap: 1 },
     b: { name: 'Slick', surface: { ground: 'oil', turns: 10 }, onHit: [st('dazed', 1)] },
   },
   shield: {
     kind: 'spell', pool: 'wizard',
-    base: { name: 'Shield', icon: '🔰', cost: 'bonus', target: 'self', range: 0, slots: 1, status: [st('shielded', 1, 4)] },
+    base: { name: 'Shield', icon: '🔰', ap: 1, target: 'self', range: 0, slots: 1, status: [st('shielded', 1, 4)] },
     t2: { status: [st('shielded', 2, 4)] },
     a: { name: 'Warding Flare', target: 'allies', radius: 2 },
     b: { name: 'Arcane Armor', status: [st('shielded', 3, 4)], tempHp: d(2, 6) },
@@ -415,49 +423,49 @@ const SKILL_DEFS = {
   // ---------------------------------------------- Cleric
   sacred_flame: {
     kind: 'cantrip', pool: 'cleric',
-    base: { name: 'Sacred Flame', icon: '☀️', cost: 'action', target: 'enemy', range: 6, cooldown: 1, roll: 'save', save: 'dex', dmg: d(1, 8), element: 'radiant' },
+    base: { name: 'Sacred Flame', icon: '☀️', ap: 2, target: 'enemy', range: 6, cooldown: 1, roll: 'save', save: 'dex', dmg: d(1, 8), element: 'radiant' },
     t2: { dmg: d(2, 8) },
     a: { name: 'Searing Flame', onHit: [st('blinded', 1)] },
     b: { name: 'Radiant Flame', target: 'area', radius: 1 },
   },
   word_of_radiance: {
     kind: 'cantrip', pool: 'cleric',
-    base: { name: 'Word of Radiance', icon: '🌞', cost: 'action', target: 'around', radius: 1, range: 0, cooldown: 2, roll: 'save', save: 'str', dmg: d(1, 6), element: 'radiant' },
+    base: { name: 'Word of Radiance', icon: '🌞', ap: 2, target: 'around', radius: 1, range: 0, cooldown: 2, roll: 'save', save: 'str', dmg: d(1, 6), element: 'radiant' },
     t2: { dmg: d(2, 6) },
     a: { name: 'Blinding Word', onHit: [st('blinded', 1)] },
     b: { name: 'Wide Radiance', radius: 2 },
   },
   healing_touch: {
     kind: 'cantrip', pool: 'cleric',
-    base: { name: 'Healing Touch', icon: '🤲', cost: 'bonus', target: 'ally', range: 1, cooldown: 3, heal: d(1, 4), healMod: true },
+    base: { name: 'Healing Touch', icon: '🤲', ap: 1, target: 'ally', range: 1, cooldown: 3, heal: d(1, 4), healMod: true },
     t2: { range: 3 },
     a: { name: 'Purifying Touch', heal: d(2, 4), cleanse: true },
     b: { name: 'Sanctuary', status: [st('shielded', 1, 2)] },
   },
   healing_word: {
     kind: 'spell', pool: 'cleric',
-    base: { name: 'Healing Word', icon: '💖', cost: 'bonus', target: 'ally', range: 6, slots: 1, heal: d(1, 4), healMod: true },
+    base: { name: 'Healing Word', icon: '💖', ap: 1, target: 'ally', range: 6, slots: 1, heal: d(1, 4), healMod: true },
     t2: { heal: d(2, 4) },
     a: { name: 'Mass Healing Word', target: 'allies', radius: 6 },
     b: { name: 'Second Chance', overheal: true },
   },
   create_water: {
     kind: 'spell', pool: 'cleric',
-    base: { name: 'Create Water', icon: '🌧️', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, surface: { ground: 'water' }, note: 'Puts out fires and washes away oil and poison. Wet enemies are easy to shock or freeze.' },
+    base: { name: 'Create Water', icon: '🌧️', ap: 2, target: 'area', range: 8, radius: 1, slots: 1, surface: { ground: 'water' }, note: 'Puts out fires and washes away oil and poison. Wet enemies are easy to shock or freeze.' },
     t2: { radius: 2 },
     a: { name: 'Downpour', radius: 3 },
     b: { name: 'Tidal Wave', push: 1, onHit: [st('dazed', 1)] },
   },
   bless: {
     kind: 'spell', pool: 'cleric',
-    base: { name: 'Bless', icon: '🙏', cost: 'action', target: 'allies', radius: 3, range: 0, slots: 1, status: [st('blessed', 3)] },
+    base: { name: 'Bless', icon: '🙏', ap: 2, target: 'allies', radius: 3, range: 0, slots: 1, status: [st('blessed', 3)] },
     t2: { radius: 4, status: [st('blessed', 4)] },
     a: { name: 'Holy Aura', status: [st('blessed', 4), st('shielded', 4, 1)] },
     b: { name: 'Divine Favor', status: [st('blessed', 4, 1)] },
   },
   guiding_bolt: {
     kind: 'spell', pool: 'cleric',
-    base: { name: 'Guiding Bolt', icon: '✴️', cost: 'action', target: 'enemy', range: 8, slots: 1, roll: 'attack', dmg: d(4, 6), element: 'radiant', onHit: [st('marked', 1)] },
+    base: { name: 'Guiding Bolt', icon: '✴️', ap: 3, target: 'enemy', range: 8, slots: 1, roll: 'attack', dmg: d(4, 6), element: 'radiant', onHit: [st('marked', 1)] },
     t2: { dmg: d(5, 6) },
     a: { name: 'Sunburst', target: 'area', radius: 1 },
     b: { name: 'Holy Fire', onHit: [st('marked', 1), st('burning', 3)] },
@@ -508,7 +516,7 @@ const SKILL_DEFS = {
     { name: 'Defense', perk: { hit: 1, ac: 2 } }),
   trip_attack: {
     kind: 'cantrip', pool: 'fighter',
-    base: { name: 'Trip Attack', icon: '🦵', cost: 'action', target: 'enemy', range: 1, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, onHit: [st('prone', 1)] },
+    base: { name: 'Trip Attack', icon: '🦵', ap: 2, target: 'enemy', range: 1, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, onHit: [st('prone', 1)] },
     t2: { dmg: d(2, 8) },
     a: { name: 'Sweeping Trip', target: 'around', radius: 1 },
     b: { name: 'Hamstring', onHit: [st('prone', 1), st('dazed', 1)] },
@@ -530,10 +538,10 @@ const SKILL_DEFS = {
     { name: 'Warpriest', perk: { heal: 2, hit: 1, ac: 1 } }),
 
   // ---------------------------------------------- Barbarian (Phase 12)
-  greataxe: { kind: 'basic', pool: 'barbarian', base: { name: 'Greataxe', icon: '🪓', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 12), mod: true, extraAttack: true } },
+  greataxe: { kind: 'basic', pool: 'barbarian', base: { name: 'Greataxe', icon: '🪓', ap: 2, target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 12), mod: true, extraAttack: true } },
   rage: {
     kind: 'cantrip', pool: 'barbarian',
-    base: { name: 'Rage', icon: '😤', cost: 'bonus', target: 'self', range: 0, cooldown: 4, selfStatus: [st('raging', 3, 2)] },
+    base: { name: 'Rage', icon: '😤', ap: 1, target: 'self', range: 0, cooldown: 4, selfStatus: [st('raging', 3, 2)] },
     t2: { selfStatus: [st('raging', 3, 3)] },
     a: { name: 'Berserk', dash: 3 },
     b: { name: 'Bear Totem', tempHp: d(2, 6) },
@@ -541,7 +549,7 @@ const SKILL_DEFS = {
   reckless_attack: {
     kind: 'cantrip', pool: 'barbarian',
     base: {
-      name: 'Reckless Attack', icon: '💢', cost: 'action', target: 'enemy', range: 1, cooldown: 1, stat: 'str', roll: 'attack', adv: true, dmg: d(1, 12), mod: true,
+      name: 'Reckless Attack', icon: '💢', ap: 2, target: 'enemy', range: 1, cooldown: 1, stat: 'str', roll: 'attack', adv: true, dmg: d(1, 12), mod: true,
       selfStatus: [st('marked', 1)], note: 'Wide open: attacks against you have advantage until your next turn ends.',
     },
     t2: { dmg: d(2, 8) },
@@ -550,42 +558,42 @@ const SKILL_DEFS = {
   },
   ground_slam: {
     kind: 'cantrip', pool: 'barbarian',
-    base: { name: 'Ground Slam', icon: '🌋', cost: 'action', target: 'around', radius: 1, range: 0, cooldown: 2, stat: 'str', roll: 'save', save: 'str', dmg: d(1, 8), onHit: [st('prone', 1)] },
+    base: { name: 'Ground Slam', icon: '🌋', ap: 2, target: 'around', radius: 1, range: 0, cooldown: 2, stat: 'str', roll: 'save', save: 'str', dmg: d(1, 8), onHit: [st('prone', 1)] },
     t2: { dmg: d(2, 8) },
     a: { name: 'Earthshaker', radius: 2 },
     b: { name: 'Shockwave', push: 1 },
   },
   war_roar: {
     kind: 'cantrip', pool: 'barbarian',
-    base: { name: 'Menacing Roar', icon: '🦁', cost: 'bonus', target: 'around', radius: 2, range: 0, cooldown: 3, stat: 'str', roll: 'save', save: 'wis', onHit: [st('dazed', 1)] },
+    base: { name: 'Menacing Roar', icon: '🦁', ap: 1, target: 'around', radius: 2, range: 0, cooldown: 3, stat: 'str', roll: 'save', save: 'wis', onHit: [st('dazed', 1)] },
     t2: { radius: 3 },
     a: { name: 'Dread Roar', onHit: [st('dazed', 1), st('marked', 1)] },
     b: { name: 'War Cry', target: 'allies', radius: 3, roll: undefined, save: undefined, onHit: undefined, status: [st('rallied', 3, 1, 3)] },
   },
   brutal_strike: {
     kind: 'spell', pool: 'barbarian',
-    base: { name: 'Brutal Strike', icon: '💥', cost: 'action', target: 'enemy', range: 1, slots: 1, stat: 'str', roll: 'attack', dmg: d(3, 10), mod: true, onHit: [st('prone', 1)] },
+    base: { name: 'Brutal Strike', icon: '💥', ap: 3, target: 'enemy', range: 1, slots: 1, stat: 'str', roll: 'attack', dmg: d(3, 10), mod: true, onHit: [st('prone', 1)] },
     t2: { dmg: d(4, 10) },
     a: { name: 'Skullsplitter', onHit: [st('prone', 1), st('stunned', 1)] },
     b: { name: 'Bonebreaker', onHit: [st('prone', 1), st('dazed', 2), st('marked', 2)] },
   },
   relentless: {
     kind: 'spell', pool: 'barbarian',
-    base: { name: 'Relentless', icon: '💀', cost: 'bonus', target: 'self', range: 0, slots: 1, heal: d(2, 6), healLevel: true, cleanse: true },
+    base: { name: 'Relentless', icon: '💀', ap: 1, target: 'self', range: 0, slots: 1, heal: d(2, 6), healLevel: true, cleanse: true },
     t2: { heal: d(3, 6) },
     a: { name: 'Second Rage', resetCooldowns: true },
     b: { name: 'Undying', tempHp: d(2, 8) },
   },
   harpoon: {
     kind: 'spell', pool: 'barbarian',
-    base: { name: 'Harpoon', icon: '🪝', cost: 'action', target: 'enemy', range: 5, slots: 1, stat: 'str', roll: 'attack', dmg: d(2, 8), mod: true, pull: 5, note: 'Drags it next to you first.' },
+    base: { name: 'Harpoon', icon: '🪝', ap: 2, target: 'enemy', range: 5, slots: 1, stat: 'str', roll: 'attack', dmg: d(2, 8), mod: true, pull: 5, note: 'Drags it next to you first.' },
     t2: { dmg: d(3, 8) },
     a: { name: 'Reel and Rend', onHit: [st('marked', 2)] },
     b: { name: 'Chain Hook', chain: 1 },
   },
   earth_splitter: {
     kind: 'spell', pool: 'barbarian',
-    base: { name: 'Earth Splitter', icon: '⛰️', cost: 'action', target: 'area', range: 4, radius: 1, slots: 1, stat: 'str', roll: 'save', save: 'dex', half: true, dmg: d(3, 8), onHit: [st('prone', 1)] },
+    base: { name: 'Earth Splitter', icon: '⛰️', ap: 3, target: 'area', range: 4, radius: 1, slots: 1, stat: 'str', roll: 'save', save: 'dex', half: true, dmg: d(3, 8), onHit: [st('prone', 1)] },
     t2: { radius: 2 },
     a: { name: 'Chasm', dmg: d(5, 8), slots: 2 },
     b: { name: 'Aftershock', onHit: [st('prone', 1), st('dazed', 1)] },
@@ -607,53 +615,53 @@ const SKILL_DEFS = {
     { name: 'Heavy Hitter', perk: { dmg: 2, shove: 2 } }),
 
   // ---------------------------------------------- Ranger (Phase 12)
-  longbow: { kind: 'basic', pool: 'ranger', base: { name: 'Longbow', icon: '🏹', cost: 'action', target: 'enemy', range: 10, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true } },
-  shortsword: { kind: 'basic', pool: 'ranger', base: { name: 'Shortsword', icon: '🗡️', cost: 'action', target: 'enemy', range: 1, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true, extraAttack: true } },
+  longbow: { kind: 'basic', pool: 'ranger', base: { name: 'Longbow', icon: '🏹', ap: 2, target: 'enemy', range: 10, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true } },
+  shortsword: { kind: 'basic', pool: 'ranger', base: { name: 'Shortsword', icon: '🗡️', ap: 2, target: 'enemy', range: 1, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true, extraAttack: true } },
   hunters_mark: {
     kind: 'cantrip', pool: 'ranger',
-    base: { name: "Hunter's Mark", icon: '🎯', cost: 'bonus', target: 'enemy', range: 10, cooldown: 3, onHit: [st('marked', 2)], note: 'No roll: it always works.' },
+    base: { name: "Hunter's Mark", icon: '🎯', ap: 1, target: 'enemy', range: 10, cooldown: 3, onHit: [st('marked', 2)], note: 'No roll: it always works.' },
     t2: { cooldown: 2 },
     a: { name: 'Mark the Pack', chain: 2 },
     b: { name: 'Quarry', onHit: [st('marked', 3)] },
   },
   ensnaring_shot: {
     kind: 'cantrip', pool: 'ranger',
-    base: { name: 'Ensnaring Shot', icon: '🪢', cost: 'action', target: 'enemy', range: 8, cooldown: 3, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true, onHit: [st('netted', 1)] },
+    base: { name: 'Ensnaring Shot', icon: '🪢', ap: 2, target: 'enemy', range: 8, cooldown: 3, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true, onHit: [st('netted', 1)] },
     t2: { dmg: d(2, 8) },
     a: { name: 'Thorned Snare', onHit: [st('netted', 2), st('poisoned', 2)] },
     b: { name: 'Net Volley', target: 'area', radius: 1 },
   },
   quick_shot: {
     kind: 'cantrip', pool: 'ranger',
-    base: { name: 'Quick Shot', icon: '🏹', cost: 'bonus', target: 'enemy', range: 8, cooldown: 2, stat: 'dex', roll: 'attack', dmg: d(1, 6) },
+    base: { name: 'Quick Shot', icon: '🏹', ap: 1, target: 'enemy', range: 8, cooldown: 2, stat: 'dex', roll: 'attack', dmg: d(1, 6) },
     t2: { dmg: d(1, 10) },
     a: { name: 'Double Shot', hits: 2 },
     b: { name: 'Pinning Shot', onHit: [st('dazed', 1)] },
   },
   lightning_arrow: {
     kind: 'spell', pool: 'ranger',
-    base: { name: 'Lightning Arrow', icon: '⚡', cost: 'action', target: 'enemy', range: 10, slots: 1, stat: 'dex', roll: 'attack', dmg: d(3, 8), element: 'lightning' },
+    base: { name: 'Lightning Arrow', icon: '⚡', ap: 2, target: 'enemy', range: 10, slots: 1, stat: 'dex', roll: 'attack', dmg: d(3, 8), element: 'lightning' },
     t2: { dmg: d(4, 8) },
     a: { name: 'Storm Arrow', chain: 2 },
     b: { name: 'Thunder Arrow', push: 2, onHit: [st('dazed', 1)] },
   },
   hail_of_thorns: {
     kind: 'spell', pool: 'ranger',
-    base: { name: 'Hail of Thorns', icon: '🌵', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 10), element: 'poison' },
+    base: { name: 'Hail of Thorns', icon: '🌵', ap: 3, target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 10), element: 'poison' },
     t2: { dmg: d(3, 10) },
     a: { name: 'Bramble Field', surface: { ground: 'poison' } },
     b: { name: 'Thorn Wall', onHit: [st('netted', 1)] },
   },
   herbal_remedy: {
     kind: 'spell', pool: 'ranger',
-    base: { name: 'Herbal Remedy', icon: '🌿', cost: 'bonus', target: 'ally', range: 1, slots: 1, heal: d(2, 4), healMod: true, cleanse: true },
+    base: { name: 'Herbal Remedy', icon: '🌿', ap: 1, target: 'ally', range: 1, slots: 1, heal: d(2, 4), healMod: true, cleanse: true },
     t2: { heal: d(3, 4) },
     a: { name: 'Healing Spirit', target: 'allies', radius: 2 },
     b: { name: 'Barkskin', status: [st('shielded', 2, 2)] },
   },
   steady_aim: {
     kind: 'spell', pool: 'ranger',
-    base: { name: 'Steady Aim', icon: '🔭', cost: 'bonus', target: 'self', range: 0, slots: 1, selfStatus: [st('focused', 1), st('blessed', 2)] },
+    base: { name: 'Steady Aim', icon: '🔭', ap: 1, target: 'self', range: 0, slots: 1, selfStatus: [st('focused', 1), st('blessed', 2)] },
     t2: { selfStatus: [st('focused', 1), st('blessed', 3)] },
     a: { name: 'Deadeye', selfStatus: [st('focused', 1), st('blessed', 3, 1)] },
     b: { name: "Hunter's Patience", selfStatus: [st('focused', 1), st('blessed', 3), st('hidden', 2)] },
@@ -675,52 +683,52 @@ const SKILL_DEFS = {
     { name: 'Eagle Eye', perk: { hit: 2, lucky: 1 } }),
 
   // ---------------------------------------------- Paladin (Phase 12)
-  warhammer: { kind: 'basic', pool: 'paladin', base: { name: 'Warhammer', icon: '🔨', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, extraAttack: true } },
+  warhammer: { kind: 'basic', pool: 'paladin', base: { name: 'Warhammer', icon: '🔨', ap: 2, target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, extraAttack: true } },
   lay_on_hands: {
     kind: 'cantrip', pool: 'paladin',
-    base: { name: 'Lay on Hands', icon: '🙌', cost: 'bonus', target: 'ally', range: 1, cooldown: 3, heal: d(1, 8), healLevel: true },
+    base: { name: 'Lay on Hands', icon: '🙌', ap: 1, target: 'ally', range: 1, cooldown: 3, heal: d(1, 8), healLevel: true },
     t2: { heal: d(2, 8) },
     a: { name: 'Cleansing Touch', cleanse: true },
     b: { name: 'Shield of Faith', status: [st('shielded', 2, 2)] },
   },
   compelled_duel: {
     kind: 'cantrip', pool: 'paladin',
-    base: { name: 'Compelled Duel', icon: '⚔️', cost: 'bonus', target: 'enemy', range: 4, cooldown: 3, roll: 'save', save: 'wis', onHit: [st('taunted', 2)], note: 'On a failed save it has to come for you.' },
+    base: { name: 'Compelled Duel', icon: '⚔️', ap: 1, target: 'enemy', range: 4, cooldown: 3, roll: 'save', save: 'wis', onHit: [st('taunted', 2)], note: 'On a failed save it has to come for you.' },
     t2: { range: 6 },
     a: { name: 'Hold the Line', target: 'around', radius: 2 },
     b: { name: 'Rebuke', onHit: [st('taunted', 2), st('marked', 2)] },
   },
   radiant_strike: {
     kind: 'cantrip', pool: 'paladin',
-    base: { name: 'Radiant Strike', icon: '✨', cost: 'action', target: 'enemy', range: 1, cooldown: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, element: 'radiant' },
+    base: { name: 'Radiant Strike', icon: '✨', ap: 2, target: 'enemy', range: 1, cooldown: 1, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true, element: 'radiant' },
     t2: { dmg: d(2, 8) },
     a: { name: 'Searing Smite', onHit: [st('burning', 2)] },
     b: { name: 'Thunderous Smite', push: 2, onHit: [st('prone', 1)] },
   },
   bulwark: {
     kind: 'cantrip', pool: 'paladin',
-    base: { name: 'Bulwark', icon: '🛡️', cost: 'bonus', target: 'ally', range: 1, cooldown: 3, status: [st('shielded', 1, 3)] },
-    t2: { status: [st('shielded', 2, 3)] },
+    base: { name: 'Bulwark', icon: '🛡️', ap: 1, target: 'ally', range: 1, cooldown: 3, block: d(2, 4), blockLevel: true },
+    t2: { block: d(2, 6) },
     a: { name: 'Guardian', target: 'allies', radius: 1 },
     b: { name: 'Sacred Bond', heal: d(1, 6), healMod: true },
   },
   divine_smite: {
     kind: 'spell', pool: 'paladin',
-    base: { name: 'Divine Smite', icon: '⚡', cost: 'action', target: 'enemy', range: 1, slots: 1, stat: 'str', roll: 'attack', dmg: d(3, 8), mod: true, element: 'radiant' },
+    base: { name: 'Divine Smite', icon: '⚡', ap: 2, target: 'enemy', range: 1, slots: 1, stat: 'str', roll: 'attack', dmg: d(3, 8), mod: true, element: 'radiant' },
     t2: { dmg: d(4, 8) },
     a: { name: 'Blinding Smite', onHit: [st('blinded', 2)] },
     b: { name: 'Staggering Smite', onHit: [st('dazed', 2), st('prone', 1)] },
   },
   healing_hands: {
     kind: 'spell', pool: 'paladin',
-    base: { name: 'Healing Hands', icon: '💗', cost: 'action', target: 'ally', range: 1, slots: 1, heal: d(2, 8), healMod: true },
+    base: { name: 'Healing Hands', icon: '💗', ap: 2, target: 'ally', range: 1, slots: 1, heal: d(2, 8), healMod: true },
     t2: { heal: d(3, 8) },
     a: { name: 'Mass Cure', target: 'allies', radius: 2 },
     b: { name: 'Restoration', cleanse: true, overheal: true },
   },
   crusaders_mantle: {
     kind: 'spell', pool: 'paladin',
-    base: { name: "Crusader's Mantle", icon: '🔆', cost: 'action', target: 'allies', radius: 3, range: 0, slots: 1, status: [st('blessed', 3, 1)] },
+    base: { name: "Crusader's Mantle", icon: '🔆', ap: 2, target: 'allies', radius: 3, range: 0, slots: 1, status: [st('blessed', 3, 1)] },
     t2: { radius: 4, status: [st('blessed', 4, 1)] },
     a: { name: 'Aura of Valor', status: [st('blessed', 4, 1), st('shielded', 4, 1)] },
     b: { name: 'Holy Vigor', tempHp: d(1, 8) },
@@ -742,59 +750,59 @@ const SKILL_DEFS = {
     { name: 'Great Weapon', perk: { ac: 1, dmg: 3 } }),
 
   // ---------------------------------------------- Bard (Phase 12)
-  hand_crossbow: { kind: 'basic', pool: 'bard', base: { name: 'Hand Crossbow', icon: '🏹', cost: 'action', target: 'enemy', range: 6, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true } },
+  hand_crossbow: { kind: 'basic', pool: 'bard', base: { name: 'Hand Crossbow', icon: '🏹', ap: 2, target: 'enemy', range: 6, stat: 'dex', roll: 'attack', dmg: d(1, 6), mod: true } },
   vicious_mockery: {
     kind: 'cantrip', pool: 'bard',
-    base: { name: 'Vicious Mockery', icon: '🗯️', cost: 'action', target: 'enemy', range: 6, cooldown: 1, roll: 'save', save: 'wis', dmg: d(1, 6), element: 'force', onHit: [st('dazed', 1)] },
+    base: { name: 'Vicious Mockery', icon: '🗯️', ap: 2, target: 'enemy', range: 6, cooldown: 1, roll: 'save', save: 'wis', dmg: d(1, 6), element: 'force', onHit: [st('dazed', 1)] },
     t2: { dmg: d(2, 6) },
     a: { name: 'Cutting Words', onHit: [st('dazed', 1), st('marked', 1)] },
     b: { name: 'Crowd Heckle', target: 'area', radius: 1 },
   },
   inspiration: {
     kind: 'cantrip', pool: 'bard',
-    base: { name: 'Bardic Inspiration', icon: '🎵', cost: 'bonus', target: 'ally', range: 6, cooldown: 2, status: [st('focused', 1)] },
+    base: { name: 'Bardic Inspiration', icon: '🎵', ap: 1, target: 'ally', range: 6, cooldown: 2, status: [st('focused', 1)] },
     t2: { status: [st('focused', 1), st('blessed', 2)] },
     a: { name: 'Song of Valor', target: 'allies', radius: 3, status: [st('rallied', 3, 1, 3)] },
     b: { name: 'Song of Defense', status: [st('focused', 1), st('shielded', 2, 2)] },
   },
   thunderwave: {
     kind: 'cantrip', pool: 'bard',
-    base: { name: 'Thunderwave', icon: '🌩️', cost: 'action', target: 'around', radius: 1, range: 0, cooldown: 2, roll: 'save', save: 'str', half: true, dmg: d(1, 8), element: 'force', push: 2 },
+    base: { name: 'Thunderwave', icon: '🌩️', ap: 2, target: 'around', radius: 1, range: 0, cooldown: 2, roll: 'save', save: 'str', half: true, dmg: d(1, 8), element: 'force', push: 2 },
     t2: { dmg: d(2, 8) },
     a: { name: 'Booming Chord', radius: 2 },
     b: { name: 'Concussive Note', onHit: [st('dazed', 1)] },
   },
   hypnotic_gaze: {
     kind: 'cantrip', pool: 'bard',
-    base: { name: 'Hypnotic Gaze', icon: '🌀', cost: 'action', target: 'enemy', range: 6, cooldown: 4, roll: 'save', save: 'wis', onHit: [st('dazed', 2)] },
+    base: { name: 'Hypnotic Gaze', icon: '🌀', ap: 2, target: 'enemy', range: 6, cooldown: 4, roll: 'save', save: 'wis', onHit: [st('dazed', 2)] },
     t2: { onHit: [st('stunned', 1)] },
     a: { name: 'Mass Hypnosis', target: 'area', radius: 1 },
     b: { name: 'Nightmare', onHit: [st('stunned', 1), st('poisoned', 2)] },
   },
   healing_ballad: {
     kind: 'spell', pool: 'bard',
-    base: { name: 'Healing Ballad', icon: '🎶', cost: 'action', target: 'allies', radius: 3, range: 0, slots: 1, heal: d(1, 6), healMod: true },
+    base: { name: 'Healing Ballad', icon: '🎶', ap: 2, target: 'allies', radius: 3, range: 0, slots: 1, heal: d(1, 6), healMod: true },
     t2: { heal: d(2, 6) },
     a: { name: 'Anthem of Life', radius: 5 },
     b: { name: 'Second Verse', overheal: true },
   },
   shatter: {
     kind: 'spell', pool: 'bard',
-    base: { name: 'Shatter', icon: '💥', cost: 'action', target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'str', half: true, dmg: d(3, 8), element: 'force' },
+    base: { name: 'Shatter', icon: '💥', ap: 3, target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'str', half: true, dmg: d(3, 8), element: 'force' },
     t2: { dmg: d(4, 8) },
     a: { name: 'Sonic Boom', radius: 2 },
     b: { name: 'Resonance', onHit: [st('dazed', 1)] },
   },
   hideous_laughter: {
     kind: 'spell', pool: 'bard',
-    base: { name: 'Hideous Laughter', icon: '😂', cost: 'action', target: 'enemy', range: 6, slots: 1, roll: 'save', save: 'wis', onHit: [st('stunned', 2)] },
+    base: { name: 'Hideous Laughter', icon: '😂', ap: 2, target: 'enemy', range: 6, slots: 1, roll: 'save', save: 'wis', onHit: [st('stunned', 2)] },
     t2: { range: 8 },
     a: { name: 'Contagious Laughter', chain: 1 },
     b: { name: 'Mocking Jest', onHit: [st('stunned', 1), st('marked', 2)] },
   },
   heroic_anthem: {
     kind: 'spell', pool: 'bard',
-    base: { name: 'Heroic Anthem', icon: '🎺', cost: 'action', target: 'allies', radius: 4, range: 0, slots: 1, status: [st('rallied', 3, 1, 3), st('shielded', 2, 1)] },
+    base: { name: 'Heroic Anthem', icon: '🎺', ap: 3, target: 'allies', radius: 4, range: 0, slots: 1, status: [st('rallied', 3, 1, 3), st('shielded', 2, 1)] },
     t2: { tempHp: d(1, 8) },
     a: { name: 'Battle Hymn', status: [st('rallied', 3, 1, 3), st('shielded', 2, 1), st('focused', 1)] },
     b: { name: 'Ballad of Heroes', status: [st('rallied', 3, 1, 3), st('shielded', 2, 1), st('blessed', 3)] },
@@ -850,7 +858,7 @@ export function skillTitle(o: Pick<OwnedSkill, 'id' | 'tier' | 'branch'>): strin
 }
 
 /** Things every hero can do without learning them. */
-export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion', 'cut_free'];
+export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion', 'cut_free', 'dash', 'brace'];
 
 /** Consumables in the bag, one hotbar entry per kind. */
 export const bagConsumables = (p: Pick<PlayerEntity, 'bag'>): SkillId[] =>
@@ -885,6 +893,8 @@ export function hotbar(p: PlayerEntity): SkillId[] {
 export const skillsOfKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind);
 export const slotCost = (s: SkillStats) => s.slots ?? 1;
 export const hasStatus = (e: Entity, id: StatusId) => e.statuses.some((x) => x.id === id);
+/** 🧱 Block on a creature, from everyone who gave it some. */
+export const blockOf = (e: Pick<Entity, 'block'>): number => Object.values(e.block ?? {}).reduce((s, n) => s + n, 0);
 
 // ---------------------------------------------------------------- numbers for a hero
 
@@ -1004,6 +1014,10 @@ export function describe(s: SkillStats, hero?: Hero): string {
     const extra = !hero ? `${s.healMod ? ' + WIS/STAT' : ''}${s.healLevel ? ' + level' : ''}` : '';
     parts.push(`${s.target === 'self' ? 'Heal' : `${who}: heal`} ${diceStr(s.heal, bonus)}${extra}. Gets the downed back up`);
   }
+  const lvl = s.blockLevel ? (hero ? hero.level : 0) : 0;
+  const lvlText = s.blockLevel && !hero ? ' + level' : '';
+  if (s.block) parts.push(`${s.target === 'self' ? 'You get' : `${who}: get`} ${diceStr(s.block, lvl)}${lvlText} 🧱 Block until your next turn`);
+  if (s.selfBlock) parts.push(`You get ${diceStr(s.selfBlock, lvl)}${lvlText} 🧱 Block until your next turn`);
   if (s.overheal) parts.push('Healing past max HP becomes temporary HP');
   if (s.cleanse) parts.push(`Removes ${CLEANSED.map((id) => STATUSES[id].name).join(', ').replace(/, ([^,]*)$/, ' and $1')}`);
   if (s.frees) parts.push(`${who}: cut free of a net or a web`);
@@ -1012,12 +1026,13 @@ export function describe(s: SkillStats, hero?: Hero): string {
   if (s.selfStatus?.length) parts.push(`You: ${statusList(s.selfStatus)}`);
   if (s.taunt) parts.push(`Taunts enemies within ${s.taunt.radius} tiles for ${s.taunt.turns} turn${s.taunt.turns > 1 ? 's' : ''}`);
   if (s.dash) parts.push(`+${s.dash} movement this turn`);
-  if (s.refresh) parts.push('Get your action back');
+  if (s.gainAp) parts.push(`+${s.gainAp} AP this turn`);
+  if (s.oncePerTurn) parts.push('Once per turn');
   if (s.resetCooldowns) parts.push('Your other cantrips are ready again');
   if (s.restoreSlots) parts.push(`Get ${s.restoreSlots} slot${s.restoreSlots > 1 ? 's' : ''} back (Spell slots, Grit or Cunning)`);
   if (s.note) parts.push(s.note);
   const cost = s.cooldown !== undefined ? `⏱ cooldown ${s.cooldown}` : s.slots !== undefined ? `🔮 ${s.slots} slot${s.slots > 1 ? 's' : ''}` : '';
-  const action = s.cost === 'action' ? 'Action' : s.cost === 'bonus' ? 'Bonus action' : 'Free';
+  const action = s.ap ? `${s.ap} AP` : 'Free';
   const text = parts
     .filter(Boolean)
     .map((x) => x.replace(/\.$/, ''))
@@ -1058,10 +1073,10 @@ export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean
     if (!isMyTurn || !turn) return 'Not your turn';
     if (hasStatus(p, 'stunned')) return 'You are stunned';
     if (hasStatus(p, 'frozen')) return 'You are frozen solid';
-    if (s.cost === 'action' && turn.actionUsed) return 'Action already used this turn';
-    if (s.cost === 'bonus' && turn.bonusUsed) return 'Bonus action already used this turn';
+    if (s.ap > turn.ap) return `Needs ${s.ap} AP (${turn.ap} left)`;
     if (own.cd > 0) return `Ready in ${own.cd} turn${own.cd > 1 ? 's' : ''}`;
-    if (s.refresh && p.used.includes('turn:surge')) return 'Only once per turn';
+    if (s.gainAp && p.used.includes('turn:surge')) return 'Only once per turn';
+    if (s.oncePerTurn && p.used.includes(`turn:${id}`)) return 'Only once per turn';
   } else if (!s.heal && !s.restoreSlots) {
     return 'Only in combat';
   } else if (def.kind === 'cantrip') {

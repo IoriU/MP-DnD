@@ -2,9 +2,9 @@
 
 import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
 import { BAG_SIZE, type ItemId } from '../shared/items.ts';
-import { CLASSES, DIFFICULTIES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
+import { AP_GAIN, AP_MAX, CLASSES, DIFFICULTIES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
-  canHitProps, describeSkill, hasStatus, hitsArea, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
+  blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
 } from '../shared/skills.ts';
 import { COMBOS, PROPS } from '../shared/surfaces.ts';
@@ -253,7 +253,7 @@ export function renderHud(s: GameState) {
       eco.innerHTML = '<span class="pill">🤖 Auto-play is taking your turn. Press P to take over.</span>';
     } else if (s.phase === 'combat' && s.turn) {
       eco.innerHTML = myTurn
-        ? `<span class="pill">👣 ${s.turn.movesLeft} moves</span><span class="pill ${s.turn.actionUsed ? 'used' : ''}">Action</span><span class="pill ${s.turn.bonusUsed ? 'used' : ''}">Bonus</span>`
+        ? `<span class="pill">👣 ${s.turn.movesLeft} moves</span>${apPips(s.turn.ap)}`
         : `<span class="muted">Waiting for ${cur ? esc(cur.name) : '...'}${isAllyNpc(cur) ? " (ally's turn)" : isFoe(cur) ? ' (monster turn)' : ''}</span>`;
     } else if (s.phase === 'shop') {
       eco.innerHTML = '<span class="muted">🛒 Shopping: press I for your bag (equip, give, drop). Potions and heals wait until you are back on the map.</span>';
@@ -289,7 +289,12 @@ export function renderHud(s: GameState) {
 
 // ---------------------------------------------------------------- hotbar
 
-const COST_LABEL = { action: 'A', bonus: 'B', free: 'free' } as const;
+/** The AP left this turn as pips (more than the usual 3 after saving up or an Action Surge). */
+function apPips(ap: number): string {
+  const n = Math.max(AP_GAIN, ap);
+  const pips = Array.from({ length: n }, (_, i) => `<i class="${i < ap ? 'on' : ''}"></i>`).join('');
+  return `<span class="pill ap" title="Action points: attacks cost 2, quick skills 1, the biggest spells 3. AP you don't spend carries over (a turn starts with at most ${AP_MAX}).">⚡ ${ap} AP ${pips}</span>`;
+}
 
 function skillButton(m: PlayerEntity, id: SkillId, n: number): string {
   const own = ownedSkill(m, id)!;
@@ -300,7 +305,7 @@ function skillButton(m: PlayerEntity, id: SkillId, n: number): string {
   const cd = own.cd > 0 ? `<span class="cd-ov">⏱${own.cd}</span>` : '';
   const icon = id === 'potion' || def.kind === 'item' ? itemIcon(id as ItemId | 'potion', st.icon) : st.icon; // potions and consumables have item art
   const meta = [
-    `<span class="cost ${st.cost}">${COST_LABEL[st.cost]}</span>`,
+    `<span class="cost ap${Math.min(st.ap, 3)}">${st.ap ? `${st.ap} AP` : 'free'}</span>`,
     def.kind === 'spell' ? `<span class="slotcost">🔮${slotCost(st)}</span>` : '',
     id === 'potion' ? `<span class="uses">×${m.potions}</span>` : def.kind === 'item' ? `<span class="uses" title="In your bag">×${m.bag.filter((b) => b === id).length}</span>` : '',
   ].join('');
@@ -376,7 +381,7 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
     <div class="pc-glyph" style="border-color:${p.color}">${p.dead ? '🪦' : classIcon(p.classId, 32)}</div>
     <div class="pc-main">
       <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${c.name} Lv ${p.level}</span>${autoTag(info)}${status}${focus ? '<span class="tag bad" title="Hunted: the monsters are ganging up on this hero">🎯 hunted</span>' : ''}${ups}</div>
-      <div class="hpbar"><div style="width:${hpPct}%;background:${hpColor}"></div>${p.tempHp > 0 ? `<i class="tmp" style="width:${tempPct}%"></i>` : ''}<span>${p.hp} / ${p.maxHp}${p.tempHp > 0 ? ` <em>+${p.tempHp} 🛡</em>` : ''}</span></div>
+      <div class="hpbar"><div style="width:${hpPct}%;background:${hpColor}"></div>${p.tempHp > 0 ? `<i class="tmp" style="width:${tempPct}%"></i>` : ''}<span>${p.hp} / ${p.maxHp}${p.tempHp > 0 ? ` <em>+${p.tempHp} 🛡</em>` : ''}${blockOf(p) > 0 ? ` <em title="Block: soaks damage first, until the start of the turn of whoever gave it">+${blockOf(p)} 🧱</em>` : ''}</span></div>
       <div class="xpbar${max ? ' max' : ''}" title="${max ? 'Max level' : `${p.xp} of ${need} XP to level ${p.level + 1}`}"><div style="width:${xpPct}%"></div><span>${max ? 'MAX' : `XP ${p.xp} / ${need}`}</span></div>
       <div class="pc-stats">${gearIconsHtml(p) ? `<span class="pc-gear">${gearIconsHtml(p)}</span>` : ''}<span title="Armor class">🛡️ ${p.ac}</span><span title="Potions">🧪 ${p.potions}</span><span title="Kills">💀 ${p.kills}</span><span title="Kill steals: killing blows on monsters someone else did most of the damage to">🗡️ ${p.steals}</span>${
         p.maxSlots ? `<span class="pips" title="${esc(`${c.names.slots}: ${p.slots} of ${p.maxSlots}`)}"><b>${c.names.slots}</b>${pips}</span>` : ''

@@ -38,7 +38,7 @@ const goblin = (id: string, x: number, y: number): MonsterEntity => ({
   id, kind: 'monster', type: 'goblin', name: 'Goblin', glyph: '', x, y, hp: 7, maxHp: 7, ac: 15, speed: 6, statuses: [], boss: false, elite: false, dmgBy: {}, facing: { x: -1, y: 0 },
 });
 
-const turn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false });
+const turn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
 
 test('every class starts with a basic attack, a cantrip and a spell it owns', () => {
   for (const c of CLASS_IDS) {
@@ -84,9 +84,9 @@ test('descriptions are generated for every skill at every tier without gaps', ()
   }
 });
 
-test('hotbar order: basic attacks, cantrips, spells, then Shove, the potion and Cut Free', () => {
+test('hotbar order: basic attacks, cantrips, spells, then Shove, the potion, Cut Free, Dash and Brace', () => {
   const r = hero('rogue');
-  assert.deepEqual(hotbar(r), ['rapier', 'shortbow', 'cunning_dash', 'shadow_step', 'shove', 'potion', 'cut_free']);
+  assert.deepEqual(hotbar(r), ['rapier', 'shortbow', 'cunning_dash', 'shadow_step', 'shove', 'potion', 'cut_free', 'dash', 'brace']);
 });
 
 test('block reasons: cooldowns, slots, action economy, out of combat', () => {
@@ -96,7 +96,7 @@ test('block reasons: cooldowns, slots, action economy, out of combat', () => {
   assert.match(skillBlockReason(w, 'fire_bolt', true, turn(), true) ?? '', /Ready in 2/);
   w.slots = 0;
   assert.match(skillBlockReason(w, 'magic_missile', true, turn(), true) ?? '', /Spell slots/);
-  assert.match(skillBlockReason(w, 'dagger', true, { ...turn(), actionUsed: true }, true) ?? '', /Action already used/);
+  assert.match(skillBlockReason(w, 'dagger', true, { ...turn(), ap: 1 }, true) ?? '', /Needs 2 AP \(1 left\)/);
   assert.match(skillBlockReason(w, 'dagger', true, turn(), false) ?? '', /Not your turn/);
   assert.match(skillBlockReason(w, 'dagger', false, null, false) ?? '', /Only in combat/);
   assert.match(skillBlockReason(w, 'fireball', true, turn(), true) ?? '', /know/);

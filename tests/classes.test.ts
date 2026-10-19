@@ -220,7 +220,7 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false };
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
   p.turnOwner = heroes[0].id;
   p.runMonster = async () => {}; // a monster's turn would be played on real timers: the tests drive the rules themselves
   const foe = (type: string, x: number, y: number, hp?: number): MonsterEntity => {
@@ -241,12 +241,12 @@ function startTurn(p: any, e: Entity) {
   p.beginTurn();
 }
 
-/** It is the hero's turn, action and bonus action free, the skill ready: they use it on a target with these dice (d20, d20,
+/** It is the hero's turn with 3 AP, the skill ready: they use it on a target with these dice (d20, d20,
  * then the damage dice). Returns the HP the target lost. */
 function use(p: any, h: PlayerEntity, skill: SkillId, target: Entity | undefined, rolls: number[] = []): number {
   p.turn.index = p.turn.order.indexOf(h.id);
   p.turnOwner = h.id;
-  p.turn.actionUsed = p.turn.bonusUsed = false;
+  p.turn.ap = 3;
   h.skills.forEach((s) => s.id === skill && (s.cd = 0));
   const hp = target?.hp ?? 0;
   const said: string[] = [];
@@ -269,7 +269,7 @@ test('Rage: a Raging hero (power 2, 3 with tier II) adds the power to melee hits
   const [ann] = heroes;
   assert.equal(use(p, ann, 'rage', undefined), 0);
   assert.equal(ann.statuses.find((s) => s.id === 'raging')?.power, 2);
-  assert.equal(p.turn.bonusUsed, true, 'Rage is a bonus action');
+  assert.equal(p.turn.ap, 2, 'Rage costs 1 AP');
   ann.statuses = [];
   ann.skills.find((s) => s.id === 'rage')!.tier = 2;
   use(p, ann, 'rage', undefined);
@@ -457,9 +457,9 @@ const map = ((): FieldLike => {
   const tiles = Array.from({ length: 12 * 8 }, (_, i) => (i % 12 === 0 || i < 12 || i % 12 === 11 || i >= 84 ? '#' : '.')).join('');
   return { width: 12, height: 8, tiles, ground: {}, clouds: {}, props: {} };
 })();
-const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, actionUsed: false, bonusUsed: false });
+const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
 /** The turn after the hero's action is spent (so only the bonus action is left). */
-const acted = (): TurnState => ({ ...freshTurn(), actionUsed: true });
+const acted = (): TurnState => ({ ...freshTurn(), ap: 1 });
 
 function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn = freshTurn()): HeroView {
   const all = [...heroes, ...monsters];
@@ -490,7 +490,8 @@ test('a Barbarian that has already swung still rages (a bonus action), but not w
   assert.equal(whyNot(v, rage), null);
   b.statuses.push(status('raging', 3, 2));
   b.skills.find((s) => s.id === 'rage')!.cd = 5;
-  assert.equal(nextHeroIntent(view(b, [b], [g], acted())).kind, 'end', 'nothing left worth a bonus action');
+  const after = nextHeroIntent(view(b, [b], [g], acted()));
+  assert.ok(after.kind !== 'act' || after.skill !== 'rage', 'no Rage on top of Rage (Brace is fine)');
   const again = learns(hero('barbarian', 3, 3, { statuses: [status('raging', 3, 2)] }), 'rage');
   assert.deepEqual(nextHeroIntent(view(again, [again], [g])), { kind: 'act', skill: 'greataxe', target: g.id }, 'no second Rage while it lasts');
 });
@@ -511,7 +512,8 @@ test("a Ranger with Hunter's Mark marks its target (the whole party gets advanta
   assert.deepEqual(mark, { kind: 'act', skill: 'hunters_mark', target: g.id });
   assert.equal(whyNot(v, mark), null);
   g.statuses.push(status('marked', 2));
-  assert.equal(nextHeroIntent(view(r, [r], [g], acted())).kind, 'end', 'no second mark');
+  const after = nextHeroIntent(view(r, [r], [g], acted()));
+  assert.ok(after.kind !== 'act' || after.skill !== 'hunters_mark', 'no second mark');
   assert.equal(nextHeroIntent(view(r, [r], [g])).kind, 'act', 'and the shot is still on');
 });
 

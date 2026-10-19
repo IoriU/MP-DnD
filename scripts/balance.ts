@@ -296,7 +296,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     reportedTurns.add(turnKey);
     r.anomalies.push(
       `${cur.name} (${cur.classId}) stuck on their turn for ${Math.round((now - turnSince) / 1000)}s: round ${t.round}, ` +
-        `moves left ${t.movesLeft}, action ${t.actionUsed ? 'used' : 'free'}, bonus ${t.bonusUsed ? 'used' : 'free'}, hp ${cur.hp}/${cur.maxHp}`,
+        `moves left ${t.movesLeft}, ${t.ap} AP left, hp ${cur.hp}/${cur.maxHp}`,
     );
   }, 1000);
 

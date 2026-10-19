@@ -137,6 +137,11 @@ export const CLASSES: Record<ClassId, ClassDef> = {
 export const CLASS_IDS = Object.keys(CLASSES) as ClassId[];
 export const PLAYER_COLORS = ['#f2a03d', '#4fb3ff', '#7ddc6f', '#e86df0', '#ffd84d', '#ff6b6b'];
 
+// Action points (decided 2026-10-19, DOS2 / Slay the Spire style). Heroes only: monsters keep their move + attack turn.
+export const AP_GAIN = 3; // AP a hero gets at the start of each turn
+export const AP_MAX = 5; // AP left over carries into the next turn, but a turn starts with at most this many
+export const ATTACK_AP = 2; // what a basic attack (and most spells) costs
+
 export const profBonus = (level: number) => 2 + Math.floor((level - 1) / 4);
 export const maxHpFor = (c: ClassId, level: number) => CLASSES[c].hp + (level - 1) * CLASSES[c].hpPerLevel;
 /** Slots before boons: the class base, +1 every other level. */
@@ -237,6 +242,7 @@ export interface MonsterDef {
   trick?: MonsterTrick; // a set-up it can use instead of attacking (server/monsterai.ts decides when)
   rider?: MonsterRider; // what its attacks do on a hit
   leader?: boolean; // gives its side orders (ORDERS)
+  block?: number; // 🧱 Block at the start of each of its turns: a shield
 }
 
 /**
@@ -314,11 +320,11 @@ export const MONSTERS: Record<string, MonsterDef> = {
     range: 6, wis: 2, element: 'lightning', role: 'support', verb: 'zaps',
     support: { heal: { n: 1, d: 8, bonus: 2 }, buff: { id: 'rallied', turns: 3, power: 1, stack: 3 } },
   }),
-  hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, shove: true, leader: true, verb: 'cuts' }),
+  hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, shove: true, leader: true, block: 3, verb: 'cuts' }),
   goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, shove: true, leader: true, verb: 'slashes' }),
   mimic: m('Mimic', '📦', 30, 12, 4, { n: 1, d: 8, bonus: 2 }, 10, { attacks: 2, speed: 4, dex: 0, str: 3, verb: 'chomps' }),
   // Act 2: Forgotten Crypt
-  skeleton: m('Skeleton', '💀', 13, 13, 4, { n: 1, d: 6, bonus: 2 }, 3, { dex: 2, wis: -1, resist: { poison: 'immune' }, verb: 'hacks' }),
+  skeleton: m('Skeleton', '💀', 13, 13, 4, { n: 1, d: 6, bonus: 2 }, 3, { dex: 2, wis: -1, resist: { poison: 'immune' }, block: 2, verb: 'hacks' }),
   zombie: m('Zombie', '🧟', 22, 8, 3, { n: 1, d: 6, bonus: 1 }, 2, { speed: 4, dex: -2, str: 2, wis: -2, resist: { poison: 'immune', fire: 'weak' }, verb: 'claws' }),
   bloated: m('Bloated Zombie', '🤮', 18, 8, 3, { n: 1, d: 6, bonus: 1 }, 2, {
     speed: 4, dex: -2, str: 2, wis: -2, resist: { poison: 'immune' }, verb: 'slaps',
@@ -345,7 +351,7 @@ export const MONSTERS: Record<string, MonsterDef> = {
     trick: { name: 'Web', icon: '🕸️', verb: 'spits a web at', range: 4, save: 'dex', dc: 13, status: [{ id: 'webbed', turns: 3 }], cooldown: 3 },
   }),
   bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, {
-    attacks: 2, str: 4, wis: 2, xp: 350, shove: true, leader: true, resist: { poison: 'immune' }, verb: 'cleaves',
+    attacks: 2, str: 4, wis: 2, xp: 350, shove: true, leader: true, block: 5, resist: { poison: 'immune' }, verb: 'cleaves',
   }),
   // Act 3: Dragon's Lair
   orc: m('Orc', '👹', 15, 13, 5, { n: 1, d: 12, bonus: 3 }, 4, { str: 3, shove: true, verb: 'cleaves' }),
@@ -371,7 +377,7 @@ export const MONSTERS: Record<string, MonsterDef> = {
     attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, shove: true, leader: true, resist: { fire: 'resist' }, verb: 'rends',
   }),
   // NPC allies (shared/elites.ts): they fight for the party; act 1 numbers, they grow with the act
-  sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, shove: true, verb: 'cuts' }),
+  sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, shove: true, block: 2, verb: 'cuts' }),
   acolyte: m('Acolyte', '😇', 16, 13, 4, { n: 1, d: 8 }, 0, {
     range: 6, wis: 3, xp: 0, element: 'radiant', role: 'support', verb: 'smites',
     support: { heal: { n: 1, d: 8, bonus: 3 }, buff: { id: 'blessed', turns: 2 } },

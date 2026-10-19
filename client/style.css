@@ -381,9 +381,13 @@ button.tag.lvl:hover { background: var(--accent-2); }
 .ability .uses { font-size: 11px; color: var(--accent-2); }
 .slotcost { font-size: 10px; color: #cdb4ff; }
 .ability .cost { font-size: 10px; padding: 0 5px; border-radius: 4px; }
-.cost.action { background: #4a1a14; color: #ffb3a6; }
-.cost.bonus { background: #17324a; color: #9fd3ff; }
-.cost.free { background: #1c3a1f; color: #a9e8a2; }
+.cost.ap3 { background: #3d1a4a; color: #e2b3ff; }
+.cost.ap2 { background: #4a1a14; color: #ffb3a6; }
+.cost.ap1 { background: #17324a; color: #9fd3ff; }
+.cost.ap0 { background: #1c3a1f; color: #a9e8a2; }
+.pill.ap { display: inline-flex; align-items: center; gap: 4px; background: #3b2d12; color: var(--accent-2); }
+.pill.ap i { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--accent-2); }
+.pill.ap i.on { background: var(--accent-2); }
 .cd-ov {
   position: absolute;
   inset: -3px;

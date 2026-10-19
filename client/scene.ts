@@ -6,7 +6,7 @@ import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
 import { dist, hasLOS, reachable } from '../shared/grid.ts';
 import { diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
-import { STATUSES, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
+import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
   CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planWalk, previewField, reactionSummary,
   resistance, tilePos, tilesAround, type CloudId, type FieldLike, type FieldPreview, type GroundId,
@@ -882,7 +882,7 @@ class DungeonScene extends Phaser.Scene {
   private styleSprite(sp: Token, e: Entity) {
     const dead = e.kind === 'player' && e.dead;
     const down = e.kind === 'player' && e.downed;
-    const soak = e.kind === 'player' ? e.tempHp : (e.ward ?? 0); // damage a hero's temp HP or a Shielded elite's ward still soaks
+    const soak = blockOf(e) + (e.kind === 'player' ? e.tempHp : (e.ward ?? 0)); // damage Block, a hero's temp HP or a Shielded elite's ward still soaks
     const shown = dead ? [] : e.statuses.slice(0, MAX_TAGS);
     const key = `${e.hp}/${e.maxHp}/${soak}/${dead}/${down}/${e.facing?.x},${e.facing?.y}/${e.statuses.map((x) => x.id).join(',')}`;
     if (sp.key === key) return;
@@ -1144,7 +1144,8 @@ class DungeonScene extends Phaser.Scene {
   private entityTip(s: GameState, e: Entity): string[] {
     const mon = e.kind === 'monster' ? e : null;
     const tag = mon?.boss ? ' <span class="tag">boss</span>' : mon?.elite ? ' <span class="tag">elite</span>' : isAllyNpc(e) ? ' <span class="tag ally">ally</span>' : '';
-    const soak = e.kind === 'player' ? (e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '') : mon?.ward ? ` (+${mon.ward} 🔰 ward)` : '';
+    const block = blockOf(e) > 0 ? ` (+${blockOf(e)} 🧱 Block)` : '';
+    const soak = block + (e.kind === 'player' ? (e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '') : mon?.ward ? ` (+${mon.ward} 🔰 ward)` : '');
     const lines = [`<b>${esc(e.name)}</b>${tag} ${traitIcons(e)}`.trim(), `${e.hp} / ${e.maxHp} HP${soak} · AC ${e.ac}`];
     if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name} ${x.turns}`).join(' · '));
     const resist = this.resistLine(e);

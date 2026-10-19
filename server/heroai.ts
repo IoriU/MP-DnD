@@ -9,7 +9,7 @@
 // friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
 import { DIRS, canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
-import { MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
+import { AP_GAIN, AP_MAX, ATTACK_AP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
 import { attackAdvantage, canReact, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
   CLEANSED,
@@ -18,6 +18,7 @@ import {
   SLOWED,
   attackBonus,
   avgDice,
+  blockOf,
   canHitProps,
   countKind,
   damageMod,
@@ -83,7 +84,10 @@ export type HeroIntent =
   | { kind: 'end' };
 
 const END: HeroIntent = { kind: 'end' };
-const MIN_BONUS = 0.5; // a bonus (or free) action has to be worth at least this much
+const MIN_QUICK = 0.5; // a quick (1 AP) or free skill has to be worth at least this much
+const SAVE_AP = 0.2; // an AP saved for the next turn (only as many as the cap lets carry over): a tie-breaker, so bots
+// bank AP when nothing is worth it rather than skipping useful quick skills
+const REPEAT = 0.8; // a second swing of the same basic attack in one turn (the first may already have done the job)
 const MOVE_MARGIN = 0.3; // don't shuffle around for tiny gains
 const STEP_COST = 0.05; // per tile walked
 const POTION_PRICE = 6; // potions are scarce: drink when it really helps
@@ -103,6 +107,9 @@ const shieldOf = (e: Entity) => e.statuses.reduce((s, x) => s + (x.id === 'shiel
 const acOf = (e: Entity) =>
   e.ac + shieldOf(e) - (hasStatus(e, 'shocked') ? 2 : 0) + (e.kind === 'player' && e.tempHp > 0 && hasBranch(e, 'arcane_ward', 'A') ? 2 : 0);
 /** A copy with a pretend status (replacing any it has), or without one. */
+/** Damage that has to go before HP does: Block, then a hero's temporary HP or an elite's ward. */
+const soakOf = (e: Entity) => blockOf(e) + (e.kind === 'player' ? e.tempHp : (e.ward ?? 0));
+
 const withStatus = <T extends Entity>(e: T, id: StatusId, power?: number): T => ({
   ...e,
   statuses: [...e.statuses.filter((x) => x.id !== id), power ? { id, turns: 1, power } : { id, turns: 1 }],
@@ -156,7 +163,7 @@ interface Sim {
   ranged: Set<string>; // heroes who'd rather fight from a distance
   healer: boolean; // can heal (and so revive) someone this turn
   root: boolean; // the real situation: also weighs setups, dashes and refreshes
-  actionLater: boolean; // this turn's action is still coming (and an attack would give a hidden hero away)
+  actionLater: boolean; // there's AP for an attack this turn (and an attack would give a hidden hero away)
   memo: Map<string, number>;
   fx: FieldCache; // the battlefield, and what its tiles cost this hero
   odds: Record<'fire' | 'cold' | 'lightning', number>; // chance the party brings each element to a setup (oil, water) in time
@@ -280,7 +287,7 @@ function rootSim(v: HeroView): Sim {
     ranged: new Set(v.heroes.filter(fightsFromRange).map((p) => p.id)),
     healer: usable(v.hero, v.turn).some((id) => !!statsOf(ownedSkill(v.hero, id)!).heal),
     root: true,
-    actionLater: !v.turn.actionUsed,
+    actionLater: v.turn.ap >= ATTACK_AP,
     memo: new Map(),
     fx: fieldCache(v.map, v.hero, v.monsters),
     odds: partyOdds(v),
@@ -293,11 +300,17 @@ function variant(sim: Sim, me: PlayerEntity, monsters = sim.monsters, turn = sim
   // Walking up to monsters makes them turn to face you (unless you're hidden), so no free backstabs.
   const moved = me.x !== sim.me.x || me.y !== sim.me.y;
   if (moved) monsters = monsters.map((m) => (turnsToFace(m, me, me) ? { ...m, facing: dirTo(m, me) } : m));
-  const actionLater = turn === sim.turn ? sim.actionLater : !turn.actionUsed;
+  const actionLater = turn === sim.turn ? sim.actionLater : turn.ap >= ATTACK_AP;
   return { ...sim, me, heroes, monsters, turn, ctx: aimCtx(sim.fx.field, heroes, monsters, sim.v.allies), root: false, actionLater };
 }
 
 const standAt = (sim: Sim, pos: Pos) => variant(sim, { ...sim.me, x: pos.x, y: pos.y });
+
+/** The same fight after paying for a skill: its AP are gone. */
+const paid = (sim: Sim, s: SkillStats) => variant(sim, sim.me, sim.monsters, { ...sim.turn, ap: sim.turn.ap - s.ap });
+
+/** After paying for this skill, there's still AP for an attack this turn. */
+const attackAfter = (sim: Sim, s: SkillStats) => sim.actionLater && sim.turn.ap - s.ap >= ATTACK_AP;
 
 /** The same fight on a changed battlefield (after a Quick Grease, say). */
 function onField(sim: Sim, field: FieldLike): Sim {
@@ -319,9 +332,10 @@ function memo(sim: Sim, key: string, f: () => number): number {
 interface Plan {
   skill: SkillId;
   target?: string | Pos;
-  cost: SkillStats['cost'];
+  ap: number;
+  repeat: boolean; // a basic attack: can be used again this turn if there's AP for it
   score: number;
-  early: boolean; // do it before the action: a revive, an emergency heal, a setup (Feint) or a dash to reach a target
+  early: boolean; // do it before the attack: a revive, an emergency heal, a setup (Feint) or a dash to reach a target
 }
 
 interface Strike {
@@ -453,7 +467,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
       mean += ((hits - k) * per) / 2;
       variance += ((hits - k) * rollVar) / 4;
     }
-    kill += pk * atLeast(mean, variance, m.hp / factor);
+    kill += pk * atLeast(mean, variance, (m.hp + soakOf(m)) / factor);
   });
   return { dmg: dmg * factor, kill, land };
 }
@@ -642,7 +656,10 @@ function foeValue(
   if (s.roll === 'contest') return shoveValue(sim, s, m);
   const hit = strike(sim, id, s, m, main);
   // Damage up to its HP; healing (a Magma Imp drinking fire) up to what it's missing.
-  let v = (hit.dmg >= 0 ? Math.min(hit.dmg, m.hp) : Math.max(hit.dmg, m.hp - m.maxHp)) + hit.kill * killValue(m);
+  // Damage into Block or a ward is worth a little (it's gone for the next hit), the rest counts up to its HP.
+  const soak = soakOf(m);
+  const into = hit.dmg >= 0 ? Math.min(Math.max(0, hit.dmg - soak), m.hp) + 0.3 * Math.min(hit.dmg, soak) : Math.max(hit.dmg, m.hp - m.maxHp);
+  let v = into + hit.kill * killValue(m);
   if (hit.dmg > 0) {
     if (m.boss || m.elite) v += 1.5;
     if (main) v -= m.hp * 0.02; // tie-break toward the wounded
@@ -772,7 +789,7 @@ function hideValue(sim: Sim, me: PlayerEntity, power = 0): number {
   return safety + 1.5 + (sneaky ? 0.3 * sneakDice(me.level) * 3.5 : 0) + power * 3.5 * 0.6;
 }
 
-/** What a hidden hero throws away with a bonus action that gives them away without an attack roll (Shove, Feint). */
+/** What a hidden hero throws away with a quick skill that gives them away without an attack roll (Shove, Feint). */
 function hiddenWorth(sim: Sim): number {
   const h = sim.me.statuses.find((x) => x.id === 'hidden');
   if (!h) return 0;
@@ -794,11 +811,25 @@ function friendValue(sim: Sim, s: SkillStats, f: PlayerEntity): number {
     return 0; // buffs don't help someone lying on the floor
   }
   if (s.tempHp) v += avgDice(s.tempHp) * (exposure(sim, f) > 0 ? 0.5 : 0.1);
+  if (s.block) v += blockWorth(sim, f, avgDice(s.block) + (s.blockLevel ? sim.me.level : 0));
   if (s.cleanse) v += 1.5 * f.statuses.filter((x) => CLEANSED.includes(x.id)).length;
   // Out of a net or a web: free to move again, and a web's advantage for the monsters is gone.
   if (s.frees) v += (hasStatus(f, 'webbed') ? 4 : 2.5) + 0.2 * exposure(sim, f);
   for (const st of s.status ?? []) v += heroStatusValue(sim, f, st);
   return v;
+}
+
+/**
+ * 🧱 Block until your next turn on a friend (you included): the hits it soaks before then (about 60% of what could come
+ * at them lands), priced like heals by how hurt those hits would leave them, and dearest when they could drop them.
+ */
+function blockWorth(sim: Sim, f: PlayerEntity, n: number): number {
+  if (!standing(f)) return 0;
+  const e = 0.6 * exposure(sim, f);
+  const have = blockOf(f);
+  const soak = Math.max(0, Math.min(have + n, e) - Math.min(have, e));
+  const left = f.hp + f.tempHp + have - e;
+  return soak * (left <= 0 ? 2 : healWeight({ ...f, hp: left }));
 }
 
 /** Taunting is good when you're healthy and the monsters would otherwise go for someone else. */
@@ -815,33 +846,44 @@ function tauntValue(sim: Sim, radius: number, turns: number): number {
   return v * sturdy * Math.min(turns, 2);
 }
 
-/** Best action score from a spot (with the walk there already paid), or 0. Plus 10 so "can act" beats "can't". */
+/**
+ * The best way to spend the AP left from a spot (with the walk there already paid), or 0 if it holds no attack-sized
+ * move. Plus 10 so "can act" beats "can't".
+ */
 const actionAt = (p: Sim) => {
-  const a = best(plansFrom(p, false), 'action');
-  return a && a.score > 0 ? 10 + a.score : 0;
+  const c = spend(plansFrom(p, false), p.turn.ap);
+  return c.main ? 10 + c.score : 0;
 };
 
-/** Action Surge and friends: worth the best action you could still take this turn. */
-function refreshValue(sim: Sim): number {
-  if (!sim.turn.actionUsed) return -5; // the action is still there: nothing to get back
+/** The best way to spend the AP left from a spot, attack or not. */
+const spendAt = (p: Sim) => spend(plansFrom(p, false), p.turn.ap).score;
+
+/** Action Surge: AP back, worth what they buy this turn. Spend what you have first: the surge is for after the attack. */
+function refreshValue(sim: Sim, s: SkillStats): number {
+  const left = sim.turn.ap - s.ap;
+  if (left >= ATTACK_AP) return -5;
   if (!sim.root) return 0;
-  return memo(sim, 'refresh', () => {
-    const fresh = variant(sim, sim.me, sim.monsters, { ...sim.turn, actionUsed: false });
-    return Math.max(0, scan(fresh, sim.turn.movesLeft, actionAt).score - 10);
+  return memo(sim, `refresh:${left}`, () => {
+    const moves = sim.turn.movesLeft;
+    const fresh = scan(variant(sim, sim.me, sim.monsters, { ...sim.turn, ap: left + (s.gainAp ?? 0) }), moves, spendAt).score;
+    const without = scan(variant(sim, sim.me, sim.monsters, { ...sim.turn, ap: left }), moves, spendAt).score;
+    return Math.max(0, fresh - without);
   });
 }
 
-/** Extra movement is worth a lot when it's the only way to reach a target this turn. */
-function dashValue(sim: Sim, extra: number): number {
-  if (!sim.root || !sim.actionLater || ROOTED.some((id) => hasStatus(sim.me, id))) return 0; // stuck: a dash waits until it's free
-  const canAct = (moves: number) => memo(sim, `act:${moves}`, () => scan(variant(sim, sim.me), moves, actionAt).score) > 5;
-  if (canAct(sim.turn.movesLeft)) return 0;
-  return canAct(sim.turn.movesLeft + extra) ? 6 : 1;
+/** Extra movement is worth a lot when it's the only way to reach a target this turn (with AP left to attack it). */
+function dashValue(sim: Sim, s: SkillStats): number {
+  if (!sim.root || !attackAfter(sim, s) || ROOTED.some((id) => hasStatus(sim.me, id))) return 0; // stuck: a dash waits until it's free
+  const canAct = (moves: number, ap: number) =>
+    memo(sim, `act:${moves}:${ap}`, () => scan(variant(sim, sim.me, sim.monsters, { ...sim.turn, ap }), moves, actionAt).score) > 5;
+  if (canAct(sim.turn.movesLeft, sim.turn.ap)) return 0;
+  return canAct(sim.turn.movesLeft + (s.dash ?? 0), sim.turn.ap - s.ap) ? 6 : 1;
 }
 
 /**
- * Extra value of a bonus action that improves this turn's action (Feint, Hide, Mark for Death, Hit and Run...): the best
- * attack you can still walk to with it, against the best one without (which may already have advantage from a flank).
+ * Extra value of a quick skill that improves this turn's attack (Feint, Hide, Mark for Death, Hit and Run...): the best
+ * spend of the AP left that you can still walk to with it, against the best one without (which may already have
+ * advantage from a flank, and has the AP the setup would cost).
  */
 function setupGain(sim: Sim, s: SkillStats, res: AimResult): number {
   const mine = [...(s.selfStatus ?? []), ...(res.friends.some((f) => f.id === sim.me.id) ? (s.status ?? []) : [])].filter(
@@ -856,7 +898,8 @@ function setupGain(sim: Sim, s: SkillStats, res: AimResult): number {
   const gain = (x: number) => (x > 0 ? x - 10 : 0); // actionAt adds 10 for "can act"
   const before = memo(sim, 'setup:none', () => gain(scan(variant(sim, sim.me), moves, actionAt).score));
   const key = `setup:${mine.map((x) => `${x.id}${x.power ?? ''}`).join()}:${mark?.id ?? ''}:${isOffensive(s)}`;
-  const after = memo(sim, key, () => gain(scan(variant(sim, me, monsters), moves, actionAt).score));
+  const left = { ...sim.turn, ap: sim.turn.ap - s.ap };
+  const after = memo(sim, `${key}:${left.ap}`, () => gain(scan(variant(sim, me, monsters, left), moves, actionAt).score));
   return Math.max(0, after - Math.max(0, before));
 }
 
@@ -868,14 +911,14 @@ function setupGain(sim: Sim, s: SkillStats, res: AimResult): number {
  */
 function heroLoss(h: PlayerEntity, dmg: number, down: number): number {
   if (dmg <= 0) return down * DOWN_PRICE;
-  const mid = clamp((h.hp + h.tempHp - dmg / 2) / h.maxHp, 0, 1);
+  const mid = clamp((h.hp + soakOf(h) - dmg / 2) / h.maxHp, 0, 1);
   return dmg * (1.2 + 1.2 * (1 - mid)) + down * DOWN_PRICE;
 }
 
 /** Standing in or stepping into hazards (hazardAt's expected harm, with stuns and falls priced in). */
 function harmCost(h: PlayerEntity, harm: number, down = 0): number {
   if (harm <= 0) return 0;
-  const left = h.hp + h.tempHp;
+  const left = h.hp + soakOf(h);
   return heroLoss(h, harm, Math.max(down, harm >= left ? 0.6 : 2 * harm >= left ? 0.15 : 0));
 }
 
@@ -983,7 +1026,7 @@ const EXPLOSION_VAR = (EXPLOSION.n * (EXPLOSION.d ** 2 - 1)) / 12;
 function blastValue(sim: Sim, m: MonsterEntity): { value: number; kill: number } {
   const k = damageFactor(m, 'fire');
   if (k <= 0) return { value: Math.max(k * EXPLOSION_AVG, m.hp - m.maxHp), kill: 0 };
-  const kill = atLeast(EXPLOSION_AVG * k, EXPLOSION_VAR * k * k, m.hp);
+  const kill = atLeast(EXPLOSION_AVG * k, EXPLOSION_VAR * k * k, m.hp + soakOf(m));
   return { value: Math.min(EXPLOSION_AVG * k, m.hp) + kill * killValue(m) + (1 - kill) * elementValue(sim, m, 'fire'), kill };
 }
 
@@ -1056,7 +1099,7 @@ function fieldValue(sim: Sim, p: Preview, base: FieldLike, gone?: string): Field
       // The blast and whatever appears under them land together: priced as one drop in HP. New oil or water under
       // them counts too when the monsters can set it off.
       const k = blasted ? Math.max(0, damageFactor(e, 'fire')) : 0;
-      const down = k ? atLeast(EXPLOSION_AVG * k, EXPLOSION_VAR * k * k, e.hp + e.tempHp) : 0;
+      const down = k ? atLeast(EXPLOSION_AVG * k, EXPLOSION_VAR * k * k, e.hp + soakOf(e)) : 0;
       const risk = changed ? Math.max(0, riskAt(sim.fx, p.field, i) - riskAt(sim.fx, base, i)) : 0;
       value -= harmCost(e, EXPLOSION_AVG * k + after + risk, down);
       if (before > after) value += 0.7 * (harmCost(e, before) - harmCost(e, after));
@@ -1094,13 +1137,13 @@ function setupPotential(sim: Sim, p: Preview, base: FieldLike): number {
 }
 
 /**
- * A bonus-action setup (Quick Grease) followed by this turn's action on the changed battlefield (a Fire Bolt into the
- * oil), against the best action without it (walking included, so it's never oversold).
+ * A quick setup (Quick Grease) followed by this turn's attack on the changed battlefield (a Fire Bolt into the oil),
+ * against the best attack without it (walking included, so it's never oversold).
  */
-function comboGain(sim: Sim, p: Preview): number {
+function comboGain(sim: Sim, s: SkillStats, p: Preview): number {
   const gain = (x: number) => (x > 0 ? x - 10 : 0); // actionAt adds 10 for "can act"
   const before = memo(sim, 'setup:none', () => gain(scan(variant(sim, sim.me), sim.turn.movesLeft, actionAt).score));
-  const after = gain(actionAt(onField(sim, p.field)));
+  const after = gain(actionAt(onField(paid(sim, s), p.field)));
   return Math.max(0, after - Math.max(0, before));
 }
 
@@ -1185,7 +1228,7 @@ function friendlyHit(sim: Sim, id: SkillId, s: SkillStats, h: PlayerEntity): num
       const total = j * onFail + (hits - j) * onSave;
       const variance = (j * (evasion ? 0.25 : 1) + (onSave ? (hits - j) / 4 : 0)) * rollVar;
       mean += pk * total;
-      down += pk * atLeast(total, variance, h.hp + h.tempHp);
+      down += pk * atLeast(total, variance, h.hp + soakOf(h));
     });
     cost += heroLoss(h, mean, down);
   }
@@ -1220,11 +1263,11 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
     score += play.value;
     // Oil or water left under monsters for a later spark; or, with Quick Grease, lit by this turn's own action.
     let later = setupPotential(sim, prev, sim.fx.field);
-    if (setup && isSetup(s) && s.cost !== 'action' && sim.actionLater && res.foes.length >= 2) {
-      const combo = comboGain(sim, prev);
+    if (setup && isSetup(s) && s.ap < ATTACK_AP && attackAfter(sim, s) && res.foes.length >= 2) {
+      const combo = comboGain(sim, s, prev);
       if (combo > later) {
         later = combo;
-        early ||= combo > MIN_BONUS;
+        early ||= combo > MIN_QUICK;
       }
     }
     score += later;
@@ -1233,12 +1276,13 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
   for (const h of res.caught ?? []) score -= h.kind === 'player' ? friendlyHit(sim, id, s, h) : allyNpcHit(s, h);
   // A Shove or Feint gives a hidden hero away for nothing (an attack roll spends it on advantage, already scored), and
   // so does smashing a barrel (no roll at all).
-  if (offensive && (res.prop !== undefined || (s.roll !== 'attack' && s.cost !== 'action'))) score -= hiddenWorth(sim);
+  if (offensive && (res.prop !== undefined || (s.roll !== 'attack' && s.ap < ATTACK_AP))) score -= hiddenWorth(sim);
   for (const f of res.friends) score += friendValue(sim, s, f);
   for (const st of s.selfStatus ?? []) score += heroStatusValue(sim, me, st);
+  if (s.selfBlock) score += blockWorth(sim, me, avgDice(s.selfBlock) + (s.blockLevel ? me.level : 0));
   if (s.taunt) score += tauntValue(sim, s.taunt.radius, s.taunt.turns);
-  if (s.refresh) {
-    const r = refreshValue(sim);
+  if (s.gainAp) {
+    const r = refreshValue(sim, s);
     score += r;
     early ||= r > 0; // before walking off: the next action may want this spot
   }
@@ -1246,19 +1290,19 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
   // Ether: a slot back is worth a slot, when there's a spell to spend it on.
   if (s.restoreSlots && countKind(me, 'spell')) score += Math.min(s.restoreSlots, me.maxSlots - me.slots) * sim.price * (me.slots === 0 ? 1.5 : 1);
   if (s.dash) {
-    const d = s.cost === 'action' ? 0.5 : dashValue(sim, s.dash);
+    const d = s.ap >= ATTACK_AP ? 0.5 : dashValue(sim, s);
     score += d;
     early ||= d >= 6;
   }
-  if (setup && s.cost !== 'action' && sim.actionLater) {
+  if (setup && s.ap < ATTACK_AP && attackAfter(sim, s)) {
     const gain = setupGain(sim, s, res);
     score += gain;
-    early ||= gain > MIN_BONUS;
+    early ||= gain > MIN_QUICK;
   }
   if (s.heal && res.friends.some((f) => f.downed || hpPct(f) < 0.35)) early = true; // patch people up first
   if (s.frees) early = true; // cut free before walking or attacking
   // Rage before the swing, so the swing gets it.
-  if (sim.actionLater && s.selfStatus?.some((x) => x.id === 'raging') && score > MIN_BONUS) early = true;
+  if (attackAfter(sim, s) && s.selfStatus?.some((x) => x.id === 'raging') && score > MIN_QUICK) early = true;
   return { score: score - costOf(sim, id, s), early };
 }
 
@@ -1290,17 +1334,62 @@ function plansFrom(sim: Sim, setup: boolean): Plan[] {
       const res = resolveAim(s, sim.me, target, sim.ctx);
       if (typeof res === 'string') continue;
       const r = scorePlan(sim, id, s, res, setup);
-      if (r && (!top || r.score > top.score)) top = { skill: id, target, cost: s.cost, ...r };
+      if (r && (!top || r.score > top.score)) top = { skill: id, target, ap: s.ap, repeat: SKILLS[id].kind === 'basic', ...r };
     }
     if (top) out.push(top);
   }
   return out;
 }
 
-function best(plans: Plan[], cost: SkillStats['cost']): Plan | null {
-  let top: Plan | null = null;
-  for (const p of plans) if (p.cost === cost && (!top || p.score > top.score)) top = p;
-  return top;
+/** The highest-scoring plan, or null. */
+function top(plans: Plan[]): Plan | null {
+  let best: Plan | null = null;
+  for (const p of plans) if (!best || p.score > best.score) best = p;
+  return best;
+}
+
+/** A plan's worth over doing nothing: quick and free skills have to clear a small bar. */
+const net = (p: Plan) => p.score - (p.ap < ATTACK_AP ? MIN_QUICK : 0);
+
+/** What AP left over is worth: it carries into the next turn, but only as far as the cap lets it. */
+const savedWorth = (ap: number) => SAVE_AP * Math.min(Math.max(0, ap), AP_MAX - AP_GAIN);
+
+interface Spend {
+  picks: Plan[];
+  score: number; // their worth (net), plus the AP saved
+  main: boolean; // holds an attack-sized move (2+ AP)
+}
+
+/**
+ * The best way to spend `ap` on these plans (each once; a basic attack again if there's AP for it), with what's left
+ * saved for the next turn. Plans were scored one at a time, so two hits on one monster are an overestimate; the turn is
+ * planned again after every step anyway.
+ */
+function spend(plans: Plan[], ap: number): Spend {
+  const items: Plan[] = [];
+  for (const p of plans) {
+    if (net(p) <= 0 || p.ap > ap) continue;
+    items.push(p);
+    if (p.repeat && p.ap > 0) for (let k = 2 * p.ap; k <= ap; k += p.ap) items.push({ ...p, score: p.score * REPEAT });
+  }
+  // Knapsack over AP: at most a dozen plans and a handful of AP.
+  let table = Array.from({ length: ap + 1 }, () => ({ score: 0, picks: [] as Plan[] }));
+  for (const it of items) {
+    const next = table.slice();
+    for (let c = it.ap; c <= ap; c++) {
+      const from = table[c - it.ap];
+      const v = from.score + net(it);
+      if (v > next[c].score) next[c] = { score: v, picks: [...from.picks, it] };
+    }
+    table = next;
+  }
+  let out: Spend = { picks: [], score: savedWorth(ap), main: false };
+  for (const row of table) {
+    const used = row.picks.reduce((n, p) => n + p.ap, 0);
+    const score = row.score + savedWorth(ap - used);
+    if (score > out.score) out = { picks: row.picks, score, main: row.picks.some((p) => p.ap >= ATTACK_AP) };
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- where to stand
@@ -1353,23 +1442,19 @@ function flanksGiven(p: Sim): number {
   return Math.min(n, 2);
 }
 
-/** A spot to act from: the best action there (flanks and back attacks included), plus the best bonus action there, minus danger. */
+/** A spot to act from: the best way to spend the AP there (flanks and back attacks included), minus danger. */
 function engageAt(p: Sim): number {
-  const plans = plansFrom(p, false);
-  const action = best(plans, 'action');
-  const bonus = best(plans, 'bonus');
-  let score = action && action.score > 0 ? 10 + action.score : -0.5 * approachDist(p);
-  if (bonus && bonus.score > MIN_BONUS) score += bonus.score;
+  const c = spend(plansFrom(p, false), p.turn.ap);
+  const score = (c.main ? 10 : -0.5 * approachDist(p)) + c.score;
   return score + FLANK_GIFT * flanksGiven(p) - dangerAt(p) - standCost(p);
 }
 
 /**
- * A spot to finish the turn on: the best bonus action there (Shove, Hide...), then safety (ranged) or staying in the
- * fight (melee), and out of fire, poison and electrified water.
+ * A spot to finish the turn on: the best quick skills there for the AP left (Shove, Hide...), then safety (ranged) or
+ * staying in the fight (melee), and out of fire, poison and electrified water.
  */
 function afterAt(p: Sim): number {
-  const bonus = best(plansFrom(p, false), 'bonus');
-  let score = bonus && bonus.score > MIN_BONUS ? bonus.score : 0;
+  let score = spend(plansFrom(p, false), p.turn.ap).score;
   if (p.ranged.has(p.me.id)) score += Math.min(nearestFoe(p), 3) * 0.2;
   else score -= Math.max(0, nearestFoe(p) - 1) * 0.3;
   return score + FLANK_GIFT * flanksGiven(p) - dangerAt(p) - standCost(p);
@@ -1386,29 +1471,28 @@ export function nextHeroIntent(v: HeroView): HeroIntent {
   if (!standing(h) || !v.monsters.length || skipsTurn(h)) return END;
   const sim = rootSim(v);
   const plans = plansFrom(sim, true);
-  const bonus = best(plans, 'bonus');
-  const free = best(plans, 'free');
 
   // 1. Revives, emergency heals and setups (Feint, Hide, a dash to reach a target) come first.
-  for (const p of [bonus, free]) if (p && p.early && p.score > MIN_BONUS) return act(p);
+  const early = top(plans.filter((p) => p.early && p.ap < ATTACK_AP && net(p) > 0));
+  if (early) return act(early);
 
-  // 2. Get to the best spot to act from (in reach, flanking or behind, out of melee for ranged heroes, near a downed
-  // friend), then act.
-  if (!v.turn.actionUsed) {
+  // 2. While there's AP for an attack: get to the best spot to act from (in reach, flanking or behind, out of melee for
+  // ranged heroes, near a downed friend), then make the biggest move of the best way to spend the AP there.
+  if (sim.actionLater) {
     const to = bestMove(sim, engageAt);
     if (to) return { kind: 'move', to };
-    const action = best(plans, 'action');
-    if (action && action.score > 0) return act(action);
+    const main = top(spend(plans, v.turn.ap).picks.filter((p) => p.ap >= ATTACK_AP));
+    if (main) return act(main);
   }
 
-  // 3. Bonus and free actions (Shield Bash, Second Wind, Shove, Hide, Action Surge...), from a better spot if there is
-  // one. With the action unused there's no attack coming, so hiding now lasts into the monsters' turns.
-  const late = v.turn.actionUsed ? sim : { ...sim, actionLater: false, memo: new Map<string, number>() };
+  // 3. Quick and free skills with the AP left (Shield Bash, Second Wind, Shove, Hide, Action Surge...), from a better
+  // spot if there is one, or save the AP. With no attack coming, hiding now lasts into the monsters' turns.
+  const late = sim.actionLater ? { ...sim, actionLater: false, memo: new Map<string, number>() } : sim;
   const latePlans = late === sim ? plans : plansFrom(late, false);
   const to = bestMove(late, afterAt);
   if (to) return { kind: 'move', to };
-  for (const p of [best(latePlans, 'free'), best(latePlans, 'bonus')]) if (p && p.score > MIN_BONUS) return act(p);
-  return END;
+  const next = top(spend(latePlans, v.turn.ap).picks);
+  return next ? act(next) : END;
 }
 
 // ---------------------------------------------------------------- between rooms
@@ -1574,7 +1658,7 @@ export function gearScore(p: PlayerEntity, id: ItemId | undefined): number {
   if (!g) return 0;
   const st = g.stats;
   const caster = CASTERS.has(p.classId);
-  let v = (st.ac ?? 0) * 3 + (st.hp ?? 0) * 0.4 + (st.speed ?? 0) + (st.init ?? 0) * 0.3 + (st.saves ?? 0) * 1.5 + (st.slots ?? 0) * 2.5 + (st.stealth ?? 0) * 0.3;
+  let v = (st.ac ?? 0) * 3 + (st.block ?? 0) * 2 + (st.hp ?? 0) * 0.4 + (st.speed ?? 0) + (st.init ?? 0) * 0.3 + (st.saves ?? 0) * 1.5 + (st.slots ?? 0) * 2.5 + (st.stealth ?? 0) * 0.3;
   v += (st.hit ?? 0) * (caster ? 1 : 2.5) + (st.dmg ?? 0) * (caster ? 0.5 : 1.5) + (st.power ?? 0) * (caster ? 3 : 0.3);
   v += (st.heal ?? 0) * (p.classId === 'cleric' ? 2 : 0.3);
   if (st.weapon) v += caster ? 1.5 : 4;

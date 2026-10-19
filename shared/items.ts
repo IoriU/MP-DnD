@@ -28,6 +28,7 @@ export interface GearStats {
   power?: number; // attack rolls and save DC of cantrips and spells that use your casting stat
   heal?: number; // every heal you cast or drink
   shove?: number; // Shove contests; a win also pushes 1 tile further
+  block?: number; // 🧱 Block at the start of each of your turns (until the next one)
   weapon?: { element: Element; dice: Dice }; // basic weapon hits deal this on top (and it reacts with the ground)
   onHit?: StatusApply[]; // basic weapon hits
   resist?: Partial<Record<Element, Resist>>;
@@ -71,6 +72,7 @@ const ITEM_DEFS = {
   padded_vest: gear('armor', 'Padded Vest', '🧥', 'common', { ac: 1 }),
   chain_shirt: gear('armor', 'Chain Shirt', '⛓️', 'uncommon', { ac: 2 }),
   plate_armor: gear('armor', 'Plate Armor', '🛡️', 'rare', { ac: 3, speed: -1 }),
+  splint_mail: gear('armor', 'Splint Mail', '🪖', 'uncommon', { ac: 1, block: 2 }),
   elven_cloak: gear('armor', 'Elven Cloak', '🧝', 'uncommon', { ac: 1, stealth: 3 }),
   dragonscale: gear('armor', 'Dragonscale Mail', '🐉', 'rare', { ac: 2, resist: { fire: 'resist' } }),
   archmage_robe: gear('armor', 'Archmage Robe', '🥋', 'rare', { ac: 1, slots: 1, power: 1 }),
@@ -83,6 +85,8 @@ const ITEM_DEFS = {
   lucky_charm: gear('trinket', 'Lucky Charm', '🍀', 'common', { lucky: 1 }),
   antidote_charm: gear('trinket', 'Periapt of Purity', '💚', 'common', { resist: { poison: 'immune' } }),
   ember_ring: gear('trinket', 'Ring of Warmth', '🔆', 'common', { resist: { fire: 'resist', cold: 'resist' } }),
+  buckler: gear('trinket', 'Buckler', '🥏', 'common', { block: 2 }),
+  tower_shield: gear('trinket', 'Tower Shield', '🧱', 'rare', { block: 5, speed: -1 }),
   // ---------------------------------------------- consumables (their skills are in shared/skills.ts)
   greater_potion: use('uncommon'),
   ether: use('uncommon'),
@@ -239,7 +243,7 @@ export function statBlocks(p: Geared): GearStats[] {
   return out;
 }
 
-type NumKey = 'ac' | 'hp' | 'speed' | 'init' | 'saves' | 'slots' | 'stealth' | 'hit' | 'dmg' | 'power' | 'heal' | 'shove' | 'lucky';
+type NumKey = 'ac' | 'hp' | 'speed' | 'init' | 'saves' | 'slots' | 'stealth' | 'hit' | 'dmg' | 'power' | 'heal' | 'shove' | 'lucky' | 'block';
 
 /** The sum of one number over a hero's equipment and the party's relics and blessings. */
 export const gearBonus = (p: Geared, key: NumKey): number => statBlocks(p).reduce((s, st) => s + (st[key] ?? 0), 0);
@@ -288,6 +292,7 @@ export function describeStats(st: GearStats): string {
   if (st.power) parts.push(`${fmt(st.power)} to spell attacks and save DC`);
   if (st.heal) parts.push(`${fmt(st.heal)} to every heal`);
   if (st.shove) parts.push(`${fmt(st.shove)} to Shove, and a won Shove pushes 1 tile further`);
+  if (st.block) parts.push(`🧱 ${st.block} Block at the start of each of your turns`);
   if (st.weapon) parts.push(`basic attacks deal +${st.weapon.dice.n}d${st.weapon.dice.d} ${ELEMENT_NAME[st.weapon.element]}`);
   if (st.onHit?.length) parts.push(`basic attacks inflict ${st.onHit.map((x) => `${x.id} (${x.turns} turns)`).join(', ')}`);
   if (st.resist) {
