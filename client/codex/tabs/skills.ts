@@ -76,9 +76,9 @@ export const skills: TabDef = {
     const boons = Object.entries(BOONS)
       .map(([id, b]) => `<div class="entry flat" data-id="boon:${id}" data-pool="common" data-kind="boon" data-sub="none" data-q="${q(b.name, id, 'boon', b.desc)}"><div class="boon"><span class="sk-ic">${b.icon}</span><span class="sk-name"><b>${esc(b.name)}</b><code>${id}</code></span>${chip('boon', 'kind-boon')}<span class="sk-desc">${esc(b.desc)}</span>${srcTag('boon', id)}</div></div>`)
       .join('');
-    return `<p class="lead">Level-up cards draw two from the hero's class pool and one from the common pool (passives and boons). The header shows tier I; open a skill for II and III-A / III-B.
+    return `<p class="lead">Victory spoils (a pick after every won fight) offer two skill cards from the hero's class pool, now and then a common passive, and an item card or a boon. The header shows tier I; open a skill for II and III-A / III-B.
         Skills with a subclass chip are only offered to heroes of that subclass (picked at Lv ${SUBCLASS_LEVEL}); its signature is learned on the spot and takes no slot.</p>
       <div class="list">${ids.map(row).join('')}</div>
-      ${group('Boons', boons, 'Common-pool level-up cards that are not skills.')}`;
+      ${group('Boons', boons, 'Common-pool cards in the spoils that are not skills.')}`;
   },
 };

@@ -59,7 +59,8 @@ export type OfferCard =
   | { kind: 'upgrade'; skill: SkillId; tier: 2 | 3 } // tier 3: the player also picks branch A or B
   | { kind: 'boon'; boon: BoonId }
   | { kind: 'gear'; item: ItemId } // elite spoils: a piece of equipment for your bag
-  | { kind: 'subclass'; sub: SubclassId }; // at SUBCLASS_LEVEL: pick one of your class's two subclasses
+  | { kind: 'subclass'; sub: SubclassId } // at SUBCLASS_LEVEL: pick one of your class's two subclasses
+  | { kind: 'item'; item: ItemId }; // victory spoils: gear or a consumable for your bag
 
 export type BoonId = 'hp' | 'ac' | 'potions' | 'slot';
 
@@ -75,10 +76,11 @@ export interface PlayerEntity extends EntityBase {
   level: number;
   xp: number; // progress toward the next level
   skills: OwnedSkill[]; // basic attacks, cantrips, spells and passives, in hotbar order
-  levelUps: number; // level-up picks still to make
+  levelUps: number; // level-up picks still to make: since rewards come after every win (2026-10-19), only the subclass pick
   elitePicks: number; // elite-spoils picks still to make (one per hero for every elite beaten)
+  rewardPicks?: number; // victory picks still to make (one per hero for every fight won): two skill cards and an item card
   offer: OfferCard[] | null; // the cards for the current pick
-  offerKind?: 'level' | 'elite'; // which kind of pick the current offer is
+  offerKind?: 'level' | 'elite' | 'reward'; // which kind of pick the current offer is
   bonusHp: number; // permanent max HP from events, boons and items
   bonusAc: number;
   bonusSlots: number;
@@ -173,6 +175,7 @@ export interface RunInfo {
   currentId: string | null; // null = at the start of the act, before the first row
   visited: string[];
   gold: number; // the party's purse: anyone can spend it at a shop or an event
+  potionOdds?: number; // percent chance the next won fight leaves a potion (POTION_ODDS, Slay the Spire style)
   relics: RelicId[]; // party-wide perks for the rest of the run
   blessings: BlessingId[]; // party-wide perks until the end of the act
   allies: AllyState[]; // NPC allies travelling with the party

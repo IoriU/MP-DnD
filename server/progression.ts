@@ -1,7 +1,7 @@
 // Hero progression: XP shares, level-ups, level-up offers (pick 1 of 3), elite spoils, and training at rest sites.
 // Pure functions on PlayerEntity, so they can be unit tested without a running game.
 
-import { ELITE_GEAR, GEAR_IDS, ITEMS, bagRoom, gearBonus, gearDef, isItemId, type ItemId } from '../shared/items.ts';
+import { ELITE_GEAR, GEAR_IDS, ITEMS, ITEM_IDS, bagRoom, gearBonus, gearDef, isItemId, type ItemId, type Rarity } from '../shared/items.ts';
 import { BOON_HP, CLASSES, LEVEL_CAP, MAX_BONUS_AC, XP_ASSIST, XP_KILL, XP_SHARED, maxHpFor, maxSlotsFor, xpToNext } from '../shared/rules.ts';
 import {
   COUNTED_KINDS,
@@ -59,15 +59,18 @@ export function killShares(xp: number, killerId: string | null, dmgBy: Record<st
   return out;
 }
 
-/** Levels up as far as the XP goes. Returns how many levels were gained. */
+/**
+ * Levels up as far as the XP goes. Returns how many levels were gained. Levels give HP and power; skills come from the
+ * pick after every won fight, so the only level-up pick left is the subclass at SUBCLASS_LEVEL.
+ */
 export function applyLevelUps(p: PlayerEntity): number {
   let gained = 0;
   while (p.level < LEVEL_CAP && p.xp >= xpToNext(p.level)) {
     p.xp -= xpToNext(p.level);
     p.level++;
-    p.levelUps++;
     gained++;
   }
+  if (p.level >= SUBCLASS_LEVEL && !p.subclass && !p.levelUps) p.levelUps = 1;
   if (p.level >= LEVEL_CAP) p.xp = 0;
   if (gained) recalcHero(p);
   return gained;
@@ -137,6 +140,44 @@ export function makeOffer(p: PlayerEntity, r: Rng): OfferCard[] {
   return cards;
 }
 
+/** What a victory's item card can be, by act: mostly common early, rare late. */
+const REWARD_RARITY: Record<number, Partial<Record<Rarity, number>>> = {
+  1: { common: 0.65, uncommon: 0.35 },
+  2: { common: 0.35, uncommon: 0.45, rare: 0.2 },
+  3: { uncommon: 0.5, rare: 0.5 },
+};
+
+/** A victory's item: gear the hero isn't wearing, or a consumable, half the time each. */
+export function rewardItem(p: PlayerEntity, r: Rng, act: number): ItemId | null {
+  const odds = REWARD_RARITY[Math.min(3, Math.max(1, act))];
+  let roll = r.next();
+  let rarity: Rarity = 'common';
+  for (const [k, w] of Object.entries(odds) as [Rarity, number][]) {
+    rarity = k;
+    if ((roll -= w) < 0) break;
+  }
+  const worn = new Set(Object.values(p.gear));
+  const gear = r.next() < 0.5;
+  const pool = ITEM_IDS.filter((id) => ITEMS[id].rarity === rarity && (gear ? ITEMS[id].kind === 'gear' && !worn.has(id) : ITEMS[id].kind === 'consumable'));
+  return pool.length ? r.pick(pool) : null;
+}
+
+/**
+ * Victory spoils (one pick per hero for every fight won): two skill cards (the class and subclass pool, now and then a
+ * common passive) and an item card (gear or a consumable). The item card is a boon a quarter of the time, or when the
+ * bag is full.
+ */
+export function makeRewardOffer(p: PlayerEntity, r: Rng, act: number): OfferCard[] {
+  const taken = new Set<string>();
+  const common = candidates(p, 'common');
+  const skills = [...candidates(p, 'class'), ...common.filter((c) => c.card.kind !== 'boon').map((c) => ({ ...c, w: c.w * 0.5 }))];
+  const cards = takeWeighted(skills, 2, r, taken);
+  const item = bagRoom(p) > 0 && r.next() >= 0.25 ? rewardItem(p, r, act) : null;
+  if (item) cards.push({ kind: 'item', item });
+  cards.push(...takeWeighted(common.filter((c) => c.card.kind === 'boon'), 3 - cards.length, r, taken));
+  return cards;
+}
+
 /**
  * Elite spoils (one pick per hero for each elite beaten): an upgrade to a skill you own (or a new class skill if
  * nothing can be upgraded), a piece of the act's elite gear, and a boon.
@@ -158,7 +199,10 @@ export function makeEliteOffer(p: PlayerEntity, r: Rng, act: number): OfferCard[
 /** The level-up pick that chooses a subclass: one card for each of the class's two. */
 export const subclassOffer = (p: PlayerEntity): OfferCard[] => subclassesOf(p.classId).map((sub) => ({ kind: 'subclass', sub }));
 
-/** Deals the next pick: elite spoils first, then level-ups (the first one from SUBCLASS_LEVEL on picks the subclass). */
+/** Picks still to make, of every kind. */
+export const picksLeft = (p: PlayerEntity) => p.levelUps + p.elitePicks + (p.rewardPicks ?? 0);
+
+/** Deals the next pick: elite spoils first, then the subclass, then victory spoils (and old saves' level-up picks). */
 export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
   if (p.elitePicks > 0) {
     p.offer = makeEliteOffer(p, r, act);
@@ -166,6 +210,9 @@ export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
   } else if (p.levelUps > 0 && p.level >= SUBCLASS_LEVEL && !p.subclass) {
     p.offer = subclassOffer(p);
     p.offerKind = 'level';
+  } else if ((p.rewardPicks ?? 0) > 0) {
+    p.offer = makeRewardOffer(p, r, act);
+    p.offerKind = 'reward';
   } else if (p.levelUps > 0) {
     p.offer = makeOffer(p, r);
     p.offerKind = 'level';
@@ -177,7 +224,15 @@ export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
 
 /** Cards that still make sense after a save is loaded (skills and items can be renamed or removed between versions). */
 export const validCard = (c: OfferCard) =>
-  c.kind === 'boon' ? true : c.kind === 'gear' ? isItemId(c.item) && !!gearDef(c.item) : c.kind === 'subclass' ? isSubclassId(c.sub) : Object.hasOwn(SKILLS, c.skill);
+  c.kind === 'boon'
+    ? true
+    : c.kind === 'gear'
+      ? isItemId(c.item) && !!gearDef(c.item)
+      : c.kind === 'item'
+        ? isItemId(c.item)
+        : c.kind === 'subclass'
+          ? isSubclassId(c.sub)
+          : Object.hasOwn(SKILLS, c.skill);
 
 /** Adds a new skill after the last one of its kind, so the hotbar stays grouped. */
 function insertSkill(p: PlayerEntity, id: SkillId) {
@@ -252,26 +307,28 @@ function chooseSubclass(p: PlayerEntity, sub: SubclassId): PickResult {
 function takeGear(p: PlayerEntity, id: ItemId): PickResult {
   if (bagRoom(p) <= 0) return { ok: false, error: 'Your bag is full: drop or equip something first (I opens the bag).' };
   p.bag.push(id);
-  return { ok: true, text: `takes the ${gearDef(id)?.name ?? id}` };
+  return { ok: true, text: `takes the ${gearDef(id)?.name ?? SKILLS[id as SkillId]?.base.name ?? id}` };
 }
 
 /** Applies a level-up or elite pick, then deals the next offer if more picks are waiting. */
 export function applyPick(p: PlayerEntity, req: PickRequest, r: Rng, act = 1): PickResult {
   const card = p.offer?.[Number(req?.card)];
-  const elite = p.offerKind === 'elite';
-  if (!card || !(elite ? p.elitePicks : p.levelUps)) return { ok: false, error: 'Pick a card.' };
+  const kind = p.offerKind ?? 'level';
+  const left = kind === 'elite' ? p.elitePicks : kind === 'reward' ? (p.rewardPicks ?? 0) : p.levelUps;
+  if (!card || !left) return { ok: false, error: 'Pick a card.' };
   const res =
     card.kind === 'learn'
       ? learn(p, card.skill, req.forget)
       : card.kind === 'upgrade'
         ? upgrade(p, card.skill, card.tier, req.branch)
-        : card.kind === 'gear'
+        : card.kind === 'gear' || card.kind === 'item'
           ? takeGear(p, card.item)
           : card.kind === 'subclass'
             ? chooseSubclass(p, card.sub)
             : boon(p, card.boon);
   if (!res.ok) return res;
-  if (elite) p.elitePicks--;
+  if (kind === 'elite') p.elitePicks--;
+  else if (kind === 'reward') p.rewardPicks = (p.rewardPicks ?? 1) - 1;
   else p.levelUps--;
   dealOffer(p, r, act);
   recalcHero(p);

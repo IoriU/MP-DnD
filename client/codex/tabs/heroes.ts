@@ -17,7 +17,7 @@ const LEVELS = [1, 4, 8, 12];
 const skillChip = (id: SkillId, signature = false) =>
   link(`skills?id=${id}`, `<span class="sk-chip${signature ? ' sig' : ''}">${SKILLS[id].base.icon} ${esc(SKILLS[id].base.name)}</span>`, signature ? 'Signature: learned with the subclass, takes no slot' : id);
 
-/** The class's subclasses: what they are about, the signature skill, and the skills they add to level-up offers. */
+/** The class's subclasses: what they are about, the signature skill, and the skills they add to the spoils offers. */
 function subclassBlock(classId: string): string {
   const subs = Object.entries(DATA.subclasses).filter(([, sc]) => sc.classId === classId);
   if (!subs.length) return '';

@@ -191,7 +191,7 @@ function sellRows(m: PlayerEntity): string {
 function forgetRows(m: PlayerEntity, shop: ShopView): string {
   const picked = forgetPick ? m.skills.find((o) => o.id === forgetPick) : undefined;
   if (picked) {
-    return `<div class="sh-confirm"><span>Forget <b>${statsOf(picked).icon} ${esc(skillTitle(picked))}</b> for 💰 ${shop.forgetPrice}? It can't be undone (you can learn skills again when you level up).</span>
+    return `<div class="sh-confirm"><span>Forget <b>${statsOf(picked).icon} ${esc(skillTitle(picked))}</b> for 💰 ${shop.forgetPrice}? It can't be undone (you can learn skills again from the spoils after a fight).</span>
       <span class="sh-confirm-btns"><button type="button" class="btn small danger" data-sh="forget" data-skill="${picked.id}">Forget it</button><button type="button" class="btn small ghost" data-sh="cancel">Keep it</button></span></div>`;
   }
   return forgettable(m)

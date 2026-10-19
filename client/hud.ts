@@ -261,7 +261,8 @@ export function renderHud(s: GameState) {
     } else {
       const picks =
         (m.levelUps > 0 ? ` <span class="pill lvl">⬆️ ${m.levelUps} level-up pick${m.levelUps > 1 ? 's' : ''} waiting</span>` : '') +
-        (m.elitePicks > 0 ? ` <span class="pill lvl">💀 ${m.elitePicks} elite spoil${m.elitePicks > 1 ? 's' : ''} waiting</span>` : '');
+        (m.elitePicks > 0 ? ` <span class="pill lvl">💀 ${m.elitePicks} elite spoil${m.elitePicks > 1 ? 's' : ''} waiting</span>` : '') +
+        ((m.rewardPicks ?? 0) > 0 ? ` <span class="pill lvl">🏆 ${m.rewardPicks} victory spoil${m.rewardPicks! > 1 ? 's' : ''} waiting</span>` : '');
       eco.innerHTML = `<span class="muted">Between rooms: drink a potion or use a heal (pick it, then click a friend's card). Slots come back at a Long Rest.</span>${picks}`;
     }
     $('#end-turn').hidden = s.phase !== 'combat' || approaching;
@@ -370,12 +371,12 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
       ? `<span class="tag bad">down ✔${p.saves.ok} ✖${p.saves.fail}</span>`
       : '';
   const mine = p.playerId === store.playerId;
-  // Waiting picks: level-ups (⬆️) and elite spoils (💀). Your own badges open the panel.
+  // Waiting picks: level-ups (⬆️), elite spoils (💀) and victory spoils (🏆). Your own badges open the panel.
   const pick = (n: number, icon: string, what: string) =>
     n <= 0 ? '' : mine
       ? `<button type="button" class="tag lvl" data-open-levelup title="Open your ${what}">${icon} ${n}</button>`
       : `<span class="tag lvl" title="${what[0].toUpperCase() + what.slice(1)} waiting">${icon} ${n}</span>`;
-  const ups = pick(p.levelUps, '⬆️', 'level-up picks') + pick(p.elitePicks, '💀', 'elite spoils');
+  const ups = pick(p.levelUps, '⬆️', 'level-up picks') + pick(p.elitePicks, '💀', 'elite spoils') + pick(p.rewardPicks ?? 0, '🏆', 'victory spoils');
   const max = p.level >= LEVEL_CAP;
   const need = xpToNext(p.level);
   const xpPct = max ? 100 : Math.max(0, Math.min(100, Math.round((p.xp / need) * 100)));

@@ -1657,10 +1657,13 @@ function cardValue(p: PlayerEntity, c: OfferCard): number {
       return 3;
     case 'subclass':
       return 10; // the only cards in that offer: either, at random (so bot runs play both)
-    case 'gear': {
-      // Elite spoils: worth it when it beats what's worn (or there's room to carry it for a friend).
+    case 'gear':
+    case 'item': {
+      // Elite and victory spoils: gear when it beats what's worn (or there's room to carry it for a friend), a
+      // consumable when the bag has room for it.
+      if (bagRoom(p) <= 0) return -Infinity;
       const g = gearDef(c.item);
-      if (!g || bagRoom(p) <= 0) return -Infinity;
+      if (!g) return 3.5;
       return 3.5 + Math.max(0, gearScore(p, c.item) - gearScore(p, p.gear[g.slot])) / 2;
     }
   }

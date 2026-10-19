@@ -137,6 +137,10 @@ export const CLASSES: Record<ClassId, ClassDef> = {
 export const CLASS_IDS = Object.keys(CLASSES) as ClassId[];
 export const PLAYER_COLORS = ['#f2a03d', '#4fb3ff', '#7ddc6f', '#e86df0', '#ffd84d', '#ff6b6b'];
 
+// Potions after a won fight, like Slay the Spire: 40% at first, -10% after each one that drops, +10% after each fight without.
+export const POTION_ODDS = 40;
+export const POTION_ODDS_STEP = 10;
+
 // Action points (decided 2026-10-19, DOS2 / Slay the Spire style). Heroes only: monsters keep their move + attack turn.
 export const AP_GAIN = 3; // AP a hero gets at the start of each turn
 export const AP_MAX = 5; // AP left over carries into the next turn, but a turn starts with at most this many

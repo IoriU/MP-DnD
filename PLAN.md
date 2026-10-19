@@ -754,9 +754,19 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
   - [x] Rules: Honed, Envenomed, Emboldened and Frightened statuses; HP costs, healing yourself, hidden snares (monsters don't see them), thorns, lifesteal, Catalyst, Spell Pierce, Intercept, Counterattack, auras and regeneration, Unstoppable
   - [x] Monster AI: Frightened monsters run from whoever scared them (scripted and PPO alike)
   - [x] Hero bots value them: the new damage passives, Honed and Death Mark in hit math, Envenom, Frightened, snares (placed between a monster and its target), Blood Price's HP
-  - [ ] UI: subclass cards at level 3, subclass on hero cards, snares on the board, the codex
-  - [ ] Tests and bot runs
-- [ ] **Rewards after every win** (decided 2026-10-19): each hero picks 1 of 3 cards, two skill cards and one item card. Level-ups give HP and power, and the subclass at level 3. Potions drop like Slay the Spire's: 40% after a fight, +10% after each fight without one, −10% after each one that drops.
+  - [x] UI: subclass cards at level 3 ("Level 3: choose your path"), "Class · Subclass" on hero cards, snares on the board (with a tooltip), the codex (subclasses on the Heroes tab, a subclass filter on Skills, and pool checks: signatures and `sub` tags must match their class)
+  - [x] Tests: `tests/subclasses.test.ts` (18). One caught a wrong refusal: a second Blood Price said "Ready in 1 turn" instead of "Only once per turn".
+  - [ ] Bot runs
+  - Not shown yet: the subclass in the lobby, the saved-run list and the resume banner (their types carry no subclass).
+- [ ] 🟡 **Rewards after every win** (decided 2026-10-19): each hero picks 1 of 3 cards, two skill cards and one item card. Level-ups give HP and power, and the subclass at level 3. Potions drop like Slay the Spire's: 40% after a fight, +10% after each fight without one, −10% after each one that drops.
+  - [x] Victory spoils after every won fight, boss included (`makeRewardOffer` in server/progression.ts): two skill cards from the class and subclass pools (now and then a common passive), and an item card: gear the hero isn't wearing or a consumable, rarer as the acts go on (no rares in act 1). A quarter of the time, or when the bag is full, the third card is a boon (+HP, +AC, potions, a slot) instead.
+  - [x] Order of picks: elite spoils, then the subclass, then victory spoils. A hero joining mid-run gets a victory pick for every level they missed.
+  - [x] Levels give stats only (`levelUps` is now just the subclass pick); old saves' waiting level picks still work.
+  - [x] Potions: `POTION_ODDS` 40, ±`POTION_ODDS_STEP` 10, kept in the run (`run.potionOdds`); the hero with the fewest gets it. Regular fights no longer drop a random consumable (the item card replaces it); elites still drop gear for the killer.
+  - [x] Bots take victory picks like any other (they value item cards like elite gear, consumables at a flat 3.5). Tests: `tests/rewards.test.ts` (7).
+  - [x] UI: the item card ("Goes into your bag"; dimmed when the bag is full), "🏆 Victory spoils: pick one", 🏆 counters on the HUD and party cards, a toast; how-to-play, README and the codex say skills come from victory spoils now
+  - [ ] Bot runs
+  - **For Phase 13:** there are about twice as many picks per run as before (one per fight instead of one per level).
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)
 - [ ] Traps and interactive room props (doors, levers, collapsing floors)

@@ -92,7 +92,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - 💨 **Swift:** faster, acts earlier and is harder to hit.
   - 📯 **Summoner:** calls in a minion every other round.
   - 🔥 **Burning**, ❄️ **Frost**, ⚡ **Storm:** its attacks deal that element, it hurts everyone next to it at the start of its turn (and sets off the ground around it: oil burns, water freezes or crackles), and it's immune to that element.
-- **Elite rewards:** whoever lands the killing blow takes its gear. Then every hero picks **spoils** (a free skill upgrade, a piece of gear or a boon, like a level-up), and the party votes on a **blessing** or a **companion**:
+- **Elite rewards:** whoever lands the killing blow takes its gear. Then every hero picks **spoils** (a free skill upgrade, a piece of gear or a boon, on top of the pick after every fight), and the party votes on a **blessing** or a **companion**:
   - **Blessings** help every hero until the end of the act: +1 to hit and damage, +1 AC, +8 max HP, an extra slot, speed, saves, elemental resistance or healing every turn. Shrines and statues in events can bless you too.
   - **Companions** (NPC allies) fight on your side for the next 3 fights: a 💂 Sellsword, a 😇 Acolyte who heals whoever is hurt most, a 🧝 Ranger or a 🐕 War Hound. They grow stronger each act. Careful with your Fireballs: friendly fire hits them too, and a companion who falls is gone for good.
 - **🛒 Shops:** everyone browses at once and spends the shared gold. Buy gear, consumables, potions or a relic, sell what you don't need, pay for a lesson (upgrade a cantrip or spell) or forget a skill to make room. The party moves on when everyone clicks Done.
@@ -106,7 +106,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - ✨ **Supports** (the Goblin Shaman, Necromancer and Dragon Priest) heal and buff their side from the back. Kill them first.
   - 💨 **Cowards** (rats and kobolds) run away when they get hurt.
   - They talk, too: the monsters' shouts show up in italics in the log.
-- **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Each level-up offers 3 cards (new skills, upgrades, passives, boons); pick one whenever you like, nobody has to wait.
+- **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Levels give HP and power, and the subclass at level 3. Skills come from the **🏆 spoils** after every won fight: each hero picks 1 of 3 cards (two skills, new or upgrades, and an item: gear or a consumable, now and then a boon); pick whenever you like, nobody has to wait. A 🧪 potion can drop after a fight too: 40% at first, and the odds climb after every fight without one.
 - **At 0 HP** you fall unconscious and roll death saves on your turn. Healing (a potion, Healing Word or Second Wind) gets you back up. If the party wins the fight, everyone gets back up, even the dead.
 - **Between rooms:** HP carries over. Drink potions, or heal a friend by picking a heal and clicking their party card.
 - **Camera:** the mouse wheel zooms and right-drag pans.
@@ -127,7 +127,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 | ⚜️ Paladin | AC 17 and holy fire. Divine Smite hits hard with radiant damage, Lay on Hands heals with a touch, Compelled Duel pulls a monster off your friends, and the Aura of Protection helps everyone near you resist. |
 | 🎻 Bard | Support from range. Vicious Mockery stings and dazes, Bardic Inspiration gives an ally advantage, Healing Ballad heals the whole party, Hideous Laughter takes a monster out of the fight. Fragile. |
 
-At **level 3** every hero picks a **subclass**, one of two for their class (the level-up offer is just those two cards). It gives a signature skill right away (no slot needed, and it can't be forgotten) and adds its own skills to your level-up cards from then on.
+At **level 3** every hero picks a **subclass**, one of two for their class (that level-up pick is just those two cards). It gives a signature skill right away (no slot needed, and it can't be forgotten) and adds its own skills to your spoils from then on.
 
 | Class | Subclass A | Subclass B |
 |---|---|---|
@@ -181,7 +181,7 @@ server/heroai.ts   auto-play brain for heroes (AFK players, bots, tests)
 server/monsterai.ts  the monsters' brain: squad target, roles, flanking, support spells, shoving, tricks and orders
 server/barks.ts    the monsters' one-liners (the italic 💬 lines in the log)
 server/companions.ts  the bots' voices and callouts (their chat lines in the log)
-server/progression.ts  XP shares, level-ups, level-up cards, elite spoils, training
+server/progression.ts  XP shares, level-ups, victory and elite spoils, training
 server/saves.ts    saved runs on disk (saves/<CODE>.json) and the archive
 server/rng.ts      seeded random numbers
 server/index.ts    HTTP + WebSocket server and room codes

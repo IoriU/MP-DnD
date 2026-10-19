@@ -16,6 +16,8 @@ import {
   CLASS_IDS,
   AP_GAIN,
   AP_MAX,
+  POTION_ODDS,
+  POTION_ODDS_STEP,
   CHARGE_MOVES,
   COWARD_TURNS,
   DIFFICULTIES,
@@ -205,7 +207,8 @@ import {
   type MonsterChoices, type MonsterOrder, type MonsterPlan, type MonsterView,
 } from './monsterai.ts';
 import { monsterPolicy } from './policy.ts';
-import { applyLevelUps, applyPick, dealOffer, killShares, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
+import { applyLevelUps, applyPick, dealOffer, killShares, picksLeft, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
+import { SUBCLASS_LEVEL } from '../shared/subclasses.ts';
 import { pick, randInt, rng, shuffle } from './rng.ts';
 import { generateRoom } from './room.ts';
 import { SAVE_VERSION, archiveSave, dumpFight, writeSave, type SaveFile, type SavePoint } from './saves.ts';
@@ -228,7 +231,8 @@ const POST_FIGHT_HEAL = 0.2; // short rest after every won fight, so damage does
 const AUTO_DELAY_MS = 700; // pause before auto heroes vote, pick or use potions between rooms
 const SHOP_MS = 90_000; // the shop closes this long after the first person is done shopping
 const AWAY_MS = 20_000; // ...or this long after everyone left is someone who dropped out (a reload shouldn't close it)
-const DROP_CHANCE = 0.3; // a regular fight leaves a consumable behind
+/** The icon a pick's log line starts with, by kind. */
+const PICK_ICON = { level: '⬆️', elite: '💀', reward: '🏆' } as const;
 const SHOP_GEAR: Record<number, Rarity[]> = { 1: ['common', 'common', 'uncommon'], 2: ['common', 'uncommon', 'uncommon', 'rare'], 3: ['uncommon', 'rare', 'rare'] };
 
 const ELEMENT_COLOR: Record<Element, string> = {
@@ -607,10 +611,11 @@ export class Game {
     return p;
   }
 
-  /** A hero joining a run in progress starts at the party's level, with the picks they missed. */
+  /** A hero joining a run in progress starts at the party's level, with a pick for every level they missed (and the subclass). */
   private newcomer(info: PlayerInfo, level: number): PlayerEntity {
     const e = this.makePlayer(info, level);
-    e.levelUps = level - 1;
+    e.rewardPicks = level - 1;
+    e.levelUps = level >= SUBCLASS_LEVEL ? 1 : 0;
     dealOffer(e, rng, this.run?.act ?? 1);
     return e;
   }
@@ -1158,7 +1163,7 @@ export class Game {
       if (!gained) continue;
       names.push(p.name);
       if (!p.offer) dealOffer(p, rng, this.run?.act ?? 1);
-      this.addLog('level', `⬆️ ${p.name} reaches level ${p.level}! ${gained > 1 ? `${gained} upgrades` : 'An upgrade'} to pick.`);
+      this.addLog('level', `⬆️ ${p.name} reaches level ${p.level}!${p.levelUps && !p.subclass ? ' Time to choose a subclass.' : ''}`);
       this.callout(p, 'level', {}, 'after');
     }
     this.scheduleAutoPicks();
@@ -1170,8 +1175,8 @@ export class Game {
     if (!this.heroes().some((p) => p.offer && this.isAuto(p.playerId))) return;
     setTimeout(() => {
       for (const p of this.heroes()) {
-        for (let guard = 0; guard < 12 && p.offer && (p.levelUps > 0 || p.elitePicks > 0) && this.isAuto(p.playerId); guard++) {
-          const icon = p.offerKind === 'elite' ? '💀' : '⬆️';
+        for (let guard = 0; guard < 16 && p.offer && picksLeft(p) > 0 && this.isAuto(p.playerId); guard++) {
+          const icon = PICK_ICON[p.offerKind ?? 'level'];
           const res = applyPick(p, autoLevelPick(p), rng, this.run?.act ?? 1);
           if (!res.ok) {
             console.warn(`[auto pick ${p.name}] rejected: ${res.error}`);
@@ -1189,7 +1194,7 @@ export class Game {
   handlePick(playerId: string, req: PickRequest) {
     const p = this.hero(playerId);
     if (!p?.offer || this.phase === 'lobby' || this.phase === 'victory' || this.phase === 'defeat') return;
-    const icon = p.offerKind === 'elite' ? '💀' : '⬆️';
+    const icon = PICK_ICON[p.offerKind ?? 'level'];
     const res = applyPick(p, { card: Number(req?.card), branch: req?.branch, forget: req?.forget }, rng, this.run?.act ?? 1);
     if (!res.ok) return this.whisper(playerId, res.error);
     this.addLog('level', `${icon} ${p.name} ${res.text}.`);
@@ -1982,26 +1987,24 @@ export class Game {
     run.gold += gold;
     this.addLog('loot', `✅ Room cleared! The party loots ${gold} gold.`);
     this.callout(this.randomBot(), 'won', {}, 'after');
-    const loot = kind === 'boss' ? null : this.fightLoot(kind);
+    const loot = kind === 'elite' ? this.fightLoot(kind) : null;
+    const potion = this.potionDrop();
+    if (kind === 'elite') for (const p of this.heroes()) p.elitePicks++; // dealt first (dealOffer), before the spoils below
     const leveled = this.checkLevelUps();
+    this.victorySpoils();
     if (kind === 'boss') return this.finishAct();
-    const text = `+${gold} gold.${loot ? ` ${loot}` : ''}${leveled.length ? ` ⬆️ Level up: ${leveled.join(', ')}!` : ''}`;
+    const text = `+${gold} gold.${loot ? ` ${loot}` : ''}${potion ? ` ${potion}` : ''} 🏆 Everyone picks their spoils.${leveled.length ? ` ⬆️ Level up: ${leveled.join(', ')}!` : ''}`;
     if (kind === 'elite') return this.eliteSpoils(text);
     this.notice = { glyph: '✅', title: 'Room cleared', text };
     this.toMap();
   }
 
   /**
-   * After an elite: every hero gets an elite-spoils pick (like a level-up: an upgrade, gear or a boon), and the party
-   * votes on a blessing for the rest of the act or an NPC ally for the next few fights.
+   * After an elite (every hero's elite-spoils pick, an upgrade, gear or a boon, was dealt in endCombat): the party votes
+   * on a blessing for the rest of the act or an NPC ally for the next few fights.
    */
   private eliteSpoils(text: string) {
     const run = this.run!;
-    for (const p of this.heroes()) {
-      p.elitePicks++;
-      if (!p.offer) dealOffer(p, rng, run.act);
-    }
-    this.scheduleAutoPicks();
     const blessings = shuffle(BLESSING_IDS.filter((b) => !run.blessings.includes(b))).slice(0, 2);
     this.eliteReward(text, [...blessings.map((b) => `blessing:${b}`), `ally:${pick(ALLY_IDS)}`]);
   }
@@ -2039,7 +2042,34 @@ export class Game {
     });
   }
 
-  /** What a won fight leaves behind: the elite's gear goes to whoever killed it; regular fights sometimes drop a consumable. */
+  /** Every won fight: each hero gets a spoils pick (two skill cards and an item card, server/progression.ts). */
+  private victorySpoils() {
+    const act = this.run?.act ?? 1;
+    for (const p of this.heroes()) {
+      p.rewardPicks = (p.rewardPicks ?? 0) + 1;
+      if (!p.offer) dealOffer(p, rng, act);
+    }
+    this.scheduleAutoPicks();
+  }
+
+  /** A potion after a won fight, Slay the Spire style: the odds drop after one does and climb after a fight without. */
+  private potionDrop(): string | null {
+    const run = this.run!;
+    const odds = run.potionOdds ?? POTION_ODDS;
+    if (rng.next() * 100 >= odds) {
+      run.potionOdds = Math.min(100, odds + POTION_ODDS_STEP);
+      return null;
+    }
+    run.potionOdds = Math.max(0, odds - POTION_ODDS_STEP);
+    const taker = this.heroes().filter((h) => !h.dead).sort((a, b) => a.potions - b.potions)[0];
+    if (!taker) return null;
+    taker.potions++;
+    const text = `🧪 ${taker.name} finds a healing potion.`;
+    this.addLog('loot', text);
+    return text;
+  }
+
+  /** What an elite leaves behind: its gear goes to whoever killed it. */
   private fightLoot(kind: NodeType): string | null {
     const act = this.run?.act ?? 1;
     if (kind === 'elite') {
@@ -2052,13 +2082,7 @@ export class Game {
       this.addLog('loot', text);
       return text;
     }
-    if (!rng.chance(DROP_CHANCE)) return null;
-    const id = this.randomItem('consumable', ['common']);
-    const got = this.giveItem(undefined, id);
-    if (!got) return null;
-    const text = `${itemInfo(id).icon} ${got.name} finds a ${itemInfo(id).name}.`;
-    this.addLog('loot', text);
-    return text;
+    return null;
   }
 
   private endRun(victory: boolean) {
