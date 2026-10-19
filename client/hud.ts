@@ -14,7 +14,7 @@ import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
 import { aimAt, blockReason, currentEntity, huntedIds, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
-import { $, esc, toast } from './util.ts';
+import { $, esc, monsterAiTag, toast } from './util.ts';
 
 let lastLogId = -1;
 let lastTurnKey = '';
@@ -175,10 +175,11 @@ export function renderHud(s: GameState) {
 
   $('#hud-title').textContent = title(s);
   const diff = DIFFICULTIES[run?.difficulty ?? s.difficulty];
+  const ai = monsterAiTag(run?.monsterAi); // only when the monsters are played by the PPO policy
   setHtml(
     $('#hud-sub'),
     run
-      ? `Act ${run.act} of ${run.maxAct} · ${esc(run.actName)} · <span class="diff-tag" title="${esc(`${diff.name}: ${diff.desc}`)}">${diff.icon} ${diff.name}</span> · 💰 ${run.gold} · Room ${s.code}`
+      ? `Act ${run.act} of ${run.maxAct} · ${esc(run.actName)} · <span class="diff-tag" title="${esc(`${diff.name}: ${diff.desc}`)}">${diff.icon} ${diff.name}</span>${ai ? ` · <span class="diff-tag" title="${esc(ai.tip)}">${ai.label}</span>` : ''} · 💰 ${run.gold} · Room ${s.code}`
       : `Room ${s.code}`,
   );
 

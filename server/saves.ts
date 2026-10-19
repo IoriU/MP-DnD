@@ -50,8 +50,12 @@ const fileOf = (code: string) => path.join(saveDir(), `${code}.json`);
 export const isSaveCode = (code: unknown): code is string => typeof code === 'string' && CODE_RE.test(code);
 export const hasSave = (code: string) => isSaveCode(code) && fs.existsSync(fileOf(code));
 
+/** `DELVERS_SAVES=off` writes nothing (the RL trainer plays thousands of throwaway fights). */
+const savesOff = () => process.env.DELVERS_SAVES === 'off';
+
 /** Writes atomically (temp file + rename), so a crash mid-write never leaves a broken save. */
 export function writeSave(save: SaveFile) {
+  if (savesOff()) return;
   fs.mkdirSync(saveDir(), { recursive: true });
   const file = fileOf(save.code);
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(save));
@@ -102,7 +106,7 @@ export function summarize(s: SaveFile, online: number): SaveSummary {
 
 /** Moves a save to the archive (after a win or loss, or when someone throws it away), keeping the newest few. */
 export function archiveSave(code: string, outcome: 'victory' | 'defeat' | 'abandoned') {
-  if (!hasSave(code)) return;
+  if (savesOff() || !hasSave(code)) return;
   const dir = path.join(saveDir(), 'archive');
   fs.mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -114,4 +118,15 @@ export function archiveSave(code: string, outcome: 'victory' | 'defeat' | 'aband
     .sort((a, b) => b.t - a.t)
     .slice(ARCHIVE_KEEP);
   for (const { n } of old) fs.rmSync(path.join(dir, n), { force: true });
+}
+
+/**
+ * `DELVERS_FIGHT_DUMP=<dir>`: a copy of the save at the start of every fight, so the RL trainer (training/) can replay
+ * real fights with the parties bot runs actually had at that point. One file per fight.
+ */
+export function dumpFight(save: SaveFile) {
+  const dir = process.env.DELVERS_FIGHT_DUMP;
+  if (!dir) return;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${save.code}-${save.savedAt}-${Math.random().toString(36).slice(2, 6)}.json`), JSON.stringify(save));
 }

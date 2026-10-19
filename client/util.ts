@@ -1,4 +1,13 @@
+import { MONSTER_AIS, type MonsterAi } from '../shared/rules.ts';
+
 export const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
+
+/** The run's monster AI as a short label with a tooltip, only when it isn't the default scripted one ("🧠 PPO"). */
+export function monsterAiTag(ai: MonsterAi | undefined): { label: string; tip: string } | null {
+  if (ai !== 'ppo') return null;
+  const def = MONSTER_AIS.ppo;
+  return { label: `${def.icon} PPO`, tip: `${def.name}: ${def.desc}` };
+}
 
 export function esc(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);

@@ -2,3 +2,9 @@ node_modules/
 dist/
 *.log
 saves/
+
+# Python training environment (Phase 11)
+training/.venv/
+training/runs/
+__pycache__/
+training/data/

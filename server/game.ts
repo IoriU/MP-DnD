@@ -16,6 +16,7 @@ import {
   CLASS_IDS,
   COWARD_TURNS,
   DIFFICULTIES,
+  MONSTER_AIS,
   LEVEL_CAP,
   MAX_ACT,
   MAX_PLAYERS,
@@ -33,6 +34,7 @@ import {
   encounterBudget,
   fmtMod,
   isDifficulty,
+  isMonsterAi,
   partyScaling,
   rollDice,
   rollDie,
@@ -44,6 +46,7 @@ import {
   stealthDc,
   type Dice,
   type Difficulty,
+  type MonsterAi,
 } from '../shared/rules.ts';
 import {
   SKILLS,
@@ -180,14 +183,20 @@ import {
 import { generateActMap } from './actmap.ts';
 import { getEvent, pickEvent, type CheckResult, type EventChoiceDef, type EventDef, type EventEffect, type EventStat } from './events.ts';
 import { BARK_ODDS, barkLine, type BarkEvent } from './barks.ts';
+import { BOT_NAMES, LOW_HP, calloutLine, newChatter, tryCallout, type CallEvent, type CallVars } from './companions.ts';
 import { autoApproachChoice, autoEquip, autoEventChoice, autoGive, autoLevelPick, autoPathChoice, autoRestPick, autoShopPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
-import { canHitFrom, elementOf, planMonster, shoveResist, squadFocus, squadPlan, type MonsterPlan } from './monsterai.ts';
+import { canHitFrom, elementOf, monsterChoices, planMonster, shoveResist, squadFocus, squadPlan, type MonsterChoices, type MonsterPlan } from './monsterai.ts';
+import { monsterPolicy } from './policy.ts';
 import { applyLevelUps, applyPick, dealOffer, killShares, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
 import { pick, randInt, rng, shuffle } from './rng.ts';
 import { generateRoom } from './room.ts';
-import { SAVE_VERSION, archiveSave, writeSave, type SaveFile, type SavePoint } from './saves.ts';
+import { SAVE_VERSION, archiveSave, dumpFight, writeSave, type SaveFile, type SavePoint } from './saves.ts';
 
-const BOT_NAMES = ['Brakka', 'Pip', 'Sister Wren', 'Old Tam', 'Vexa', 'Grimble', 'Lady Ash', 'Moss'];
+/**
+ * Chooses a monster's move from the options the monster AI lists (Phase 11): the trained PPO policy, or the RL
+ * trainer itself (training/env.ts). Returns the option's index.
+ */
+export type MonsterBrain = (m: MonsterEntity, choices: MonsterChoices) => number | Promise<number>;
 
 // Dev knobs for bot testing: DELVERS_SPEED=10 makes monster turns 10x faster, DELVERS_ROWS=4 makes acts short.
 const SPEED = Math.max(0.1, Number(process.env.DELVERS_SPEED) || 1);
@@ -285,7 +294,11 @@ export class Game {
   private shopReceipts: string[] = []; // what was bought, for the notice when the party moves on
   private eliteKiller: string | null = null; // the hero who landed the killing blow on this fight's elite (they take its gear)
   private phoenixUsed = false; // Phoenix Feather: once per fight
+  private chatter = newChatter(); // who among the bots has spoken lately (callouts, server/companions.ts)
   private difficulty: Difficulty = 'normal'; // the lobby's pick; a run keeps its own (run.difficulty)
+  private monsterAi: MonsterAi = 'scripted'; // likewise (run.monsterAi)
+  /** Takes the monsters' choices over from the scripted AI: the RL trainer sets it (training/env.ts). */
+  monsterBrain: MonsterBrain | null = null;
 
   constructor(io: Server, code: string) {
     this.io = io;
@@ -300,6 +313,7 @@ export class Game {
     // Bots come back on their own; everyone else is away until they rejoin.
     g.players = save.players.map((p) => ({ ...p, connected: p.bot, auto: p.bot }));
     g.difficulty = isDifficulty(save.run.difficulty) ? save.run.difficulty : 'normal'; // saves from before Phase 9 play on Normal
+    g.monsterAi = isMonsterAi(save.run.monsterAi) ? save.run.monsterAi : 'scripted';
     g.log = save.log.slice(-30);
     g.logId = Math.max(0, ...g.log.map((l) => l.id));
     g.addLog('system', `📜 Saved run loaded: Act ${save.run.act}, ${save.run.actName}. Rejoin your hero, then the host continues.`);
@@ -467,6 +481,22 @@ export class Game {
     this.broadcast();
   }
 
+  /** The host picks who plays the monsters: the scripted AI or the trained PPO policy. A loaded save keeps its own. */
+  setMonsterAi(playerId: string, ai: unknown) {
+    if (this.phase !== 'lobby' || playerId !== this.hostId || !isMonsterAi(ai) || ai === this.monsterAi) return;
+    if (this.resumeFrom) return this.whisper(playerId, 'A saved run keeps its monster AI.');
+    if (ai === 'ppo' && !monsterPolicy()) return this.whisper(playerId, 'This server has no trained PPO policy yet (server/policies/monster-ppo.json).');
+    this.monsterAi = ai;
+    const def = MONSTER_AIS[ai];
+    this.addLog('system', `${def.icon} Monsters: ${def.name}. ${def.desc}`);
+    this.broadcast();
+  }
+
+  /** Who plays the monsters in this run (the lobby's pick before a run starts). */
+  private get monsterAiNow(): MonsterAi {
+    return this.run?.monsterAi ?? this.monsterAi;
+  }
+
   /** The run's difficulty (the lobby's pick before a run starts). */
   private get diff(): Difficulty {
     return this.run?.difficulty ?? this.difficulty;
@@ -490,7 +520,7 @@ export class Game {
     this.notice = null;
     this.entities = this.players.map((p) => this.makePlayer(p, 1));
     const seed = randInt(1, 2 ** 31 - 2);
-    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed, difficulty: this.difficulty };
+    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed, difficulty: this.difficulty, monsterAi: this.monsterAi };
     this.addLog('system', '🍺 The party finishes their drinks and leaves the tavern...');
     this.addLog('system', `🗺️ Act 1: ${ACTS[0].name}. Vote on your path. The ${MONSTERS[ACTS[0].boss].name} waits at the top of the map.`);
     this.notice = {
@@ -608,6 +638,7 @@ export class Game {
       blessings: (save.run.blessings ?? []).filter(isBlessingId),
       allies: (save.run.allies ?? []).filter((a) => isAllyId(a?.id) && a.fights > 0),
       difficulty: this.difficulty,
+      monsterAi: this.monsterAi,
     };
     this.entities = this.players.map((info) => {
       const saved = save.heroes.find((h) => h.playerId === info.id);
@@ -696,6 +727,9 @@ export class Game {
     };
     try {
       writeSave(save);
+      // The RL trainer replays real fights: keep a copy of the save at each fight's start (training/).
+      const node = save.at.kind === 'node' ? this.node(save.at.nodeId) : undefined;
+      if (node && (node.type === 'combat' || node.type === 'elite' || node.type === 'boss')) dumpFight(save);
     } catch (err) {
       console.error(`[save ${this.code}] could not write the save:`, err);
     }
@@ -1102,6 +1136,7 @@ export class Game {
       names.push(p.name);
       if (!p.offer) dealOffer(p, rng, this.run?.act ?? 1);
       this.addLog('level', `⬆️ ${p.name} reaches level ${p.level}! ${gained > 1 ? `${gained} upgrades` : 'An upgrade'} to pick.`);
+      this.callout(p, 'level', {}, 'after');
     }
     this.scheduleAutoPicks();
     return names;
@@ -1512,6 +1547,11 @@ export class Game {
     const order = fighters.map((e) => e.id).sort((a, b) => init[b] - init[a]); // stable: players win ties
     this.turn = { order, init, index: 0, round: 1, movesLeft: 0, actionUsed: false, bonusUsed: false };
     this.addLog('system', `🎲 Roll for initiative! ${order.map((id) => `${this.entity(id)?.name} ${init[id]}`).join(' · ')}`);
+    // A bot sizes up the foe: elites and bosses get a line of their own.
+    this.chatter = newChatter();
+    const foes = this.monsters();
+    const lead = foes.find((m) => m.boss) ?? foes.find((m) => m.elite) ?? foes[0];
+    if (lead) this.callout(this.randomBot(), lead.boss ? 'boss' : lead.elite ? 'elite' : 'start', { target: lead.name }, 'start');
     this.beginTurn();
   }
 
@@ -1727,6 +1767,7 @@ export class Game {
     const gold = this.goldFound(roomGold(run.act, kind));
     run.gold += gold;
     this.addLog('loot', `✅ Room cleared! The party loots ${gold} gold.`);
+    this.callout(this.randomBot(), 'won', {}, 'after');
     const loot = kind === 'boss' ? null : this.fightLoot(kind);
     const leveled = this.checkLevelUps();
     if (kind === 'boss') return this.finishAct();
@@ -1859,7 +1900,8 @@ export class Game {
     if (hasTrait(m, 'summoner')) this.summon(m);
 
     // The plan (server/monsterai.ts): where to walk, then attack, shove, hit the ground, heal, buff or run.
-    const plan = this.monsterPlan(m);
+    const plan = await this.monsterPlan(m);
+    if (!ok()) return;
     if (plan.kind === 'flee') {
       m.fled = (m.fled ?? 0) + 1;
       if (m.fled === 1) this.bark(m, 'flee');
@@ -2041,22 +2083,39 @@ export class Game {
    * parties), and a new target gets called out with a bark; then the monster plans its turn around its pack's target.
    * The NPC allies pick one target of their own. On Story there's no squad: every monster goes for whoever is closest.
    */
-  private monsterPlan(m: MonsterEntity): MonsterPlan {
+  private async monsterPlan(m: MonsterEntity): Promise<MonsterPlan> {
     const t = this.turn!;
+    const brain = m.ally ? null : this.learnedBrain();
     let focus: string | null = null;
     if (DIFFICULTIES[this.diff].squad && m.ally) {
       const before = t.allyFocus ?? null;
       focus = t.allyFocus = squadFocus(this.entities, 'allies', before);
       if (focus && focus !== before) this.bark(m, 'focus', this.entity(focus));
-    } else if (DIFFICULTIES[this.diff].squad) {
+    } else if (DIFFICULTIES[this.diff].squad || brain) {
       const before = t.focus ?? [];
       const squad = squadPlan(this.entities, before);
       t.focus = squad.targets;
       focus = squad.assign[m.id] ?? squad.targets[0] ?? null;
       const fresh = squad.targets.find((id) => !before.includes(id));
-      if (fresh) this.bark(m, 'focus', this.entity(fresh));
+      if (fresh) {
+        this.bark(m, 'focus', this.entity(fresh));
+        this.callout(this.entity(fresh), 'hunted'); // a bot hears it's the target
+      }
     }
-    return planMonster({ me: m, map: this, entities: this.entities, moves: t.movesLeft, difficulty: this.diff, focus, rand: () => rng.next() });
+    const view = { me: m, map: this, entities: this.entities, moves: t.movesLeft, difficulty: this.diff, focus, rand: () => rng.next(), round: t.round };
+    if (!brain) return planMonster(view);
+    // The learned policy (or the trainer) picks from the same options the scripted AI weighs.
+    const choices = monsterChoices(view);
+    if (choices.forced) return choices.forced;
+    const i = await brain(m, choices);
+    return (choices.options[i] ?? choices.options[0]).plan;
+  }
+
+  /** Who decides for the monsters instead of the scripted AI: the trainer, or the PPO policy if the run picked it. */
+  private learnedBrain(): MonsterBrain | null {
+    if (this.monsterBrain) return this.monsterBrain;
+    const policy = this.monsterAiNow === 'ppo' ? monsterPolicy() : null;
+    return policy && ((_m, c) => policy.pick(c.options.map((o) => o.features)));
   }
 
   /** After a spell, shove or shot at the ground: the fight may be over, or the monster gone. */
@@ -2075,6 +2134,24 @@ export class Game {
     if (line) this.addLog('say', line);
   }
 
+  /**
+   * A bot hero's callout in the log (server/companions.ts), worded like a person's chat line. Only real bots talk,
+   * not people who switched on auto-play. `beat` is the round, unless the callout is for the fight's start or end.
+   */
+  private callout(who: Entity | undefined, ev: CallEvent, vars: CallVars = {}, beat?: string) {
+    if (who?.kind !== 'player' || this.phase !== 'combat' || !this.standing(who)) return;
+    const info = this.players.find((p) => p.id === who.playerId);
+    if (!info?.bot) return;
+    const text = calloutLine(info.name, ev, vars, rng.next());
+    if (text && tryCallout(this.chatter, who.id, ev, beat ?? `r${this.turn?.round ?? 0}`, rng.next())) this.addLog('chat', `${info.name}: ${text}`);
+  }
+
+  /** A random bot hero still on their feet (not `not`): the one who speaks up for the party. */
+  private randomBot(not?: Entity): PlayerEntity | undefined {
+    const bots = this.heroes().filter((h) => h !== not && this.standing(h) && this.players.find((p) => p.id === h.playerId)?.bot);
+    return bots.length ? pick(bots) : undefined;
+  }
+
   /** A support's spell (shared/rules.ts `support`): mend a friend (a downed hero, for the Acolyte) or buff one. */
   private supportCast(m: MonsterEntity, f: Entity, kind: 'heal' | 'buff') {
     const sup = MONSTERS[m.type].support;
@@ -2086,6 +2163,7 @@ export class Game {
       const amount = rollDice(sup.heal) + (m.ally ? (this.run?.act ?? 1) - 1 : 0); // NPC allies grow with the act
       const healed = f.kind === 'player' ? this.healBy(null, f, amount) : this.healMonster(f, amount);
       this.addLog('heal', `${m.glyph} ${m.name} heals ${f.name}: +${healed} HP.`);
+      if (healed > 0) this.callout(f, 'healed', { ally: m.name });
     } else {
       this.shot(m, f, '#ffd84d');
       this.applyStatus(f, sup.buff, m);
@@ -2604,6 +2682,7 @@ export class Game {
     total = Math.max(1, total);
     this.addLog(crit ? 'crit' : 'hit', `${what}: ${roll}, ${crit ? 'CRITICAL HIT' : 'hit'} for ${total}${elementWord(o.element)}${notes.length ? ` (incl. ${notes.join(', ')})` : ''}`);
     this.damage(t, total, a, o.element);
+    if (crit) this.callout(a, 'crit', { target: t.name }); // after the damage, so a kill steal gets the bot's word first
     if (hero && o.basic) this.weaponExtras(hero, t, crit);
     if (hero && this.entities.includes(t)) this.afterHit(hero, t, o.element, !!o.basic);
     if (dist(a, t) <= 1 && this.entities.includes(t) && canReact(t)) this.face(t, a); // you turn toward whoever hit you
@@ -2686,6 +2765,7 @@ export class Game {
         this.addLog('crit', `😡 ${t.name} flies into a rage!`);
         this.float(t, '😡 ENRAGED', '#ff6b6b');
       }
+      if (t.kind === 'player' && t.hp < t.maxHp * LOW_HP) this.callout(t, 'low'); // once per fight, if the bot gets the chance
       this.elementHit(t, element, by);
       return;
     }
@@ -2699,6 +2779,7 @@ export class Game {
       t.statuses = [];
       this.cancelWalk(t.id);
       this.addLog('death', `🩸 ${t.name} falls unconscious! Heal them to get them back up.`);
+      this.callout(this.randomBot(t), 'down', { ally: t.name });
       // Went down on their own turn (walked into the fire): the turn is over.
       if (this.turnOwner === t.id && this.phase === 'combat') {
         const token = this.turnToken;
@@ -2831,8 +2912,10 @@ export class Game {
         killer.steals++;
         this.addLog('death', `💀 Kill steal! ${killer.name} snatches the ${t.name} from ${robbed.name}!`);
         this.float(killer, 'KILL STEAL!', '#ff9df0');
+        this.callout(killer, 'steal', { target: t.name, ally: robbed.name });
       } else {
         this.addLog('death', `💀 ${t.name} is slain by ${killer.name}!`);
+        this.callout(killer, 'kill', { target: t.name });
       }
     } else {
       this.addLog('death', `💀 ${t.name} is slain${isAllyNpc(by) ? ` by ${by.name}` : ''}!`);
@@ -2911,6 +2994,10 @@ export class Game {
       t.saves = { ok: 0, fail: 0 };
       if (this.hasRelic('smelling_salts')) t.hp = Math.min(t.maxHp, t.hp + 5);
       this.addLog('heal', `${t.name} is back on their feet!`);
+    }
+    if (healer && healer !== t && (healed > 0 || wasDown)) {
+      if (wasDown) this.callout(healer, 'revive', { ally: t.name });
+      this.callout(t, 'healed', { ally: healer.name });
     }
     if (healer && healer !== t) {
       const shepherd = hasBranch(healer, 'blessed_healer', 'B') ? 1.5 : 1;
@@ -3279,6 +3366,8 @@ export class Game {
         })),
       },
       difficulty: this.diff,
+      monsterAi: this.monsterAiNow,
+      ppoReady: !!monsterPolicy(),
       run: this.run,
       vote: v && { kind: v.kind, options: v.options, votes: v.votes, endsInMs: v.deadline === null ? null : Math.max(0, v.deadline - Date.now()) },
       event: e && {

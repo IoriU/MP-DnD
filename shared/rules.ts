@@ -373,6 +373,20 @@ export const DIFFICULTIES: Record<Difficulty, DifficultyDef> = {
 };
 
 export const DIFFICULTY_IDS = Object.keys(DIFFICULTIES) as Difficulty[];
+
+/**
+ * Who plays the monsters, picked in the lobby next to the difficulty: the scripted squad AI (server/monsterai.ts), or
+ * the policy trained with PPO (server/policy.ts, training/). The difficulty still sets the monsters' numbers either way.
+ */
+export type MonsterAi = 'scripted' | 'ppo';
+
+export const MONSTER_AIS: Record<MonsterAi, { name: string; icon: string; desc: string }> = {
+  scripted: { name: 'Scripted', icon: '📜', desc: 'Handwritten squad tactics: readable, with a plan you can learn to read.' },
+  ppo: { name: 'PPO (trained)', icon: '🧠', desc: 'A neural network trained against the hero bots (PPO). It picks from the same moves, its own way.' },
+};
+
+export const MONSTER_AI_IDS = Object.keys(MONSTER_AIS) as MonsterAi[];
+export const isMonsterAi = (x: unknown): x is MonsterAi => typeof x === 'string' && Object.hasOwn(MONSTER_AIS, x);
 export const isDifficulty = (x: unknown): x is Difficulty => typeof x === 'string' && Object.hasOwn(DIFFICULTIES, x);
 
 /**

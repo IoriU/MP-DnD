@@ -1,6 +1,6 @@
 // Home screen (name, class, create/join) and the tavern lobby before a run starts.
 
-import { CLASSES, CLASS_IDS, DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, MIN_PARTY, type Difficulty } from '../shared/rules.ts';
+import { CLASSES, CLASS_IDS, DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, MIN_PARTY, MONSTER_AIS, MONSTER_AI_IDS, type Difficulty, type MonsterAi } from '../shared/rules.ts';
 import type { ClassId, GameState, PlayerInfo, ResumeView } from '../shared/types.ts';
 import { join, leave, send } from './net.ts';
 import { ago, initSaves } from './saves.ts';
@@ -29,6 +29,23 @@ function difficultyCards(selected: Difficulty, pickable: boolean): string {
       <span class="cc-glyph">${d.icon}</span>
       <span class="cc-name">${d.name}</span>
       <span class="cc-blurb">${d.desc}</span>
+    </button>`;
+  }).join('');
+}
+
+/**
+ * Who plays the monsters, as cards like the difficulty ones: host-only (`pickable`), read-only for everyone else. The PPO
+ * card is disabled, with a note, when this server has no trained policy.
+ */
+function monsterAiCards(selected: MonsterAi, pickable: boolean, ppoReady: boolean): string {
+  return MONSTER_AI_IDS.map((id) => {
+    const a = MONSTER_AIS[id];
+    const missing = id === 'ppo' && !ppoReady;
+    return `<button type="button" class="class-card diff-card${id === selected ? ' selected' : ''}" data-monster-ai="${id}"${pickable && !missing ? '' : ' disabled'}>
+      <span class="cc-glyph">${a.icon}</span>
+      <span class="cc-name">${a.name}</span>
+      <span class="cc-blurb">${a.desc}</span>
+      ${missing ? '<span class="cc-note">No trained policy on this server yet</span>' : ''}
     </button>`;
   }).join('');
 }
@@ -87,6 +104,10 @@ export function initLobby() {
   $('#room-difficulty').addEventListener('click', (e) => {
     const card = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-difficulty]');
     if (card && !card.disabled) send('setDifficulty', card.dataset.difficulty);
+  });
+  $('#room-monster-ai').addEventListener('click', (e) => {
+    const card = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-monster-ai]');
+    if (card && !card.disabled) send('setMonsterAi', card.dataset.monsterAi);
   });
   $('#start-btn').addEventListener('click', () => send('start'));
   $('#add-bot').addEventListener('click', () => send('addBot'));
@@ -191,6 +212,11 @@ export function renderRoom(s: GameState) {
   $('#room-difficulty-hint').textContent = r
     ? `This saved run keeps its difficulty (${DIFFICULTIES[s.difficulty].name}).`
     : isHost ? 'You are the host: pick how hard the dungeon fights back.' : 'The host picks the difficulty.';
+  // Likewise the monsters' brain: the host picks it for a new run, a saved run keeps its own.
+  $('#room-monster-ai').innerHTML = monsterAiCards(s.monsterAi, isHost && !r, s.ppoReady);
+  $('#room-monster-ai-hint').textContent = r
+    ? `This saved run keeps its monster AI (${MONSTER_AIS[s.monsterAi].name}).`
+    : isHost ? 'You are the host: pick who plays the monsters.' : 'The host picks who plays the monsters.';
   $('#start-btn').textContent = r ? 'Continue the adventure' : 'Start the adventure';
   $('#start-btn').hidden = !isHost;
   $('#add-bot').hidden = !isHost || s.players.length >= MAX_PLAYERS;

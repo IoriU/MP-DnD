@@ -97,6 +97,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **🛒 Shops:** everyone browses at once and spends the shared gold. Buy gear, consumables, potions or a relic, sell what you don't need, pay for a lesson (upgrade a cantrip or spell) or forget a skill to make room. The party moves on when everyone clicks Done.
 - **Sneak or Charge:** before most fights the party sees the room and votes. Sneaking is a group Stealth check: if at least half of you pass, the monsters lose their first turn; if not, you lose yours. Some fights are ambushes. The Rogue's **Hide** makes monsters ignore them and gives their next attack advantage.
 - **Difficulty:** the host picks **📖 Story**, **⚔️ Normal** or **💀 Hard** in the tavern, and the whole run keeps it (saved runs too). On Story the monsters are weaker and fight on instinct: each one goes for whoever is closest. On Normal and Hard they fight as a squad (below), and Hard also hits harder and brings more of them.
+- **🧠 Who plays the monsters:** next to the difficulty, the host can pick the **📜 scripted** squad AI or a **🧠 PPO-trained policy** (a neural network trained against the hero bots) in the tavern. The PPO card is only available when the server has a trained policy file. The run keeps the pick (saved runs too), and a 🧠 PPO tag shows next to the difficulty.
 - **🎯 Monster squads:** on Normal and Hard the monsters call a target and gang up on it. A red 🎯 reticle marks each hunted hero and the turn order names them (in a bigger party the monsters split into packs, each hunting its own hero), so heal them, block for them or draw the monsters off. Every monster has a role, shown on its tooltip:
   - 🛡️ **Brutes** push to the front and hold it, and some **shove** you into fire and other hazards.
   - 🗡️ **Skirmishers** circle around for flanks and back attacks.
@@ -110,7 +111,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **Camera:** the mouse wheel zooms and right-drag pans.
 - **Graphics:** pixel art by default; press **G** to switch to the classic emoji look (it's remembered).
 - **🤖 Auto-play:** press **P** (or the 🤖 Auto button) and the AI plays your hero until you switch it off. That's handy when you're AFK. Players who disconnect are auto-played until they come back. Auto heroes never vote while a human is at the keyboard; they follow the group.
-- **Bots:** every party has at least 3 heroes, so when the run starts, bots take the empty seats (a solo player gets two bot companions, with classes the party lacks). The host can also click **🤖 Add bot** in the tavern for more, up to 6 heroes. Bigger parties face more monsters, with more HP and harder hits.
+- **Bots:** every party has at least 3 heroes, so when the run starts, bots take the empty seats (a solo player gets two bot companions, with classes the party lacks). The host can also click **🤖 Add bot** in the tavern for more, up to 6 heroes. Each bot has its own voice and shouts short callouts in the log, like a teammate typing: when the fight starts (elites and bosses get their own lines), when it is low on health, when a friend goes down or gets back up, on a kill steal or a critical hit, when the monsters hunt it, on a level-up and when the fight is won. They don't flood the log (one line per bot per round), and heroes on auto-play who are people stay silent. Bigger parties face more monsters, with more HP and harder hits.
 - **Saving:** runs save themselves at every step on the map (in the `saves/` folder next to the game). Close the server whenever you like. Next time, pick the run under **📜 Continue a saved run** on the home screen, or just reopen your old tab. Type the same name as your hero and you get them back; a friend who can't make it is auto-played until they return. A fight that was interrupted starts over from the beginning. Won and lost runs move to `saves/archive/`.
 - **Chat:** press Enter.
 
@@ -156,6 +157,7 @@ server/events.ts   ❓ event scenes and their choices
 server/heroai.ts   auto-play brain for heroes (AFK players, bots, tests)
 server/monsterai.ts  the monsters' brain: squad target, roles, flanking, support spells, shoving
 server/barks.ts    the monsters' one-liners (the italic 💬 lines in the log)
+server/companions.ts  the bots' voices and callouts (their chat lines in the log)
 server/progression.ts  XP shares, level-ups, level-up cards, elite spoils, training
 server/saves.ts    saved runs on disk (saves/<CODE>.json) and the archive
 server/rng.ts      seeded random numbers

@@ -9,7 +9,7 @@
 // Exit code: 0 even when runs are lost (it is a measurement tool), 1 on anomalies or connection failures.
 
 import { io } from 'socket.io-client';
-import { DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, isDifficulty, type Difficulty } from '../shared/rules.ts';
+import { DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, MONSTER_AIS, MONSTER_AI_IDS, isDifficulty, isMonsterAi, type Difficulty, type MonsterAi } from '../shared/rules.ts';
 import { LINES, type BarkEvent } from '../server/barks.ts';
 import { RELICS } from '../shared/items.ts';
 import { itemInfo, skillTitle } from '../shared/skills.ts';
@@ -102,6 +102,7 @@ export interface RunResult {
   elites: Record<string, number>; // ELITE_RES counts
   ai: Record<string, number>; // AI_RES counts
   difficulty: Difficulty;
+  monsterAi: MonsterAi;
   party: number; // heroes in the run
   goldAtEnd: number;
   relicsAtEnd: string[];
@@ -121,6 +122,7 @@ export interface RunOptions {
   url: string;
   heroes: number;
   difficulty?: Difficulty; // Normal if unset
+  monsterAi?: MonsterAi; // scripted if unset
   timeoutS: number;
   onStart?: (code: string) => void;
 }
@@ -140,6 +142,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     elites: {},
     ai: {},
     difficulty: opts.difficulty ?? 'normal',
+    monsterAi: opts.monsterAi ?? 'scripted',
     party: opts.heroes,
     goldAtEnd: 0,
     relicsAtEnd: [],
@@ -303,6 +306,8 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     });
     socket.emit('setDifficulty', r.difficulty);
     await waitFor('the difficulty', () => box.s?.difficulty === r.difficulty);
+    socket.emit('setMonsterAi', r.monsterAi);
+    await waitFor('the monster AI (is there a trained policy on the server?)', () => box.s?.monsterAi === r.monsterAi);
     opts.onStart?.(res.code);
     socket.emit('start');
     await waitFor('the run to start', () => !!box.s && box.s.phase !== 'lobby');
@@ -432,6 +437,21 @@ skills used (${uses.size} different):`);
     }
     printTable(rows);
   }
+  const ais = MONSTER_AI_IDS.filter((a) => results.some((r) => r.monsterAi === a));
+  if (ais.length > 1) {
+    console.log('\nper monster AI:');
+    const rows = [['', 'runs', 'won', 'lost', 'fights won', 'acts cleared', 'downs/run', 'deaths/run']];
+    for (const a of ais) {
+      const rs = results.filter((r) => r.monsterAi === a);
+      const won = rs.filter((r) => r.outcome === 'victory').length;
+      rows.push([
+        `${MONSTER_AIS[a].icon} ${MONSTER_AIS[a].name}`, String(rs.length), `${won} (${pct(won, rs.length)})`, String(rs.filter((r) => r.outcome === 'defeat').length),
+        avg(rs.map((r) => r.fights.filter((f) => f.won).length)).toFixed(1), avg(rs.map((r) => r.actsCleared)).toFixed(1),
+        avg(rs.map((r) => r.downs.length)).toFixed(1), avg(rs.map((r) => r.deaths.length)).toFixed(1),
+      ]);
+    }
+    printTable(rows);
+  }
   if (sizes.length > 1) {
     console.log('\nwins / runs (acts cleared on average) per difficulty and party size:');
     const rows = [['', ...sizes.map((n) => `${n} hero${n > 1 ? 'es' : ''}`)]];
@@ -480,7 +500,9 @@ async function main(): Promise<number> {
   const url = process.env.URL ?? 'http://localhost:3000';
   // DIFF=story|normal|hard, or DIFF=all to spread the runs over all three.
   const DIFFS: Difficulty[] = process.env.DIFF === 'all' ? DIFFICULTY_IDS : [isDifficulty(process.env.DIFF) ? process.env.DIFF : 'normal'];
-  console.log(`${RUNS} runs x ${SIZES.join('/')} heroes on ${url}, ${CONCURRENCY} at a time, ${TIMEOUT_S}s limit per run, difficulty ${DIFFS.join('/')}`);
+  // MONSTER_AI=scripted|ppo, or MONSTER_AI=all to compare them (ppo needs server/policies/monster-ppo.json).
+  const AIS: MonsterAi[] = process.env.MONSTER_AI === 'all' ? MONSTER_AI_IDS : [isMonsterAi(process.env.MONSTER_AI) ? process.env.MONSTER_AI : 'scripted'];
+  console.log(`${RUNS} runs x ${SIZES.join('/')} heroes on ${url}, ${CONCURRENCY} at a time, ${TIMEOUT_S}s limit per run, difficulty ${DIFFS.join('/')}, monsters ${AIS.join('/')}`);
 
   const results: RunResult[] = [];
   let next = 0;
@@ -489,12 +511,13 @@ async function main(): Promise<number> {
     while (next < RUNS) {
       const difficulty = DIFFS[next % DIFFS.length];
       const heroes = SIZES[Math.floor(next / DIFFS.length) % SIZES.length];
+      const monsterAi = AIS[Math.floor(next / (DIFFS.length * SIZES.length)) % AIS.length];
       next++;
-      const r = await playRun({ url, heroes, timeoutS: TIMEOUT_S, difficulty });
+      const r = await playRun({ url, heroes, timeoutS: TIMEOUT_S, difficulty, monsterAi });
       results.push(r);
       const levels = r.heroes.map((h) => h.level).join('/') || '-';
       const verdict = r.outcome === 'victory' ? 'WIN' : r.outcome === 'defeat' ? `lost at ${whereLabel(r.at)} to ${r.killer ?? '?'}` : `${r.outcome.toUpperCase()} at ${whereLabel(r.at)}`;
-      console.log(`[${results.length}/${RUNS}] ${r.code || '----'} ${DIFFICULTIES[r.difficulty].icon} ${r.party}p ${verdict}; ${r.seconds.toFixed(1)}s; fights won ${r.fights.filter((f) => f.won).length}; levels ${levels}${r.anomalies.length ? `; ${r.anomalies.length} ANOMALIES` : ''}`);
+      console.log(`[${results.length}/${RUNS}] ${r.code || '----'} ${DIFFICULTIES[r.difficulty].icon}${r.monsterAi === 'ppo' ? '🧠' : ''} ${r.party}p ${verdict}; ${r.seconds.toFixed(1)}s; fights won ${r.fights.filter((f) => f.won).length}; levels ${levels}${r.anomalies.length ? `; ${r.anomalies.length} ANOMALIES` : ''}`);
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));

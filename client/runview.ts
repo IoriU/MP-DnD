@@ -9,7 +9,7 @@ import { blessingsHtml, relicsHtml } from './inventory.ts';
 import { send } from './net.ts';
 import { NODE_SPRITES, SPRITE_PX, artKey, iconHtml, spriteHtml, spritesOn } from './sprites.ts';
 import { isAuto, me, store } from './store.ts';
-import { $, esc } from './util.ts';
+import { $, esc, monsterAiTag } from './util.ts';
 
 // ---------------------------------------------------------------- map layout (SVG units)
 
@@ -327,12 +327,13 @@ function mapHtml(s: GameState, run: RunInfo, vote: VoteState | null, notice: Not
     .join('');
 
   const diff = DIFFICULTIES[run.difficulty];
+  const ai = monsterAiTag(run.monsterAi); // only when the monsters are played by the PPO policy
   return `<div class="rv-top">
       <header class="rv-head">
         <div class="rv-title">Act ${run.act} of ${run.maxAct} · ${esc(run.actName)}</div>
         <div class="rv-sub">
           ${statusHtml(vote, 'Vote for the next room')}${progressHtml(s, vote)}
-          <span class="rv-stats">${timerHtml(vote)}<span class="rv-pill" title="${esc(`${diff.name}: ${diff.desc}`)}">${diff.icon} ${diff.name}</span><span class="rv-pill gold" title="Party gold">💰 ${run.gold}</span></span>
+          <span class="rv-stats">${timerHtml(vote)}<span class="rv-pill" title="${esc(`${diff.name}: ${diff.desc}`)}">${diff.icon} ${diff.name}</span>${ai ? `<span class="rv-pill" title="${esc(ai.tip)}">${ai.label}</span>` : ''}<span class="rv-pill gold" title="Party gold">💰 ${run.gold}</span></span>
         </div>
         ${run.relics.length || run.blessings.length ? `<div class="rv-relics" title="The party's relics and blessings">${relicsHtml(run.relics)}${blessingsHtml(run.blessings)}</div>` : ''}
       </header>

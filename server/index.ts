@@ -121,6 +121,7 @@ io.on('connection', (socket) => {
   on('setClass', (g, pid, classId: ClassId) => g.setClass(pid, classId));
   on('start', (g, pid) => g.start(pid));
   on('setDifficulty', (g, pid, d: unknown) => g.setDifficulty(pid, d));
+  on('setMonsterAi', (g, pid, ai: unknown) => g.setMonsterAi(pid, ai));
   on('move', (g, pid, pos: Pos) => g.handleMove(pid, pos));
   on('step', (g, pid, dx: number, dy: number) => g.handleStep(pid, dx, dy));
   on('act', (g, pid, skill: unknown, target?: unknown) => g.handleSkill(pid, skill, target));

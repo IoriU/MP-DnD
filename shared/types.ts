@@ -4,7 +4,7 @@ import type { SkillId, StatusId } from './skills.ts';
 import type { BlessingId, ItemId, RelicId, Slot } from './items.ts';
 import type { AllyId, TraitId } from './elites.ts';
 import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
-import type { Difficulty } from './rules.ts';
+import type { Difficulty, MonsterAi } from './rules.ts';
 
 export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric';
 export type Phase = 'lobby' | 'map' | 'combat' | 'event' | 'rest' | 'shop' | 'victory' | 'defeat';
@@ -166,6 +166,7 @@ export interface RunInfo {
   allies: AllyState[]; // NPC allies travelling with the party
   seed: number;
   difficulty: Difficulty; // picked in the lobby, kept for the whole run
+  monsterAi?: MonsterAi; // who plays the monsters (scripted if unset: saves from before Phase 11)
 }
 
 /** An NPC ally travelling with the party (shared/elites.ts). It fights at full HP in each fight until its fights run out or it falls. */
@@ -258,6 +259,8 @@ export interface GameState {
   hostId: string | null;
   resume: ResumeView | null; // set while a loaded save waits in the tavern
   difficulty: Difficulty; // the lobby's pick (the host sets it); the run's own once it has started
+  monsterAi: MonsterAi; // likewise: the scripted AI or the trained PPO policy
+  ppoReady: boolean; // this server has a trained policy (server/policies/monster-ppo.json)
   run: RunInfo | null;
   vote: VoteState | null;
   event: EventView | null;

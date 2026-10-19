@@ -119,7 +119,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 8 | Real art *(independent; can be done anytime)* | 🟢 |
 | 9 | Smarter enemy AI + difficulty | 🟢 |
 | 10 | ~~AI Dungeon Master (local LLM)~~ | ❌ |
-| 11 | Experiments: RL enemies/companions, talking NPCs | 🧪 |
+| 11 | Experiments: PPO monsters, bot personalities | 🟢 |
 | 12 | Content backlog | ⚪ |
 | 13 | Balance pass | ⚪ |
 
@@ -616,14 +616,54 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 11: Experiments 🧪
+## Phase 11: Experiments 🟢
 
-- **RL enemies/companions (PPO):**
-  - Python training project in `training/`, with a room-combat simulator that mirrors `shared/rules.ts`
-  - Self-play heroes vs monsters
-  - Export to ONNX and run it in the server with `onnxruntime-node`
-  - Compare against the Phase 9 AI and keep whichever is more fun
-- **AI companions:** basic bot players arrive in Phase 1b; this experiment is about making them feel like real teammates (personalities, callouts, smarter RL-trained play).
+Done 2026-10-19. Your picks: Python + PyTorch for the training; plain TypeScript to run the trained policy in the server (no 300 MB onnxruntime-node for hosts); bot personalities and callouts for the companions; and the host chooses the monsters' AI in the lobby.
+
+- [x] **PPO monsters** (`training/`, see `training/README.md`):
+  - [x] **Options, not a copy of the rules.** The plan said to build a Python simulator that mirrors `shared/rules.ts`. Instead the real game runs headless in Node (`training/env.ts`), so nothing has to be kept in sync.
+    - The scripted AI lists each monster's options with 44 features each (`monsterChoices` in `server/monsterai.ts`), up to 32 options.
+    - The policy only ever picks among them, so every move is legal.
+  - [x] **Real fights.** Bot runs record the save at each fight's start (`DELVERS_FIGHT_DUMP`); 40 runs gave 718 recorded fights.
+    - They cover all 3 acts and difficulties, 3–6 heroes, and regular, elite and boss fights, with the gear and levels the game really produces.
+    - Each replay rolls fresh monsters. The heroes are the hero bots.
+  - [x] **The trainer** (`training/ppo.py`, PyTorch 2.14 on the CPU, in `training/.venv`):
+    - The network scores each option (44 → 64 → 64 → 1) and has a value network for PPO.
+    - It first copies the scripted AI (100% agreement after 40k decisions), then trains with PPO: 10 Node workers play 24 fights each at once, about 1,400 fights per update.
+  - [x] **Export:** `server/policies/monster-ppo.json`, which the server runs in plain TypeScript (`server/policy.ts`), and `monster-ppo.onnx`, built directly with the onnx package and checked against PyTorch.
+  - [x] **Lobby choice:** the host picks 📜 Scripted or 🧠 PPO (trained) next to the difficulty, and the HUD shows 🧠 PPO for a PPO run. The difficulty still sets the monsters' numbers.
+  - [x] **Harness:** `MONSTER_AI=all` alternates the two and reports per AI.
+  - [x] Self-play heroes vs monsters: not done. The heroes stay scripted; see "Later" below.
+- [x] **AI companions: bot personalities and callouts** (`server/companions.ts`). Each bot has a voice:
+  - Brakka: gruff. Pip: cheerful. Sister Wren: gentle. Old Tam: grumpy veteran.
+  - Vexa: cocky. Grimble: nervous tinkerer. Lady Ash: cool aristocrat. Moss: calm.
+  - They talk in the chat log when a fight starts (elites and bosses get their own lines), when they're low on HP or an ally goes down, on revives and heals, on kills and kill steals, on crits, when the monsters start hunting them, on a level-up, and when a fight is won.
+  - Only real bots talk. Each says at most one line per round, with at most 2 lines per round overall.
+
+**Result (2026-10-19):** the pipeline works end to end. The trained policy plays as well as the scripted AI, but not better.
+
+| Monster AI, 2,000 recorded fights each | Monsters win | Party losses (±1 s.e.) |
+|---|---|---|
+| 📜 Scripted | 0.75% | 0.055 (±0.005) |
+| 🧠 PPO, run 1 (reward also counts the monsters' own losses) | 0.45% | 0.045 (±0.004) |
+| 🧠 PPO, run 2 (reward = pressure on the party): **shipped** | 0.65% | 0.051 (±0.004) |
+
+Party losses per hero: the share of HP lost, 2 if downed, 3 if dead, averaged per fight.
+
+- **Full bot runs through the server:** 24 runs (12 scripted, 12 PPO), 3–6 heroes, all difficulties: 0 anomalies, 0 rejected actions, 0 server errors.
+- **Tests:** 353 (+18 companions, +4 policy, including that the shipped weights score their check inputs exactly as PyTorch did).
+
+**Why PPO doesn't win (your diagnosis):**
+- **The monsters have almost nothing to coordinate.** They move and hit; flanks, backstabs, the pack target, shoves and heals are all things the scripted AI already scores well one turn ahead. There are no debuffs, no setups that pay off for another monster, and no stacking buffs.
+- **The fights are one-sided** (balance waits for Phase 13): bot parties win about 99% and lose about 5% of their HP per fight, so the learning signal is tiny next to the dice.
+- **The best checkpoint looked better in 400–1,000-fight checks, but that was noise.** Only the 2,000-fight checks are trustworthy.
+- In run 2 the sampled policy drifted toward randomness (entropy up, scripted agreement down to 62%), while greedy play stayed level. The entropy bonus outweighs such a small reward.
+
+**Next:**
+- Monster abilities go into Phase 12: debuffs, setups, a help action, stacking buffs and leader orders.
+- After Phase 12/13, rerun the pipeline: record fights, then `training/ppo.py`, then export. No new code is needed, unless the option features change; the server refuses a policy that doesn't fit.
+- Also worth trying then: train on harder fights (a training-only boost so fights are close) and judge checkpoints on 2,000+ fights.
+- **Later (not now, decided 2026-10-19): RL-trained hero bots.** Train the hero side the same way as the monsters: a policy that scores the candidate actions `server/heroai.ts` already lists (move, action and bonus action, skills with aims, potions, revives, shoves), first copying the scripted hero AI, then PPO against the scripted or the PPO monsters. One side trains while the other stays frozen, so results stay measurable. It would make bot teammates and auto-play smarter; humans playing their own heroes wouldn't notice. A bigger job than the monsters: the hero action space is much larger.
 - ~~**Talking NPCs:** chat with specific NPCs inside events. The LLM can only call tools we define (`roll_check`, `give_item`, `join_party`, `turn_hostile`).~~ Dropped with Phase 10 (no LLM).
 
 ---
@@ -631,6 +671,12 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 ## Phase 12: Content backlog ⚪
 
 - [ ] More classes: Ranger, Paladin, Barbarian, Bard
+- [ ] **Monster abilities** (decided 2026-10-19, after Phase 11 showed monsters that only move and hit leave PPO nothing to learn):
+  - debuffs on heroes: a Kobold's net (can't move), a Goblin's dirty trick (blinded), a Cultist's mark (attacks on them have advantage), a Spider's web (stuck until freed), a Wight's drain (lower max HP)
+  - setups another monster pays off: knocked prone (melee advantage), drenched (extra lightning damage), netted (can't dodge the archers), a "help" action (the next ally's attack on that hero has advantage)
+  - buffs that stack, and leader orders from elites ("Charge!": more movement, "Hold!": more AC)
+  - the scripted squad AI learns to use them (set up first, then pay off), and the hero bots learn to answer them (cut the web, kill the marker first)
+  - then retrain the PPO monsters (training/README.md): this is where learned coordination can beat handwritten rules
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)
 - [ ] Traps and interactive room props (doors, levers, collapsing floors)

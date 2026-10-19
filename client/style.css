@@ -118,7 +118,7 @@ body.resuming .resume-note { display: block; }
   border-radius: 10px;
 }
 .resume-banner .muted { margin-top: 4px; font-size: 12px; }
-#room-class-hint, #room-difficulty-hint { margin: 0 0 10px; font-size: 13px; }
+#room-class-hint, #room-difficulty-hint, #room-monster-ai-hint { margin: 0 0 10px; font-size: 13px; }
 
 .class-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 .class-card {
@@ -141,6 +141,7 @@ body.resuming .resume-note { display: block; }
 .cc-name { font: 600 17px var(--serif); }
 .cc-stats { font-size: 12px; color: var(--accent-2); }
 .cc-blurb { font-size: 12px; color: var(--muted); }
+.cc-note { font-size: 12px; font-style: italic; color: var(--warn); } /* why a card can't be picked */
 
 .room-code { display: flex; align-items: baseline; gap: 12px; margin: 12px 0; }
 .room-code strong { font: 700 40px var(--serif); letter-spacing: 8px; color: var(--accent-2); }

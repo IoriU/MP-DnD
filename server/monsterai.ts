@@ -22,6 +22,8 @@ export interface MonsterView {
   difficulty: Difficulty;
   focus: string | null; // its pack's target (squadPlan), or its side's (squadFocus)
   rand?: () => number; // for slips; the tests pass their own
+  smart?: boolean; // force the squad's full tactics on or off (the learned policy always sees every option)
+  round?: number; // the fight's round (a feature for the learned policy)
 }
 
 /** What a monster does this turn: walk `path`, then act. */
@@ -311,10 +313,41 @@ function approachField(map: FieldLike, me: MonsterEntity, t: Entity, entities: E
 
 // ---------------------------------------------------------------- the plan
 
-/** What one tile and one action are worth. */
-interface Option {
+/** One thing a monster could do this turn (a tile and an action), with what the scripted AI thinks of it. */
+interface Candidate {
   score: number;
   plan: MonsterPlan;
+  raw: Raw;
+}
+
+/** The facts behind a candidate, which the learned policy sees (optionFeatures). */
+interface Raw {
+  steps: number;
+  harm: number; // hazard damage on the way
+  endHazard: number; // hazard where it ends up
+  adjacent: number; // enemies next to that tile
+  near2: number; // enemies two tiles from it
+  adjFriends: number;
+  sentinel: number; // Sentinel heroes it walks away from
+  target?: Entity;
+  focus?: boolean; // the target is its pack's
+  taunter?: boolean;
+  ev?: number; // expected damage
+  p?: number; // hit chance
+  net?: number; // advantage (1), disadvantage (-1)
+  flank?: boolean;
+  behind?: boolean;
+  turns?: number; // walking still needed before it can hit its target
+  ground?: number; // what its element sets off on the ground
+  shove?: number; // win chance × harm of a shove
+  heal?: number;
+  buff?: number;
+}
+
+interface Candidates {
+  forced: MonsterPlan | null; // decided by its role, not by choice: a coward running away
+  list: Candidate[];
+  fallback: MonsterPlan; // when there's nothing to choose
 }
 
 /**
@@ -323,12 +356,21 @@ interface Option {
  * getting closer), with its role's likes and dislikes, hazards on the way, and Sentinel heroes it would walk away from.
  */
 export function planMonster(v: MonsterView): MonsterPlan {
+  const { forced, list, fallback } = candidates(v);
+  if (forced) return forced;
+  let best: Candidate | null = null;
+  for (const c of list) if (!best || c.score > best.score) best = c;
+  return best?.plan ?? fallback;
+}
+
+/** Everything a monster could do this turn, scored by the scripted AI. */
+function candidates(v: MonsterView): Candidates {
   const { me, map, entities } = v;
   const def = MONSTERS[me.type];
   const role = roleOf(def);
   const diff = DIFFICULTIES[v.difficulty];
   const rand = v.rand ?? Math.random;
-  const smart = diff.squad && rand() >= diff.slip;
+  const smart = v.smart ?? (diff.squad && rand() >= diff.slip);
   const enemies = enemiesOf(me, entities);
   const friends = friendsOf(me, entities);
   const walks = walkMap(map, me, entities, v.moves);
@@ -336,7 +378,8 @@ export function planMonster(v: MonsterView): MonsterPlan {
   const tileOf = (p: Pos) => p.y * w + p.x;
   const posOf = (i: number): Pos => ({ x: i % w, y: Math.floor(i / w) });
   const instinct = !smart || undefined;
-  if (!enemies.length) return { kind: 'move', path: [] };
+  const still: MonsterPlan = { kind: 'move', path: [], instinct };
+  if (!enemies.length) return { forced: { kind: 'move', path: [] }, list: [], fallback: still };
 
   // ---- a coward below its nerve runs (a few turns, then it fights cornered)
   // (Only while the rest of its side still fights: the last one standing has nowhere to run to.)
@@ -348,16 +391,14 @@ export function planMonster(v: MonsterView): MonsterPlan {
       const score = gap - walk.harm * HARM - hazardAt(map, i, me) * 0.5 - walk.steps * STEP_COST;
       if (!best || score > best.score) best = { score, walk, gap };
     }
-    if (best && best.gap > 1) return { kind: 'flee', path: best.walk.path };
-    return withCornered(planFight());
+    if (best && best.gap > 1) return { forced: { kind: 'flee', path: best.walk.path }, list: [], fallback: still };
+    const list = planFight();
+    for (const c of list) c.plan.cornered = true;
+    return { forced: null, list, fallback: { ...still, cornered: true } };
   }
-  return planFight();
+  return { forced: null, list: planFight(), fallback: still };
 
-  function withCornered(p: MonsterPlan): MonsterPlan {
-    return { ...p, cornered: true };
-  }
-
-  function planFight(): MonsterPlan {
+  function planFight(): Candidate[] {
     const taunt = me.statuses.find((s) => s.id === 'taunted')?.by;
     const taunter = enemies.find((e) => e.id === taunt);
     const sightPool = inSight(enemies);
@@ -401,7 +442,7 @@ export function planMonster(v: MonsterView): MonsterPlan {
 
     const sentinels = enemies.filter((e) => e.kind === 'player' && passiveOf(e, 'sentinel') && dist(e, me) <= 1 && !hasStatus(e, 'surprised'));
     const support = def.support;
-    const options: Option[] = [];
+    const list: Candidate[] = [];
 
     for (const [i, walk] of walks) {
       const at = posOf(i);
@@ -419,17 +460,20 @@ export function planMonster(v: MonsterView): MonsterPlan {
       }
 
       // ---- attacks (and shoves) from here
-      let bestHere: Option | null = null;
-      const consider = (score: number, plan: MonsterPlan) => {
-        if (!bestHere || score > bestHere.score) bestHere = { score, plan };
+      const stand: Raw = {
+        steps: walk.steps, harm: walk.harm, endHazard: hazardAt(map, i, me), adjacent: adjacent.length,
+        near2: enemies.filter((e) => dist(e, at) === 2).length, adjFriends: friends.filter((f) => dist(f, at) <= 1).length,
+        sentinel: sentinels.filter((s) => dist(s, at) > 1).length,
       };
+      const consider = (score: number, plan: MonsterPlan, raw: Partial<Raw> = {}) => list.push({ score, plan, raw: { ...stand, ...raw } });
+      const about = (t: Entity): Partial<Raw> => ({ target: t, focus: t.id === v.focus, taunter: t === taunter });
       for (const t of targets) {
         if (!canHitFrom(map, me, at, t)) {
           // Not in reach from here: how much walking is still left. A target that matters more pulls harder: its
           // pack's target is worth a longer walk, and a taunter even pulls it away from hitting someone else.
           const f = fieldFor(t)[i];
           const turns = Number.isFinite(f) ? f / Math.max(1, me.speed) : 3 + dist(at, t) / Math.max(1, me.speed);
-          consider(base - APPROACH * (turns - PULL * (weight(t) - 1)), { kind: 'move', path: walk.path, target: t.id });
+          consider(base - APPROACH * (turns - PULL * (weight(t) - 1)), { kind: 'move', path: walk.path, target: t.id }, { ...about(t), turns });
           continue;
         }
         // Stepping next to it makes it turn to face you: no free backstab in melee.
@@ -442,7 +486,10 @@ export function planMonster(v: MonsterView): MonsterPlan {
         const bite = Math.min(ev, ehp(t)) + KILL_BONUS * clamp(ev / ehp(t), 0, 1) ** 2;
         let score = base + weight(t) * bite + groundValue(tileOf(t));
         if (smart && role === 'skirmisher' && why.adv.includes('flanking')) score += FLANK;
-        consider(score, { kind: 'attack', path: walk.path, target: t.id, instinct });
+        const hit: Partial<Raw> = {
+          ...about(t), ev, p, net: netAdvantage(why), flank: why.adv.includes('flanking'), behind: why.adv.includes('from behind'), ground: groundValue(tileOf(t)),
+        };
+        consider(score, { kind: 'attack', path: walk.path, target: t.id, instinct }, hit);
         // Shove it into the fire instead?
         if (smart && def.shove && dist(at, t) === 1) {
           const d = dirTo(at, t);
@@ -451,7 +498,7 @@ export function planMonster(v: MonsterView): MonsterPlan {
             const harm = hazardAt(map, tileOf(land), t);
             if (harm > 0) {
               const win = contest(def.str - shoveResist(t));
-              consider(base + weight(t) * win * (harm * SHOVE_HARM + 1), { kind: 'shove', path: walk.path, target: t.id });
+              consider(base + weight(t) * win * (harm * SHOVE_HARM + 1), { kind: 'shove', path: walk.path, target: t.id }, { ...hit, shove: win * harm });
             }
           }
         }
@@ -467,7 +514,7 @@ export function planMonster(v: MonsterView): MonsterPlan {
             if (entities.some((x) => x.x === g.x && x.y === g.y && !(x.kind === 'player' && x.dead))) continue; // creatures there get hit instead
             if (dist(at, g) > rangeOf(me) || !hasLOS(map, at, g)) continue;
             const val = groundValue(gi);
-            if (val >= IGNITE_MIN) consider(base + val, { kind: 'ignite', path: walk.path, tile: g });
+            if (val >= IGNITE_MIN) consider(base + val, { kind: 'ignite', path: walk.path, tile: g }, { ground: val });
           }
         }
       }
@@ -482,21 +529,102 @@ export function planMonster(v: MonsterView): MonsterPlan {
             const mend = Math.min(f.maxHp - f.hp, avgDice(support.heal));
             const urgency = down ? 3 : f.hp < f.maxHp * 0.35 ? 1.5 : 1;
             const big = f.kind === 'monster' && (f.boss || f.elite) ? 1 : 0;
-            consider(base + SUPPORT_BIAS + mend * urgency + (down ? 8 : 0) + big, { kind: 'heal', path: walk.path, target: f.id });
+            consider(base + SUPPORT_BIAS + mend * urgency + (down ? 8 : 0) + big, { kind: 'heal', path: walk.path, target: f.id }, { target: f, heal: mend / f.maxHp });
           }
           if (!down && !hasStatus(f, support.buff.id)) {
             const val = buffValue(f, support.buff, enemies);
-            if (val > 0) consider(base + SUPPORT_BIAS + val, { kind: 'buff', path: walk.path, target: f.id });
+            if (val > 0) consider(base + SUPPORT_BIAS + val, { kind: 'buff', path: walk.path, target: f.id }, { target: f, buff: val });
           }
         }
       }
-      if (bestHere) options.push(bestHere);
     }
-
-    if (!options.length) return { kind: 'move', path: [], instinct };
-    options.sort((a, b) => b.score - a.score);
-    return options[0].plan;
+    return list;
   }
+}
+
+// ---------------------------------------------------------------- what the learned policy sees (Phase 11)
+
+/** One option for the learned policy: the plan, the scripted AI's score for it, and its features. */
+export interface MonsterOption {
+  plan: MonsterPlan;
+  score: number;
+  features: number[];
+}
+
+export interface MonsterChoices {
+  forced: MonsterPlan | null; // no choice to make (a coward running, nothing to fight)
+  options: MonsterOption[]; // the scripted AI's pick first, then the rest
+  state: number[]; // the fight as this monster sees it (for the trainer's value estimate)
+}
+
+const KINDS: MonsterPlan['kind'][] = ['attack', 'shove', 'ignite', 'heal', 'buff', 'move'];
+const ROLE_IDS: Role[] = ['brute', 'skirmisher', 'archer', 'support', 'coward'];
+const SELF_FEATURES = 10;
+export const OPTION_FEATURES = 34 + SELF_FEATURES;
+export const STATE_FEATURES = SELF_FEATURES + 3;
+export const MAX_OPTIONS = 32;
+const bit = (b: boolean | undefined) => (b ? 1 : 0);
+
+/** The monster itself: HP, role, rank, how the fight stands. */
+function selfFeatures(v: MonsterView, friends: Entity[], enemies: Entity[]): number[] {
+  const { me } = v;
+  const role = roleOf(MONSTERS[me.type]);
+  return [
+    me.hp / me.maxHp, ...ROLE_IDS.map((r) => bit(r === role)), bit(me.elite || me.boss),
+    friends.length / 6, enemies.length / 6, Math.min(1, (v.round ?? 1) / 10),
+  ];
+}
+
+/**
+ * An option as numbers, roughly 0..1 each. Three of them are the scripted AI's opinion (its score, whether it's its
+ * top pick, how far behind the top it is): the policy can lean on them or learn past them.
+ */
+function optionFeatures(c: Candidate, top: number, moves: number, self: number[]): number[] {
+  const r = c.raw;
+  const t = r.target;
+  return [
+    ...KINDS.map((k) => bit(c.plan.kind === k)),
+    clamp(c.score / 10, -3, 3), bit(c.score >= top - 1e-9), clamp((c.score - top) / 2, -3, 0), r.steps / Math.max(1, moves), Math.min(3, r.harm / 10), Math.min(3, r.endHazard / 10),
+    r.adjacent / 4, r.near2 / 4, r.adjFriends / 4, r.sentinel,
+    bit(r.focus), bit(r.taunter), t ? t.hp / t.maxHp : 0, t ? Math.min(3, ehp(t) / 50) : 0, bit(t?.kind === 'player'), bit(!!t && shoots(t)),
+    Math.min(3, (r.ev ?? 0) / 10), t && r.ev !== undefined ? clamp(r.ev / ehp(t), 0, 1.5) : 0, r.p ?? 0, r.net ?? 0, bit(r.flank), bit(r.behind),
+    Math.min(3, (r.turns ?? 0) / 3), clamp((r.ground ?? 0) / 10, -3, 3), Math.min(3, (r.shove ?? 0) / 10), r.heal ?? 0, Math.min(3, (r.buff ?? 0) / 5),
+    bit(t?.kind === 'player' && t.downed),
+    ...self,
+  ];
+}
+
+/**
+ * The options the learned policy chooses from (server/policy.ts, training/): the best candidate for every action and
+ * target, then the best of the rest by the scripted score, MAX_OPTIONS at most. The scripted AI's own pick comes first.
+ * Always with the squad's full tactics (no slips): the policy decides for itself.
+ */
+export function monsterChoices(v: MonsterView): MonsterChoices {
+  const { forced, list, fallback } = candidates({ ...v, smart: true });
+  const enemies = enemiesOf(v.me, v.entities);
+  const friends = friendsOf(v.me, v.entities);
+  const self = selfFeatures(v, friends, enemies);
+  const side = (es: Entity[]) => (es.length ? es.reduce((s, e) => s + e.hp / e.maxHp, 0) / es.length : 0);
+  const downed = v.entities.filter((e) => e.kind === 'player' && e.downed && !e.dead).length;
+  const state = [...self, side(friends), side(enemies), downed / 6];
+  if (forced) return { forced, options: [], state };
+  const sorted = [...list].sort((a, b) => b.score - a.score);
+  const picked = new Set<Candidate>();
+  const seen = new Set<string>();
+  for (const c of sorted) {
+    const key = `${c.plan.kind}:${c.plan.target ?? `${c.plan.tile?.x},${c.plan.tile?.y}`}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.add(c);
+  }
+  for (const c of sorted) {
+    if (picked.size >= MAX_OPTIONS) break;
+    picked.add(c);
+  }
+  const chosen = sorted.filter((c) => picked.has(c)).slice(0, MAX_OPTIONS);
+  if (!chosen.length) return { forced: fallback, options: [], state };
+  const top = chosen[0].score;
+  return { forced: null, options: chosen.map((c) => ({ plan: c.plan, score: c.score, features: optionFeatures(c, top, v.moves, self) })), state };
 }
 
 /** Roughly what a buff adds over its turns: Blessed lands more hits, Shielded turns some away. */
