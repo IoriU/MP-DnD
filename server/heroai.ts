@@ -61,6 +61,7 @@ import {
   type FieldOp,
 } from '../shared/surfaces.ts';
 import { RELICS, bagRoom, gearDef, isItemId, itemPrice, type ItemId, type RelicId } from '../shared/items.ts';
+import { isFoe } from '../shared/elites.ts';
 import type {
   Entity, ItemRequest, MonsterEntity, NodeType, OfferCard, OwnedSkill, PickRequest, PlayerEntity, Pos, RestPick, ShopRequest, ShopView, TurnState,
 } from '../shared/types.ts';
@@ -70,6 +71,7 @@ export interface HeroView {
   hero: PlayerEntity;
   heroes: PlayerEntity[];
   monsters: MonsterEntity[];
+  allies?: MonsterEntity[]; // NPC allies: in the way, and not to be caught in your blasts
   turn: TurnState;
   occupied: (x: number, y: number, exceptId?: string) => boolean;
 }
@@ -252,7 +254,11 @@ function areaSpots(v: HeroView): Pos[] {
   return out;
 }
 
-const aimCtx = (map: FieldLike, heroes: PlayerEntity[], monsters: MonsterEntity[]): AimCtx => ({ map, entities: [...heroes, ...monsters], inCombat: true });
+const aimCtx = (map: FieldLike, heroes: PlayerEntity[], monsters: MonsterEntity[], allies: MonsterEntity[] = []): AimCtx => ({
+  map,
+  entities: [...heroes, ...allies, ...monsters],
+  inCombat: true,
+});
 const usable = (me: PlayerEntity, turn: TurnState) => hotbar(me).filter((id) => skillBlockReason(me, id, true, turn, true) === null);
 
 function rootSim(v: HeroView): Sim {
@@ -262,7 +268,7 @@ function rootSim(v: HeroView): Sim {
     heroes: v.heroes,
     monsters: v.monsters,
     turn: v.turn,
-    ctx: aimCtx(v.map, v.heroes, v.monsters),
+    ctx: aimCtx(v.map, v.heroes, v.monsters, v.allies),
     spots: areaSpots(v),
     price: slotPrice(v),
     ranged: new Set(v.heroes.filter(fightsFromRange).map((p) => p.id)),
@@ -282,7 +288,7 @@ function variant(sim: Sim, me: PlayerEntity, monsters = sim.monsters, turn = sim
   const moved = me.x !== sim.me.x || me.y !== sim.me.y;
   if (moved) monsters = monsters.map((m) => (turnsToFace(m, me, me) ? { ...m, facing: dirTo(m, me) } : m));
   const actionLater = turn === sim.turn ? sim.actionLater : !turn.actionUsed;
-  return { ...sim, me, heroes, monsters, turn, ctx: aimCtx(sim.fx.field, heroes, monsters), root: false, actionLater };
+  return { ...sim, me, heroes, monsters, turn, ctx: aimCtx(sim.fx.field, heroes, monsters, sim.v.allies), root: false, actionLater };
 }
 
 const standAt = (sim: Sim, pos: Pos) => variant(sim, { ...sim.me, x: pos.x, y: pos.y });
@@ -290,7 +296,7 @@ const standAt = (sim: Sim, pos: Pos) => variant(sim, { ...sim.me, x: pos.x, y: p
 /** The same fight on a changed battlefield (after a Quick Grease, say). */
 function onField(sim: Sim, field: FieldLike): Sim {
   const v = variant(sim, sim.me);
-  return { ...v, fx: fieldCache(field, sim.me, sim.monsters), ctx: aimCtx(field, v.heroes, v.monsters) };
+  return { ...v, fx: fieldCache(field, sim.me, sim.monsters), ctx: aimCtx(field, v.heroes, v.monsters, sim.v.allies) };
 }
 
 function memo(sim: Sim, key: string, f: () => number): number {
@@ -991,7 +997,10 @@ function fieldValue(sim: Sim, p: Preview, base: FieldLike, gone?: string): Field
     // Water or steam makes whoever's in it Wet, which puts out Burning.
     const burning = e.statuses.find((x) => x.id === 'burning');
     const doused = changed && burning && (p.field.ground[i]?.id === 'water' || p.field.clouds[i]?.id === 'steam') ? 2.5 * (burning.power ?? 1) * Math.min(burning.turns, 2) : 0;
-    if (e.kind === 'monster') {
+    if (e.kind === 'monster' && !isFoe(e)) {
+      // An NPC ally: a blast or a hazard under it costs about what it would cost a hero.
+      if (blasted || after > before) value -= 0.6 * ((blasted ? EXPLOSION_AVG * Math.max(0, damageFactor(e, 'fire')) : 0) + Math.max(0, after - before));
+    } else if (e.kind === 'monster') {
       const blast = blasted ? blastValue(sim, e) : { value: 0, kill: 0 };
       value += blast.value;
       if (after > 0) {
@@ -1079,6 +1088,12 @@ function deathValue(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, m: Mon
 /** A friend's save against your spell (game.ts heroSave): their stat, Steady and Bless. */
 const heroSaveMod = (h: PlayerEntity, save: 'dex' | 'str' | 'wis') =>
   statMod(h.classId, save) + (passiveOf(h, 'steady')?.value ?? 0) + (hasStatus(h, 'blessed') ? 2 : 0);
+
+/** Friendly fire on an NPC ally: priced a little under a hero's HP (it only stays a few fights anyway). */
+function allyNpcHit(s: SkillStats, a: Entity): number {
+  if (!s.dmg || s.roll === 'contest') return 0;
+  return 0.6 * avgDice(s.dmg) * Math.max(0, factorOf(a, s.element));
+}
 
 /** A status landing on a friend caught in your area skill. */
 function heroDebuffCost(h: PlayerEntity, st: StatusApply): number {
@@ -1171,7 +1186,7 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
     score += later;
   }
   // Friends in the blast take it too.
-  for (const h of res.caught ?? []) score -= friendlyHit(sim, id, s, h);
+  for (const h of res.caught ?? []) score -= h.kind === 'player' ? friendlyHit(sim, id, s, h) : allyNpcHit(s, h);
   // A Shove or Feint gives a hidden hero away for nothing (an attack roll spends it on advantage, already scored), and
   // so does smashing a barrel (no roll at all).
   if (offensive && (res.prop !== undefined || (s.roll !== 'attack' && s.cost !== 'action'))) score -= hiddenWorth(sim);
@@ -1455,6 +1470,12 @@ function cardValue(p: PlayerEntity, c: OfferCard): number {
       if (c.boon === 'ac') return p.bonusAc < MAX_BONUS_AC ? 4 : -Infinity;
       if (c.boon === 'slot') return countKind(p, 'spell') ? 4 : 1;
       return 3;
+    case 'gear': {
+      // Elite spoils: worth it when it beats what's worn (or there's room to carry it for a friend).
+      const g = gearDef(c.item);
+      if (!g || bagRoom(p) <= 0) return -Infinity;
+      return 3.5 + Math.max(0, gearScore(p, c.item) - gearScore(p, p.gear[g.slot])) / 2;
+    }
   }
 }
 

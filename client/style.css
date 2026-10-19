@@ -168,6 +168,7 @@ body.resuming .resume-note { display: block; }
   margin-left: 4px;
 }
 .tag.bad { background: #4a1a14; color: #ff9b8c; }
+.tag.ally { background: #1c3a1f; color: #a9e8a2; }
 .tag.away { background: #2a241e; color: var(--muted); }
 .tag.lvl { background: var(--accent); color: #1a1208; font-weight: 700; }
 button.tag { font-family: var(--sans); border: 0; cursor: pointer; }
@@ -227,6 +228,7 @@ button.tag.lvl:hover { background: var(--accent-2); }
 #hud-title { font: 600 20px var(--serif); color: var(--accent-2); }
 #hud-sub { font-size: 12px; }
 .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; }
+.section-label i { font-style: normal; text-transform: none; letter-spacing: 0; opacity: 0.75; } /* a small hint after the label */
 
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip {
@@ -237,6 +239,7 @@ button.tag.lvl:hover { background: var(--accent-2); }
   border: 1px solid var(--line);
 }
 .chip.monster { border-color: #6b2a22; }
+.chip.ally { border-color: #2f6b3b; background: #14261a; } /* .chip.current below still wins */
 .chip.mine { border-color: var(--accent); }
 .chip.current { background: var(--accent); color: #1a1208; font-weight: 700; }
 
@@ -450,3 +453,5 @@ button.tag.lvl:hover { background: var(--accent-2); }
 .tip-shock { color: #fff36b; }
 .tip-react { font-weight: 600; }
 .tip-death { color: #d6b8ff; }
+.tip-trait { display: inline-block; max-width: 260px; white-space: normal; color: #ffd9a0; }
+.tip-trait b { color: var(--accent-2); }

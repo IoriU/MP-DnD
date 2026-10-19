@@ -3,6 +3,7 @@
 // describes them from the same stats, and the auto-play AI scores them from the same stats.
 // Passives are hooks in the server, keyed by skill id; their numbers live in `value` per tier.
 
+import { isAllyNpc, isFoe } from './elites.ts';
 import { dist, hasLOS, type MapLike } from './grid.ts';
 import { CLASSES, MAX_CANTRIPS, MAX_SPELLS, TIER3_LEVEL, passiveSlots, profBonus, saveDc, sneakDice, statMod, type Dice, type Stat } from './rules.ts';
 import { ITEMS, describeStats, gearBonus, gearDef, isItemId, type ItemId, type Rarity, type Slot } from './items.ts';
@@ -740,7 +741,7 @@ export interface AimResult {
   main?: Entity; // the creature aimed at, if any
   foes: MonsterEntity[];
   friends: PlayerEntity[]; // heals and buffs
-  caught?: PlayerEntity[]; // heroes caught in an area attack (friendly fire)
+  caught?: Entity[]; // heroes and NPC allies caught in an area attack (friendly fire)
   prop?: number; // tile index of an oil barrel or brazier that's being hit
 }
 
@@ -750,9 +751,9 @@ export const canHitProps = (s: SkillStats) => s.target === 'enemy' && !!s.roll &
 /** Does an area skill hit whoever is in the blast (friendly fire), or only create a surface? */
 export const hitsArea = (s: SkillStats) => s.target === 'area' && !!(s.roll || s.onHit?.length || s.push);
 
-/** Every monster within `radius` of `center`. */
+/** Every enemy within `radius` of `center` (NPC allies aren't enemies). */
 function foesNear(ctx: AimCtx, center: Pos, radius: number): MonsterEntity[] {
-  return ctx.entities.filter((e): e is MonsterEntity => e.kind === 'monster' && dist(e, center) <= radius);
+  return ctx.entities.filter((e): e is MonsterEntity => isFoe(e) && dist(e, center) <= radius);
 }
 
 /**
@@ -765,7 +766,7 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
   const outOfRange = () => (dist(caster, byId ?? caster) > s.range ? `Out of range (${s.name} reaches ${s.range} tile${s.range === 1 ? '' : 's'}).` : 'No line of sight.');
   switch (s.target) {
     case 'self':
-      if (s.stealth && ctx.inCombat && ctx.entities.some((e) => e.kind === 'monster' && dist(e, caster) <= 1)) return "You can't hide with an enemy next to you.";
+      if (s.stealth && ctx.inCombat && ctx.entities.some((e) => isFoe(e) && dist(e, caster) <= 1)) return "You can't hide with an enemy next to you.";
       return { center: caster, friends: [caster], foes: [] };
     case 'enemy': {
       if (!byId && aim && typeof aim === 'object' && canHitProps(s)) {
@@ -778,12 +779,13 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
         }
       }
       if (!byId) return 'Pick a target.';
-      if (byId.kind !== 'monster') return 'Pick an enemy.';
+      if (isAllyNpc(byId)) return `${byId.name} is on your side.`;
+      if (!isFoe(byId)) return 'Pick an enemy.';
       if (!ctx.inCombat) return 'Only in combat';
       if (!inRange(byId)) return outOfRange();
       const extra = s.chain
         ? ctx.entities
-            .filter((e): e is MonsterEntity => e.kind === 'monster' && e !== byId && dist(e, byId) <= 2)
+            .filter((e): e is MonsterEntity => isFoe(e) && e !== byId && dist(e, byId) <= 2)
             .sort((a, b) => dist(a, byId) - dist(b, byId) || a.hp - b.hp)
             .slice(0, s.chain)
         : [];
@@ -803,7 +805,7 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
       if (!ctx.inCombat) return 'Only in combat';
       if (!inRange(center)) return dist(caster, center) > s.range ? `Out of range (${s.name} reaches ${s.range} tiles).` : 'No line of sight.';
       const caught = hitsArea(s)
-        ? ctx.entities.filter((e): e is PlayerEntity => e.kind === 'player' && !e.dead && !e.downed && dist(e, center) <= (s.radius ?? 1))
+        ? ctx.entities.filter((e) => (e.kind === 'player' ? !e.dead && !e.downed : !!e.ally) && dist(e, center) <= (s.radius ?? 1))
         : [];
       return { center, main: byId, foes: foesNear(ctx, center, s.radius ?? 1), friends: [], caught };
     }

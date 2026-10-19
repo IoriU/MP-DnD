@@ -69,7 +69,10 @@ import {
   type StatusApply,
 } from '../shared/skills.ts';
 import {
+  BLESSINGS,
+  BLESSING_IDS,
   CONSUMABLE_IDS,
+  ELITE_GEAR,
   FORGET_PRICE,
   ITEMS,
   GEAR_IDS,
@@ -77,21 +80,50 @@ import {
   RELICS,
   RELIC_IDS,
   RELIC_PRICE,
+  RENEWAL_HP,
   bagRoom,
   gearAlert,
   gearBonus,
   gearDef,
+  isBlessingId,
   isItemId,
   isRelicId,
   itemPrice,
   sellPrice,
   trainPrice,
   weaponExtras,
+  type BlessingId,
   type ItemId,
   type Rarity,
   type RelicId,
 } from '../shared/items.ts';
+import {
+  ALLIES,
+  ALLY_FIGHTS,
+  ALLY_HEAL,
+  ALLY_IDS,
+  AURA_DICE,
+  ENRAGED_DMG,
+  MAX_ALLIES,
+  MAX_SUMMONS,
+  SUMMON_EVERY,
+  TRAITS,
+  TRAIT_IDS,
+  WARD_EVERY,
+  WARD_SHARE,
+  allyScaling,
+  auraOf,
+  hasTrait,
+  isAllyId,
+  isAllyNpc,
+  isFoe,
+  sameSide,
+  traitCount,
+  type AllyId,
+  type TraitId,
+} from '../shared/elites.ts';
 import type {
+  AllyState,
   ClassId,
   Entity,
   ItemRequest,
@@ -144,7 +176,7 @@ import {
 import { generateActMap } from './actmap.ts';
 import { getEvent, pickEvent, type CheckResult, type EventChoiceDef, type EventDef, type EventEffect, type EventStat } from './events.ts';
 import { autoApproachChoice, autoEquip, autoEventChoice, autoGive, autoLevelPick, autoPathChoice, autoRestPick, autoShopPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
-import { applyLevelUps, applyPick, killShares, makeOffer, recalcHero, startingSkills, upgrade, validRestPick } from './progression.ts';
+import { applyLevelUps, applyPick, dealOffer, killShares, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
 import { pick, randInt, rng, shuffle } from './rng.ts';
 import { generateRoom } from './room.ts';
 import { SAVE_VERSION, archiveSave, writeSave, type SaveFile, type SavePoint } from './saves.ts';
@@ -164,12 +196,14 @@ const AUTO_DELAY_MS = 700; // pause before auto heroes vote, pick or use potions
 const SHOP_MS = 90_000; // the shop closes this long after the first person is done shopping
 const AWAY_MS = 20_000; // ...or this long after everyone left is someone who dropped out (a reload shouldn't close it)
 const DROP_CHANCE = 0.3; // a regular fight leaves a consumable behind
-const ELITE_GEAR: Record<number, Rarity[]> = { 1: ['uncommon'], 2: ['uncommon', 'rare'], 3: ['rare'] }; // the elite's killer takes its gear
 const SHOP_GEAR: Record<number, Rarity[]> = { 1: ['common', 'common', 'uncommon'], 2: ['common', 'uncommon', 'uncommon', 'rare'], 3: ['uncommon', 'rare', 'rare'] };
 
 const ELEMENT_COLOR: Record<Element, string> = {
   physical: '#ffe9a8', fire: '#ff8a3d', cold: '#8fd8ff', lightning: '#fff36b', poison: '#8fdc5a', radiant: '#ffe27a', force: '#c58bff',
 };
+
+/** NPC ally kinds by their stat block (MONSTERS key). */
+const ALLIES_BY_MONSTER = Object.fromEntries(Object.values(ALLIES).map((a) => [a.monster, a]));
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms / SPEED));
 
@@ -427,7 +461,7 @@ export class Game {
     this.notice = null;
     this.entities = this.players.map((p) => this.makePlayer(p, 1));
     const seed = randInt(1, 2 ** 31 - 2);
-    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], seed };
+    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed };
     this.addLog('system', '🍺 The party finishes their drinks and leaves the tavern...');
     this.addLog('system', `🗺️ Act 1: ${ACTS[0].name}. Vote on your path. The ${MONSTERS[ACTS[0].boss].name} waits at the top of the map.`);
     this.notice = {
@@ -481,9 +515,9 @@ export class Game {
     const c = CLASSES[info.classId];
     const p: PlayerEntity = {
       id: this.newId(), kind: 'player', playerId: info.id, classId: info.classId, name: info.name, glyph: c.glyph, color: info.color,
-      x: 0, y: 0, level, xp: 0, skills: startingSkills(info.classId), levelUps: 0, offer: null,
+      x: 0, y: 0, level, xp: 0, skills: startingSkills(info.classId), levelUps: 0, elitePicks: 0, offer: null,
       hp: 0, maxHp: 0, ac: c.ac, speed: c.speed, bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0,
-      potions: 2, gear: {}, bag: [], relics: [...(this.run?.relics ?? [])],
+      potions: 2, gear: {}, bag: [], relics: [...(this.run?.relics ?? [])], blessings: [...(this.run?.blessings ?? [])],
       kills: 0, steals: 0, slots: 0, maxSlots: 0, downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [], statuses: [],
       facing: { x: 1, y: 0 },
     };
@@ -495,7 +529,7 @@ export class Game {
   private newcomer(info: PlayerInfo, level: number): PlayerEntity {
     const e = this.makePlayer(info, level);
     e.levelUps = level - 1;
-    if (e.levelUps) e.offer = makeOffer(e, rng);
+    dealOffer(e, rng, this.run?.act ?? 1);
     return e;
   }
 
@@ -516,7 +550,9 @@ export class Game {
       // Items that no longer exist are dropped; relics follow the run's list.
       gear: Object.fromEntries(Object.entries(saved.gear ?? {}).filter(([slot, id]) => isItemId(id) && gearDef(id)?.slot === slot)),
       bag: (saved.bag ?? []).filter(isItemId),
-      relics: [],
+      relics: [...(this.run?.relics ?? [])],
+      blessings: [...(this.run?.blessings ?? [])],
+      elitePicks: saved.elitePicks ?? 0,
       statuses: [],
       tempHp: 0,
       used: [],
@@ -524,9 +560,10 @@ export class Game {
       dead: false,
       saves: { ok: 0, fail: 0 },
     };
-    // Cards for skills that no longer exist are dealt again.
-    if (p.offer && !p.offer.every((c) => c.kind === 'boon' || isSkillId(c.skill))) p.offer = null;
-    if (p.levelUps > 0 && !p.offer) p.offer = makeOffer(p, rng);
+    // Cards for skills or items that no longer exist are dealt again.
+    if (p.offer && !p.offer.every(validCard)) p.offer = null;
+    if (p.offer && !p.offerKind) p.offerKind = 'level'; // saved before elite spoils existed
+    if (!p.offer) dealOffer(p, rng, this.run?.act ?? 1);
     recalcHero(p);
     return p;
   }
@@ -535,19 +572,23 @@ export class Game {
   private resumeRun(save: SaveFile) {
     this.resumeFrom = null;
     const level = Math.max(1, ...save.heroes.map((h) => h.level));
+    // The run first, so the heroes come back with its relics and blessings already on their sheets.
+    this.run = {
+      ...save.run,
+      relics: (save.run.relics ?? []).filter(isRelicId),
+      blessings: (save.run.blessings ?? []).filter(isBlessingId),
+      allies: (save.run.allies ?? []).filter((a) => isAllyId(a?.id) && a.fights > 0),
+    };
     this.entities = this.players.map((info) => {
       const saved = save.heroes.find((h) => h.playerId === info.id);
       return saved ? this.restoreHero(saved, info) : this.newcomer(info, level);
     });
-    this.run = { ...save.run, relics: (save.run.relics ?? []).filter(isRelicId) };
-    for (const h of this.heroes()) {
-      h.relics = [...this.run.relics];
-      recalcHero(h);
-    }
+    this.syncPerks();
     this.seenEvents = [...save.seenEvents];
     this.notice = save.notice;
     this.addLog('system', '📜 The party picks up right where they left off.');
     if (save.at.kind === 'node' && this.node(save.at.nodeId)) this.enterNode(save.at.nodeId, save.at.eventId);
+    else if (save.at.kind === 'reward') this.eliteReward(save.at.text, save.at.choices);
     else this.toMap();
     this.scheduleAutoPicks();
   }
@@ -556,9 +597,7 @@ export class Game {
     const level = Math.max(1, ...this.heroes().map((h) => h.level));
     const e = this.newcomer(info, level); // they skipped the earlier level-ups, so they get those picks now
     if (this.phase === 'combat') {
-      const anchor = this.heroes().find((p) => !p.dead);
-      const path = anchor && findPath(this, anchor, () => false, (x, y) => !this.occupied(x, y));
-      const spot = path?.[path.length - 1];
+      const spot = this.freeSpotNear(this.heroes().find((p) => !p.dead));
       if (!spot) return; // no room to stand: they'll appear after this fight
       e.x = spot.x;
       e.y = spot.y;
@@ -829,11 +868,50 @@ export class Game {
     const run = this.run;
     if (!run || run.relics.includes(id)) return;
     run.relics.push(id);
+    this.syncPerks();
+    this.addLog('loot', `${RELICS[id].icon} The party gains the ${RELICS[id].name}: ${RELICS[id].desc}`);
+  }
+
+  private hasBlessing(id: BlessingId): boolean {
+    return !!this.run?.blessings?.includes(id);
+  }
+
+  /** A blessing for the whole party until the end of the act. */
+  private grantBlessing(id: BlessingId) {
+    const run = this.run;
+    if (!run || run.blessings.includes(id)) return;
+    run.blessings.push(id);
+    this.syncPerks();
+    this.addLog('loot', `${BLESSINGS[id].icon} The party receives the ${BLESSINGS[id].name} until the end of the act: ${BLESSINGS[id].desc}`);
+  }
+
+  /** Every hero's sheet follows the party's relics and blessings. */
+  private syncPerks() {
+    const run = this.run;
+    if (!run) return;
     for (const h of this.heroes()) {
       h.relics = [...run.relics];
+      h.blessings = [...run.blessings];
       recalcHero(h);
     }
-    this.addLog('loot', `${RELICS[id].icon} The party gains the ${RELICS[id].name}: ${RELICS[id].desc}`);
+  }
+
+  /** An NPC ally joins the party for the next few fights. With two along already, the one closest to leaving goes. */
+  private addAlly(id: AllyId) {
+    const run = this.run;
+    if (!run) return;
+    const def = ALLIES[id];
+    const kind = MONSTERS[def.monster].name;
+    if (run.allies.length >= MAX_ALLIES) {
+      const gone = [...run.allies].sort((a, b) => a.fights - b.fights)[0];
+      run.allies = run.allies.filter((a) => a !== gone);
+      this.addLog('info', `👋 ${gone.name} parts ways with the party to make room.`);
+    }
+    const taken = new Set(run.allies.map((a) => a.name));
+    const names = def.names.map((n) => `${n} the ${kind}`).filter((n) => !taken.has(n));
+    const name = names.length ? pick(names) : `${kind} ${run.allies.length + 1}`;
+    run.allies.push({ id, name, fights: ALLY_FIGHTS });
+    this.addLog('loot', `🤝 ${name} joins the party for the next ${ALLY_FIGHTS} fights. ${def.desc}`);
   }
 
   /**
@@ -890,9 +968,12 @@ export class Game {
     run.map = generateActMap(run.act, run.seed, ROWS);
     run.currentId = null;
     run.visited = [];
-    // The act boss leaves a relic behind.
+    // The act boss leaves a relic behind, and the act's blessings fade.
     const boss = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity === 'boss' && !run.relics.includes(id)))[0];
     if (boss) this.grantRelic(boss);
+    const faded = run.blessings.length > 0;
+    run.blessings = [];
+    this.syncPerks();
     for (const p of this.heroes()) {
       p.hp = p.maxHp;
       p.slots = p.maxSlots;
@@ -901,7 +982,7 @@ export class Game {
     this.notice = {
       glyph: def.glyph,
       title: `Act ${run.act}: ${def.name}`,
-      text: `Everyone is fully healed and every slot is restored.${boss ? ` The boss dropped the ${RELICS[boss].icon} ${RELICS[boss].name}: ${RELICS[boss].desc}` : ''} The ${MONSTERS[def.boss].name} waits at the top of the map.`,
+      text: `Everyone is fully healed and every slot is restored.${boss ? ` The boss dropped the ${RELICS[boss].icon} ${RELICS[boss].name}: ${RELICS[boss].desc}` : ''}${faded ? " The last act's blessings fade." : ''} The ${MONSTERS[def.boss].name} waits at the top of the map.`,
     };
     this.toMap();
   }
@@ -989,7 +1070,7 @@ export class Game {
       const gained = applyLevelUps(p);
       if (!gained) continue;
       names.push(p.name);
-      if (!p.offer) p.offer = makeOffer(p, rng);
+      if (!p.offer) dealOffer(p, rng, this.run?.act ?? 1);
       this.addLog('level', `⬆️ ${p.name} reaches level ${p.level}! ${gained > 1 ? `${gained} upgrades` : 'An upgrade'} to pick.`);
     }
     this.scheduleAutoPicks();
@@ -1001,13 +1082,15 @@ export class Game {
     if (!this.heroes().some((p) => p.offer && this.isAuto(p.playerId))) return;
     setTimeout(() => {
       for (const p of this.heroes()) {
-        for (let guard = 0; guard < 12 && p.offer && p.levelUps > 0 && this.isAuto(p.playerId); guard++) {
-          const res = applyPick(p, autoLevelPick(p), rng);
+        for (let guard = 0; guard < 12 && p.offer && (p.levelUps > 0 || p.elitePicks > 0) && this.isAuto(p.playerId); guard++) {
+          const icon = p.offerKind === 'elite' ? '💀' : '⬆️';
+          const res = applyPick(p, autoLevelPick(p), rng, this.run?.act ?? 1);
           if (!res.ok) {
             console.warn(`[auto pick ${p.name}] rejected: ${res.error}`);
             break;
           }
-          this.addLog('level', `⬆️ ${p.name} ${res.text}.`);
+          this.addLog('level', `${icon} ${p.name} ${res.text}.`);
+          this.autoManage(p); // gear from elite spoils
         }
       }
       this.checkpoint();
@@ -1018,9 +1101,10 @@ export class Game {
   handlePick(playerId: string, req: PickRequest) {
     const p = this.hero(playerId);
     if (!p?.offer || this.phase === 'lobby' || this.phase === 'victory' || this.phase === 'defeat') return;
-    const res = applyPick(p, { card: Number(req?.card), branch: req?.branch, forget: req?.forget }, rng);
+    const icon = p.offerKind === 'elite' ? '💀' : '⬆️';
+    const res = applyPick(p, { card: Number(req?.card), branch: req?.branch, forget: req?.forget }, rng, this.run?.act ?? 1);
     if (!res.ok) return this.whisper(playerId, res.error);
-    this.addLog('level', `⬆️ ${p.name} ${res.text}.`);
+    this.addLog('level', `${icon} ${p.name} ${res.text}.`);
     this.checkpoint();
     this.broadcast();
   }
@@ -1125,6 +1209,15 @@ export class Game {
       case 'restoreSlots':
         for (const p of heroes) p.slots = p.maxSlots;
         break;
+      case 'blessing': {
+        const open = BLESSING_IDS.filter((b) => !run.blessings.includes(b));
+        const id = effect.id && isBlessingId(effect.id) ? effect.id : open.length ? pick(open) : null;
+        if (id) this.grantBlessing(id);
+        break;
+      }
+      case 'ally':
+        this.addAlly(effect.id && isAllyId(effect.id) ? effect.id : pick(ALLY_IDS));
+        break;
     }
   }
 
@@ -1162,11 +1255,21 @@ export class Game {
     const counted = [...new Set(names)].map((n) => `${n}${names.filter((x) => x === n).length > 1 ? ` ×${names.filter((x) => x === n).length}` : ''}`);
     const icon = kind === 'boss' ? '👑' : kind === 'elite' ? '💀' : '⚔️';
     this.addLog('system', `${icon} ${name}: ${counted.join(', ')}!`);
+    for (const m of this.monsters()) {
+      if (m.traits?.length) this.addLog('info', `${m.traits.map((t) => TRAITS[t].icon).join('')} ${m.name}: ${m.traits.map((t) => `${TRAITS[t].name} (${TRAITS[t].desc})`).join(' ')}`);
+    }
+    // NPC allies take the free spots next to the heroes.
+    const free = layout.partySpawns.slice(heroes.length);
+    for (const a of this.run?.allies ?? []) {
+      const spot = free.find((p) => !this.occupied(p.x, p.y)) ?? this.freeSpotNear(heroes[0]);
+      if (spot) this.spawnAlly(a, spot);
+    }
+    if (this.allies().length) this.addLog('info', `🤝 Fighting alongside you: ${this.allies().map((a) => a.name).join(', ')}.`);
     // Each side starts out looking at the other.
     const centre = (es: Entity[]) => ({ x: es.reduce((a, e) => a + e.x, 0) / es.length, y: es.reduce((a, e) => a + e.y, 0) / es.length });
     const foes = centre(this.monsters());
     const party = centre(heroes);
-    for (const h of heroes) this.face(h, foes);
+    for (const h of [...heroes, ...this.allies()]) this.face(h, foes);
     for (const m of this.monsters()) this.face(m, party);
     this.phase = 'combat';
     if (start === 'vote') {
@@ -1176,7 +1279,7 @@ export class Game {
     } else {
       if (start === 'ambush') {
         this.addLog('crit', '⚠️ Ambush! They were waiting for you.');
-        for (const h of heroes) this.applyStatus(h, { id: 'surprised', turns: 1 });
+        for (const h of [...heroes, ...this.allies()]) this.applyStatus(h, { id: 'surprised', turns: 1 });
       } else if (kind === 'boss') {
         this.addLog('info', `The ${name} has been expecting you.`);
       }
@@ -1202,7 +1305,7 @@ export class Game {
       });
       const success = passed * 2 >= heroes.length;
       this.addLog(success ? 'crit' : 'miss', `🤫 Sneaking in (DC ${dc}): ${rolls.join(' · ')}. ${success ? 'They never saw you coming!' : "You've been spotted!"}`);
-      const caught = success ? this.monsters() : heroes;
+      const caught = success ? this.monsters() : [...heroes, ...this.allies()];
       for (const e of caught) this.applyStatus(e, { id: 'surprised', turns: 1 });
     } else {
       this.addLog('info', '⚔️ The party charges in!');
@@ -1222,15 +1325,59 @@ export class Game {
     if (d.x || d.y) e.facing = d;
   }
 
-  private spawnMonster(type: string, pos: Pos, partySize: number) {
+  private spawnMonster(type: string, pos: Pos, partySize: number): MonsterEntity {
     const def = MONSTERS[type];
     const boss = ACTS.some((a) => a.boss === type);
     const elite = !boss && (ACTS.some((a) => a.elites.includes(type)) || type === 'mimic');
     const hp = boss || elite ? scaledHp(def.hp, partySize, boss) : def.hp;
-    this.entities.push({
+    const m: MonsterEntity = {
       id: this.newId(), kind: 'monster', type, name: def.name, glyph: def.glyph, x: pos.x, y: pos.y,
       hp, maxHp: hp, ac: def.ac, speed: def.speed, boss, elite, statuses: [], dmgBy: {}, facing: { x: -1, y: 0 },
-    });
+    };
+    this.entities.push(m);
+    if (elite) this.giveTraits(m);
+    return m;
+  }
+
+  /** Elite traits (shared/elites.ts): one in act 1, one or two in act 2, two in act 3, never two auras. */
+  private giveTraits(m: MonsterEntity) {
+    const n = traitCount(this.run?.act ?? 1, rng.next());
+    const traits: TraitId[] = [];
+    for (const t of shuffle([...TRAIT_IDS])) {
+      if (traits.length >= n) break;
+      if (TRAITS[t].aura && traits.some((x) => TRAITS[x].aura)) continue;
+      traits.push(t);
+    }
+    if (!traits.length) return;
+    m.traits = traits;
+    m.name = `${TRAITS[traits[0]].name} ${m.name}`;
+    if (traits.includes('swift')) {
+      m.speed += 3;
+      m.ac += 1;
+    }
+    if (traits.includes('shielded')) m.ward = Math.round(m.maxHp * WARD_SHARE);
+  }
+
+  /** An NPC ally at full HP, grown to the act. */
+  private spawnAlly(a: AllyState, pos: Pos): MonsterEntity {
+    const type = ALLIES[a.id].monster;
+    const def = MONSTERS[type];
+    const k = allyScaling(this.run?.act ?? 1);
+    const hp = Math.round(def.hp * k.hp);
+    const e: MonsterEntity = {
+      id: this.newId(), kind: 'monster', type, name: a.name, glyph: def.glyph, x: pos.x, y: pos.y,
+      hp, maxHp: hp, ac: def.ac, speed: def.speed, boss: false, elite: false, statuses: [], dmgBy: {}, facing: { x: 1, y: 0 },
+      ally: true, atkBonus: k.atk, dmgBonus: k.dmg,
+    };
+    this.entities.push(e);
+    return e;
+  }
+
+  /** The nearest free floor tile to a spot (latecomers, NPC allies, summoned minions). */
+  private freeSpotNear(from: Pos | undefined): Pos | null {
+    if (!from) return null;
+    const path = findPath(this, from, () => false, (x, y) => !this.occupied(x, y));
+    return path?.[path.length - 1] ?? null;
   }
 
   // ------------------------------------------------------------ movement
@@ -1307,7 +1454,7 @@ export class Game {
   // ------------------------------------------------------------ turns
 
   private initBonus(e: Entity): number {
-    if (e.kind === 'monster') return MONSTERS[e.type].dex;
+    if (e.kind === 'monster') return MONSTERS[e.type].dex + (hasTrait(e, 'swift') ? 5 : 0);
     return CLASSES[e.classId].mods.dex + (passiveOf(e, 'alert')?.value ?? 0) + gearBonus(e, 'init');
   }
 
@@ -1324,7 +1471,7 @@ export class Game {
     this.phoenixUsed = false;
     this.eliteKiller = null;
     for (const p of this.heroes()) this.prepareForFight(p);
-    const fighters: Entity[] = [...this.heroes().filter((p) => !p.dead), ...this.monsters()];
+    const fighters: Entity[] = [...this.heroes().filter((p) => !p.dead), ...this.allies(), ...this.monsters()];
     const init: Record<string, number> = {};
     for (const e of fighters) init[e.id] = rollDie(20) + this.initBonus(e);
     const order = fighters.map((e) => e.id).sort((a, b) => init[b] - init[a]); // stable: players win ties
@@ -1378,6 +1525,11 @@ export class Game {
     if (this.checkEnd()) return;
     if (!this.entities.includes(e)) return this.advanceTurn(); // burned to death
     if (e.kind === 'player' && e.dead) return this.advanceTurn();
+    if (e.kind === 'monster' && e.traits?.length) {
+      this.eliteTurnStart(e);
+      if (this.checkEnd()) return;
+      if (!this.entities.includes(e)) return this.advanceTurn();
+    }
 
     if (e.kind === 'player' && e.downed) {
       this.deathSave(e);
@@ -1414,6 +1566,7 @@ export class Game {
       this.healBy(null, p, hardened.value);
     }
     if (hasBranch(p, 'tough', 'B') && p.hp < p.maxHp) this.healBy(null, p, 1);
+    if (this.hasBlessing('renewal') && p.hp < p.maxHp) this.healBy(null, p, RENEWAL_HP);
     const ward = passiveOf(p, 'arcane_ward');
     if (ward && hasBranch(p, 'arcane_ward', 'B')) p.tempHp = Math.min(ward.value, p.tempHp + 3);
   }
@@ -1454,7 +1607,7 @@ export class Game {
     for (let i = 0; i < 16 && ok(); i++) {
       const t = this.turn!;
       const intent = nextHeroIntent({
-        map: this, hero: p, heroes: this.heroes(), monsters: this.monsters(), turn: t,
+        map: this, hero: p, heroes: this.heroes(), monsters: this.monsters(), allies: this.allies(), turn: t,
         occupied: (x, y, exceptId) => this.occupied(x, y, exceptId),
       });
       if (intent.kind === 'end') break;
@@ -1518,6 +1671,10 @@ export class Game {
     const run = this.run!;
     const breather = POST_FIGHT_HEAL + (this.hasRelic('rations') ? 0.1 : 0);
     this.dispose();
+    // NPC allies have one fight fewer to go.
+    for (const a of run.allies) a.fights--;
+    for (const a of run.allies) if (a.fights <= 0) this.addLog('info', `👋 ${a.name} has fought the agreed fights and heads home. Good luck!`);
+    run.allies = run.allies.filter((a) => a.fights > 0);
     // Everyone gets back up, then the party catches its breath (a short rest).
     for (const p of this.heroes()) {
       if (p.dead || p.downed) {
@@ -1538,12 +1695,58 @@ export class Game {
     const loot = kind === 'boss' ? null : this.fightLoot(kind);
     const leveled = this.checkLevelUps();
     if (kind === 'boss') return this.finishAct();
-    this.notice = {
-      glyph: kind === 'elite' ? '💀' : '✅',
-      title: kind === 'elite' ? 'Elite defeated!' : 'Room cleared',
-      text: `+${gold} gold.${loot ? ` ${loot}` : ''}${leveled.length ? ` ⬆️ Level up: ${leveled.join(', ')}!` : ''}`,
-    };
+    const text = `+${gold} gold.${loot ? ` ${loot}` : ''}${leveled.length ? ` ⬆️ Level up: ${leveled.join(', ')}!` : ''}`;
+    if (kind === 'elite') return this.eliteSpoils(text);
+    this.notice = { glyph: '✅', title: 'Room cleared', text };
     this.toMap();
+  }
+
+  /**
+   * After an elite: every hero gets an elite-spoils pick (like a level-up: an upgrade, gear or a boon), and the party
+   * votes on a blessing for the rest of the act or an NPC ally for the next few fights.
+   */
+  private eliteSpoils(text: string) {
+    const run = this.run!;
+    for (const p of this.heroes()) {
+      p.elitePicks++;
+      if (!p.offer) dealOffer(p, rng, run.act);
+    }
+    this.scheduleAutoPicks();
+    const blessings = shuffle(BLESSING_IDS.filter((b) => !run.blessings.includes(b))).slice(0, 2);
+    this.eliteReward(text, [...blessings.map((b) => `blessing:${b}`), `ally:${pick(ALLY_IDS)}`]);
+  }
+
+  /** The party's vote after an elite. A save made during it reopens the same vote. */
+  private eliteReward(text: string, choices: string[]) {
+    const run = this.run!;
+    const choice = (c: string): EventChoiceDef | null => {
+      const [kind, id] = c.split(':');
+      if (kind === 'blessing' && isBlessingId(id)) {
+        const b = BLESSINGS[id];
+        return {
+          id: c, label: `${b.icon} ${b.name}`, hint: `${b.desc} Until the end of the act.`,
+          resolve: () => ({ text: `${text} The party takes the ${b.name}.`, effects: [{ kind: 'blessing', id }] }),
+        };
+      }
+      if (kind === 'ally' && isAllyId(id)) {
+        const a = ALLIES[id];
+        const m = MONSTERS[a.monster];
+        return {
+          id: c, label: `${m.glyph} Free their captive ${m.name}`, hint: `${a.desc} Fights with you for the next ${ALLY_FIGHTS} fights.`,
+          resolve: () => ({ text: `${text} A grateful ${m.name} joins the party.`, effects: [{ kind: 'ally', id }] }),
+        };
+      }
+      return null;
+    };
+    const options = choices.map(choice).filter((c): c is EventChoiceDef => !!c);
+    this.savePoint = { kind: 'reward', nodeId: run.currentId ?? '', choices: options.map((o) => o.id), text };
+    this.startEvent(undefined, {
+      id: 'spoils',
+      title: 'Elite defeated!',
+      glyph: '💀',
+      text: `${text} Every hero picks their spoils. Then choose together: a blessing for the rest of the act, or the captive they were holding, who fights with you for the next ${ALLY_FIGHTS} fights.`,
+      choices: options,
+    });
   }
 
   /** What a won fight leaves behind: the elite's gear goes to whoever killed it; regular fights sometimes drop a consumable. */
@@ -1604,9 +1807,10 @@ export class Game {
     };
     await sleep(400);
     if (!ok()) return;
+    const ally = !!m.ally;
 
-    if (def.breath && this.turn && this.turn.round % 3 === 0) {
-      const victims = this.heroes().filter((p) => this.standing(p) && dist(p, m) <= 3 && hasLOS(this, m, p));
+    if (def.breath && !ally && this.turn && this.turn.round % 3 === 0) {
+      const victims = this.entities.filter((e) => !isFoe(e) && this.up(e) && dist(e, m) <= 3 && hasLOS(this, m, e));
       if (victims.length) {
         this.breathWeapon(m, victims);
         this.broadcast();
@@ -1617,14 +1821,27 @@ export class Game {
       }
     }
 
+    if (hasTrait(m, 'summoner')) this.summon(m);
+    // A healing ally patches up whoever needs it most instead of attacking.
+    if (ally && ALLIES_BY_MONSTER[m.type]?.heals && this.allyHeal(m)) {
+      this.broadcast();
+      await sleep(450);
+      if (ok()) this.advanceTurn();
+      return;
+    }
+
     const canHit = (from: Pos, t: Pos) => dist(from, t) <= def.range && (def.range === 1 || hasLOS(this, from, t));
+    // Its enemies: the party (heroes and NPC allies) for a monster, the monsters for an ally.
+    const enemies: Entity[] = ally ? this.monsters() : this.entities.filter((e) => !isFoe(e) && this.up(e));
     // Taunted monsters go for whoever taunted them.
     const taunt = m.statuses.find((s) => s.id === 'taunted');
-    const taunter = this.heroes().find((p) => p.id === taunt?.by && this.standing(p));
+    const taunter = enemies.find((e) => e.id === taunt?.by);
     // Hidden heroes are ignored while anyone else is in the open.
-    const standing = this.heroes().filter((p) => this.standing(p));
-    const visible = standing.filter((p) => !hasStatus(p, 'hidden'));
-    const target = taunter ?? (visible.length ? visible : standing).sort((a, b) => dist(a, m) - dist(b, m) || a.hp - b.hp)[0];
+    const visible = enemies.filter((e) => !hasStatus(e, 'hidden'));
+    const pool = visible.length ? visible : enemies;
+    // A hunting ally (the War Hound) goes for the archers and casters first.
+    const shooters = ally && ALLIES_BY_MONSTER[m.type]?.hunts ? pool.filter((e) => e.kind === 'monster' && MONSTERS[e.type].range > 1) : [];
+    const target = taunter ?? (shooters.length ? shooters : pool).sort((a, b) => dist(a, m) - dist(b, m) || a.hp - b.hp)[0];
     if (!target) return this.advanceTurn();
 
     if (!canHit(m, target)) {
@@ -1635,11 +1852,11 @@ export class Game {
       const safe = safePath(this, m, blocked, goal, m);
       const path =
         (safe && (!direct || safe.length <= direct.length + 3) ? safe : direct) ??
-        findPath(this, m, (x, y) => this.heroes().some((p) => !p.dead && p.x === x && p.y === y), goal) ??
+        findPath(this, m, (x, y) => this.entities.some((e) => !sameSide(e, m) && e.x === x && e.y === y && !(e.kind === 'player' && e.dead)), goal) ??
         [];
       for (const step of path.slice(0, this.turn?.movesLeft ?? m.speed)) {
         if (this.occupied(step.x, step.y, m.id)) break;
-        const stopped = this.provokeSentinels(m, step);
+        const stopped = !ally && this.provokeSentinels(m, step);
         if (!this.entities.includes(m)) return diedMidTurn();
         if (stopped) break;
         this.face(m, step);
@@ -1657,11 +1874,12 @@ export class Game {
       if (SKIP_TURN.some((id) => hasStatus(m, id))) return this.advanceTurn(); // stunned or frozen on the way
     }
 
-    for (let i = 0; i < def.attacks; i++) {
+    const attacks = def.attacks + (hasTrait(m, 'enraged') && m.hp < m.maxHp / 2 ? 1 : 0);
+    for (let i = 0; i < attacks; i++) {
       const victim =
-        this.standing(target) && canHit(m, target) && !(taunter && target !== taunter)
+        this.up(target) && canHit(m, target) && !(taunter && target !== taunter)
           ? target
-          : (visible.find((p) => this.standing(p) && canHit(m, p)) ?? this.heroes().find((p) => this.standing(p) && canHit(m, p)));
+          : (visible.find((e) => this.up(e) && canHit(m, e)) ?? enemies.find((e) => this.up(e) && canHit(m, e)));
       if (!victim) break;
       this.monsterAttack(m, victim);
       this.broadcast();
@@ -1673,24 +1891,42 @@ export class Game {
     this.advanceTurn();
   }
 
-  /** One monster attack, with the heroes' defensive tricks: Bodyguard steps in, Riposte strikes back. */
-  private monsterAttack(m: MonsterEntity, victim: PlayerEntity) {
+  /**
+   * One monster (or NPC ally) attack, with the heroes' defensive tricks: Bodyguard steps in, Riposte strikes back.
+   * Elite traits: an aura sets the element, Enraged hits harder, Vampiric drinks half of it.
+   */
+  private monsterAttack(m: MonsterEntity, victim: Entity) {
     const def = MONSTERS[m.type];
     let target = victim;
-    const guard = this.heroes().find(
-      (h) => h !== victim && this.standing(h) && !hasStatus(h, 'surprised') && hasBranch(h, 'sentinel', 'A') && dist(h, victim) <= 1 && !h.used.includes('round:bodyguard'),
-    );
+    const guard = isFoe(m)
+      ? this.heroes().find(
+          (h) => h !== victim && this.standing(h) && !hasStatus(h, 'surprised') && hasBranch(h, 'sentinel', 'A') && dist(h, victim) <= 1 && !h.used.includes('round:bodyguard'),
+        )
+      : undefined;
     if (guard) {
       guard.used.push('round:bodyguard');
       this.addLog('info', `🛡️ ${guard.name} throws themself in front of ${victim.name}!`);
       target = guard;
     }
     const at = { x: target.x, y: target.y };
-    const hit = this.attackRoll(m, target, { bonus: def.atk, dmg: def.dmg, verb: def.verb, element: def.element ?? 'physical' });
+    const element = auraOf(m) ?? def.element ?? 'physical';
+    const enraged = hasTrait(m, 'enraged') && m.hp < m.maxHp / 2;
+    const before = target.hp;
+    const hit = this.attackRoll(m, target, {
+      bonus: def.atk + (m.atkBonus ?? 0), dmg: def.dmg, extra: (m.dmgBonus ?? 0) + (enraged ? ENRAGED_DMG : 0), verb: def.verb, element,
+    });
+    if (hit && hasTrait(m, 'vampiric') && this.entities.includes(m)) {
+      const drained = Math.min(Math.ceil(Math.max(0, before - target.hp) / 2), m.maxHp - m.hp);
+      if (drained > 0) {
+        m.hp += drained;
+        this.addLog('heal', `🩸 ${m.name} drinks ${drained} HP from the wound.`);
+        this.float(m, `+${drained}`, '#c0392b');
+      }
+    }
     // Fire, cold and lightning attacks react with whatever the target stands in (a firebomb on oil...).
-    const el = fieldElement(def.element);
+    const el = fieldElement(element);
     if (el) this.runField([{ kind: 'touch', tiles: [at.y * this.width + at.x], element: el }], m);
-    if (!hit && hasStatus(target, 'riposte') && !hasStatus(target, 'surprised') && this.standing(target) && dist(m, target) <= 1 && this.entities.includes(m)) {
+    if (!hit && target.kind === 'player' && hasStatus(target, 'riposte') && !hasStatus(target, 'surprised') && this.standing(target) && dist(m, target) <= 1 && this.entities.includes(m)) {
       this.addLog('info', `🤺 ${target.name} ripostes!`);
       this.freeStrike(target, m, 'Riposte');
     }
@@ -1714,13 +1950,69 @@ export class Game {
     return false;
   }
 
-  private breathWeapon(m: MonsterEntity, victims: PlayerEntity[]) {
+  /**
+   * Elite traits at the start of its turn: the Shielded ward re-forms every 3rd round, and an aura hurts everyone on
+   * the party's side next to it (and touches the ground around it: a Burning elite lights the oil it stands near).
+   */
+  private eliteTurnStart(m: MonsterEntity) {
+    const round = this.turn?.round ?? 1;
+    if (hasTrait(m, 'shielded') && round % WARD_EVERY === 0) {
+      const full = Math.round(m.maxHp * WARD_SHARE);
+      if ((m.ward ?? 0) < full) {
+        m.ward = full;
+        this.addLog('info', `🔰 ${m.name}'s ward re-forms (${full}).`);
+        this.float(m, `🔰 ${full}`, '#8fd8ff');
+      }
+    }
+    const aura = auraOf(m);
+    if (!aura) return;
+    const icon = m.traits?.map((t) => TRAITS[t]).find((t) => t.aura)?.icon ?? '';
+    for (const e of this.entities.filter((x) => !isFoe(x) && this.up(x) && dist(x, m) <= 1)) {
+      if (!this.up(e)) continue;
+      const dmg = rollDice(AURA_DICE);
+      this.addLog('hit', `${icon} ${e.name} is caught in ${m.name}'s aura: ${dmg} ${aura}.`);
+      this.damage(e, dmg, m, aura, true);
+    }
+    const touch = fieldElement(aura);
+    if (touch && this.entities.includes(m)) this.runField([{ kind: 'touch', tiles: tilesAround(this, m, 1), element: touch }], m);
+  }
+
+  /** Summoner: every other round the elite calls in one of its escorts (3 at most, never past a full room). */
+  private summon(m: MonsterEntity) {
+    const round = this.turn?.round ?? 1;
+    if (round % SUMMON_EVERY !== 0 || (m.summons ?? 0) >= MAX_SUMMONS || this.monsters().length >= MAX_ROOM_MONSTERS) return;
+    const act = ACTS[(this.run?.act ?? 1) - 1];
+    const spot = this.freeSpotNear(m);
+    if (!spot) return;
+    m.summons = (m.summons ?? 0) + 1;
+    const minion = this.spawnMonster(pick(act.escorts[m.type] ?? act.pool), spot, this.heroes().length);
+    this.face(minion, this.heroes().find((h) => this.standing(h)) ?? m);
+    this.addLog('info', `📯 ${m.name} calls for help!`);
+    this.float(minion, '📯', '#ffd84d');
+    this.joinInitiative(minion);
+    this.standIn(minion, 'appear');
+  }
+
+  /** A healing ally (the Acolyte) patches up the most hurt hero in range, a downed one first. Returns true if it did. */
+  private allyHeal(m: MonsterEntity): boolean {
+    const range = MONSTERS[m.type].range;
+    const hurt = this.heroes()
+      .filter((h) => !h.dead && dist(h, m) <= range && (h.downed || h.hp < h.maxHp * 0.75))
+      .sort((a, b) => Number(b.downed) - Number(a.downed) || a.hp / a.maxHp - b.hp / b.maxHp)[0];
+    if (!hurt) return false;
+    this.shot(m, hurt, '#7ddc6f');
+    const healed = this.healBy(null, hurt, rollDice(ALLY_HEAL) + 2 + (this.run?.act ?? 1));
+    this.addLog('heal', `${m.glyph} ${m.name} heals ${hurt.name}: +${healed} HP.`);
+    return true;
+  }
+
+  private breathWeapon(m: MonsterEntity, victims: Entity[]) {
     this.addLog('crit', `🔥 ${m.name} unleashes a torrent of fire!`);
     for (const p of victims) {
-      const { total: save, text } = this.heroSave(p, 'dex');
+      const { total: save, text } = this.creatureSave(p, 'dex');
       const saved = save >= BREATH_DC;
       let dmg = rollDice({ n: 3, d: 6 });
-      const evasion = hasBranch(p, 'opportunist', 'B');
+      const evasion = p.kind === 'player' && hasBranch(p, 'opportunist', 'B');
       if (saved) dmg = evasion ? 0 : Math.floor(dmg / 2);
       else if (evasion) dmg = Math.floor(dmg / 2);
       this.shot(m, p, '#ff7b2e');
@@ -1728,6 +2020,14 @@ export class Game {
       if (dmg > 0) this.damage(p, dmg, m, 'fire', true);
     }
     this.runField([{ kind: 'touch', tiles: victims.map((p) => p.y * this.width + p.x), element: 'fire' }], m);
+  }
+
+  /** Any creature's saving throw: heroes add their passives and gear, monsters and NPC allies use their stat block. */
+  private creatureSave(e: Entity, stat: 'dex' | 'str' | 'wis'): { total: number; text: string } {
+    if (e.kind === 'player') return this.heroSave(e, stat);
+    const d20 = rollDie(20);
+    const bonus = MONSTERS[e.type][stat];
+    return { total: d20 + bonus, text: `🎲${d20}${fmtMod(bonus)}=${d20 + bonus}` };
   }
 
   /** A hero's saving throw: d20 + stat + Steady + Bless; Fortune rerolls a natural 1. */
@@ -1836,7 +2136,7 @@ export class Game {
       if (s.push && s.roll !== 'contest') this.push(f, s.target === 'area' && (f.x !== res.center.x || f.y !== res.center.y) ? res.center : p, s.push);
     };
     for (const f of res.foes) strikeOne(f);
-    const caught = (res.caught ?? []).filter((h) => this.standing(h));
+    const caught = (res.caught ?? []).filter((h) => this.up(h));
     if (caught.length) {
       const who = caught.map((h) => (h === p ? `${p.name} themself` : h.name)).join(', ');
       this.addLog('miss', `⚠️ Friendly fire! ${who} ${caught.length > 1 ? 'are' : 'is'} caught in the ${name}.`);
@@ -1909,16 +2209,7 @@ export class Game {
   /** A saving-throw skill against one creature (a hero, if caught in friendly fire). Returns true if it failed the save. */
   private saveHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string): boolean {
     const save = s.save ?? 'dex';
-    let total: number;
-    let rolled: string;
-    if (f.kind === 'monster') {
-      const bonus = MONSTERS[f.type][save];
-      const d20 = rollDie(20);
-      total = d20 + bonus;
-      rolled = `🎲${d20}${fmtMod(bonus)}=${total}`;
-    } else {
-      ({ total, text: rolled } = this.heroSave(f, save));
-    }
+    const { total, text: rolled } = this.creatureSave(f, save);
     const dc = heroDc(p);
     const saved = total >= dc;
     this.shot(p, f, color);
@@ -2152,7 +2443,7 @@ export class Game {
     let total = rollDice(o.dmg, crit) + (o.extra ?? 0) + this.bonusDamage(a, t, o.element);
     const notes: string[] = [];
     if (hero && o.sneak && !hero.used.includes('turn:sneak')) {
-      const flanked = this.heroes().some((h) => h !== hero && this.standing(h) && dist(h, t) <= 1);
+      const flanked = this.entities.some((e) => e !== hero && !isFoe(e) && this.up(e) && dist(e, t) <= 1);
       if (flanked || adv) {
         const sneak = rollDice({ n: sneakDice(hero.level), d: 6 }, crit);
         total += sneak;
@@ -2251,15 +2542,30 @@ export class Game {
         this.addLog('info', `🪨 ${t.name} refuses to fall!`);
       }
     }
+    if (t.kind === 'monster' && (t.ward ?? 0) > 0 && amount > 0) {
+      // Shielded: the ward takes it first.
+      const soaked = Math.min(t.ward ?? 0, amount);
+      t.ward = (t.ward ?? 0) - soaked;
+      amount -= soaked;
+      this.float(t, `🔰${soaked}`, '#8fd8ff');
+      if (!t.ward) this.addLog('info', `🔰 ${t.name}'s ward shatters!`);
+    }
     if (amount <= 0) return;
     if (t.kind === 'monster' && by?.kind === 'player') t.dmgBy[by.id] = (t.dmgBy[by.id] ?? 0) + Math.min(amount, t.hp);
+    const bloodied = t.hp < t.maxHp / 2;
     t.hp = Math.max(0, t.hp - amount);
-    this.float(t, `-${amount}`, t.kind === 'player' ? '#ff6b6b' : '#ffd84d');
+    this.float(t, `-${amount}`, t.kind === 'player' || isAllyNpc(t) ? '#ff6b6b' : '#ffd84d');
     if (t.hp > 0) {
+      if (!bloodied && t.hp < t.maxHp / 2 && hasTrait(t, 'enraged')) {
+        this.addLog('crit', `😡 ${t.name} flies into a rage!`);
+        this.float(t, '😡 ENRAGED', '#ff6b6b');
+      }
       this.elementHit(t, element, by);
       return;
     }
-    if (t.kind === 'monster') {
+    if (isAllyNpc(t)) {
+      this.allyFalls(t, by);
+    } else if (t.kind === 'monster') {
       this.monsterDies(t, by);
     } else if (!t.downed && !t.dead) {
       t.downed = true;
@@ -2361,15 +2667,7 @@ export class Game {
         this.applyStatus(e, { id: 'wet', turns: FIELD_STATUS_TURNS }, source(g.by));
         if (g.shock) zap(g.by);
       } else if (g.id === 'ice' && mode === 'step') {
-        let total: number;
-        let text: string;
-        if (e.kind === 'player') ({ total, text } = this.heroSave(e, 'dex'));
-        else {
-          const d20 = rollDie(20);
-          const bonus = MONSTERS[e.type].dex;
-          total = d20 + bonus;
-          text = `🎲${d20}${fmtMod(bonus)}=${total}`;
-        }
+        const { total, text } = this.creatureSave(e, 'dex');
         if (total < ICE_DC) {
           this.addLog('miss', `🧊 ${e.name} slips on the ice (DEX ${text} vs DC ${ICE_DC}) and loses the rest of the move.`);
           this.float(e, 'slipped!', '#cdefff');
@@ -2411,7 +2709,7 @@ export class Game {
         this.addLog('death', `💀 ${t.name} is slain by ${killer.name}!`);
       }
     } else {
-      this.addLog('death', `💀 ${t.name} is slain!`);
+      this.addLog('death', `💀 ${t.name} is slain${isAllyNpc(by) ? ` by ${by.name}` : ''}!`);
     }
     const alive = this.heroes().filter((h) => !h.dead);
     const shares = killShares(MONSTERS[t.type].xp, killer?.id ?? null, t.dmgBy, alive.map((h) => h.id));
@@ -2431,6 +2729,14 @@ export class Game {
       if (this.deferredBursts) this.deferredBursts.push({ ops, by: killer ?? undefined });
       else this.runField(ops, killer ?? undefined);
     }
+  }
+
+  /** An NPC ally at 0 HP leaves the party for good. Like a monster, its own turn notices and moves on. */
+  private allyFalls(t: MonsterEntity, by?: Entity) {
+    this.entities = this.entities.filter((e) => e !== t);
+    this.removeFromOrder(t.id);
+    if (this.run) this.run.allies = this.run.allies.filter((a) => a.name !== t.name);
+    this.addLog('death', `💔 ${t.name} falls${by && by !== t ? ` to ${by.name}` : ''}, and won't be fighting with the party again.`);
   }
 
   private onKill(p: PlayerEntity) {
@@ -2768,8 +3074,19 @@ export class Game {
     return this.entities.filter((e): e is PlayerEntity => e.kind === 'player');
   }
 
+  /** The monsters fighting the party (not the NPC allies). */
   private monsters(): MonsterEntity[] {
-    return this.entities.filter((e): e is MonsterEntity => e.kind === 'monster');
+    return this.entities.filter((e): e is MonsterEntity => isFoe(e));
+  }
+
+  /** NPC allies in this fight. */
+  private allies(): MonsterEntity[] {
+    return this.entities.filter((e): e is MonsterEntity => isAllyNpc(e));
+  }
+
+  /** Still in the fight: a monster or NPC ally that's alive, or a hero who isn't down. */
+  private up(e: Entity): boolean {
+    return this.entities.includes(e) && (e.kind !== 'player' || this.standing(e));
   }
 
   private hero(playerId: string): PlayerEntity | undefined {

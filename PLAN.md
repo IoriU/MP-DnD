@@ -113,7 +113,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 4 | Positioning & surprise | 🟢 |
 | 5 | Elements & surfaces (DOS2-style) | 🟢 |
 | 6 | Items, relics, shop & treasure | 🟢 |
-| 7 | Elites, blessings & NPC allies | ⚪ |
+| 7 | Elites, blessings & NPC allies | 🟢 |
 | 8 | Real art *(independent; can be done anytime)* | ⚪ |
 | 9 | Smarter enemy AI + difficulty | ⚪ |
 | 10 | AI Dungeon Master (local LLM) | ⚪ |
@@ -461,14 +461,29 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 7: Elites, blessings & NPC allies ⚪
+## Phase 7: Elites, blessings & NPC allies 🟢
 
 **Tasks**
-- [ ] Elite traits: Shielded, Vampiric, Enraged, Swift, Summoner, elemental auras like Burning or Frost (one or two per elite)
-- [ ] Elite reward: an elite-pool pick for each hero, plus a party vote: **blessing** or **NPC ally**
-- [ ] Blessings: party-wide buffs that last for the act
-- [ ] NPC ally: computer-controlled companion for the next N fights (e.g. a rescued mercenary, a cleric acolyte), using the monster AI on the hero side
-- [ ] Shrine events can also grant blessings
+- [x] Elite traits (`shared/elites.ts`): 🔰 Shielded (a ward soaks a quarter of its HP, back every 3rd round), 🩸 Vampiric (heals half the damage it deals), 😡 Enraged (below half HP: one more attack, +2 damage), 💨 Swift (+3 movement, +5 initiative, +1 AC), 📯 Summoner (an escort every other round, 3 at most) and the auras 🔥 Burning, ❄️ Frost, ⚡ Storm (attacks deal the element, 1d6 to everyone next to it at the start of its turn, the ground around it reacts, immune to the element). One trait in act 1, one or two in act 2, two in act 3, never two auras; the first trait names it ("Burning Hobgoblin Captain").
+- [x] Elite reward: the killer still takes its gear; every hero gets an **elite-spoils pick** (the level-up flow with a different pool: a free upgrade to a skill you own, a piece of the act's elite gear, a boon), and the party votes on two blessings or a companion ("free their captive")
+- [x] Blessings: 8 party-wide buffs until the end of the act (Valor, Bulwark, Vigor, Arcana, Haste, Fortune, Warding, Renewal); stat blessings ride on the same stat blocks as gear and relics
+- [x] NPC allies: 💂 Sellsword, 😇 Acolyte (heals the most hurt hero in range, a downed one first), 🧝 Ranger, 🐕 War Hound. They are monsters with `ally` set, run by the monster AI with the sides swapped, fight for the next 3 fights at full HP, grow with the act, two at most. Friendly fire hits them, and one that falls is gone for good. Flanking, facing and Sneak Attack treat them as party members; monsters target them like heroes.
+- [x] Shrine events grant blessings: the Forgotten Shrine's prayer, and a new event *The Twin Statues* (pay for a blessing of battle or of the mind). Another new event, *The Caged Mercenary*, gives a Sellsword ally.
+
+**Result (2026-10-19):** ✅ Every task above works in play and in bot runs.
+- **Bot runs** (14 full-length runs of 4 heroes, 14 of 2, 4 solo, plus 6 short ones): 0 stalls, 0 errors, 0 rejected bot actions. In 6 full 4-hero runs: 37 traits rolled on elites (every one of the 8 seen), 18 wards broken, 7 minions summoned, 8 aura hits, 88 elite-spoils picks, 16 blessings, 14 companions (33 hits, 14 kills, 4 fell, 7 went home after their 3 fights).
+- **Tests:** 272 in total (34 new for traits, sides, blessings, allies, elite spoils and the reward vote). They found that the War Hound didn't actually hunt archers as its text said (fixed), and made two element tests flaky because test elites now roll random traits (fixed in the test helper).
+- **Browser check:** allies' green rings, tooltips (fights left, description) and "is on your side" when you aim at one; elite trait icons, tooltips and the ward strip on the HP bar; the blessing and ally rows in the HUD; "(ally's turn)" in the turn bar; the whole elite flow (the vote, the spoils panel, a gear card into the bag, disabled while the bag is full, the ally in the next fight); a 375 px wide window. Not seen live, only read in code: an ally caught in a friendly-fire preview.
+
+**Notes**
+- Rules decided along the way:
+  - NPC allies are `kind: 'monster'` entities with `ally: true`, so they reuse monster stat blocks, saves, resistances and the monster AI. "Enemy" now means `isFoe()` everywhere (targeting, flanking, facing, the hero AI); `monsters()` on the server returns foes only.
+  - Allies can't be healed or buffed by heroes yet (heal skills target heroes only), and the hero AI only prices friendly fire on them, not hazards under them.
+  - A save made during the post-elite vote reopens that vote instead of replaying the fight (new save point kind `reward`).
+  - The Acolyte heals anyone under 75% HP: at 60% it never got to, because auto heroes drink a potion first.
+  - When an elite also levels a hero up, the level-up card comes first and the spoils right after.
+- Fixed on the way: loading a save gave every hero the Dragon Heart's (or any max-HP relic's) HP again, because the hero sheet was rebuilt before the party's relics were put back on it.
+- **Balance, parked for Phase 13:** trait numbers, ally stats and growth, how often the reward vote should offer a companion, and whether blessings stack too well with relics are all first guesses.
 
 ---
 

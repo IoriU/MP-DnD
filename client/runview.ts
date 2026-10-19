@@ -5,7 +5,7 @@ import './runview.css';
 import { CLASSES, NODE_INFO, REST_HEAL, stealthBonus } from '../shared/rules.ts';
 import { SKILLS, TIER_LABEL, describeSkill, ownedSkill, skillTitle, statsAt, trainOptions, type SkillId } from '../shared/skills.ts';
 import type { ActMap, EventView, GameState, MapNode, Notice, PlayerEntity, RestPick, RestState, RunInfo, VoteState } from '../shared/types.ts';
-import { relicsHtml } from './inventory.ts';
+import { blessingsHtml, relicsHtml } from './inventory.ts';
 import { send } from './net.ts';
 import { isAuto, me, store } from './store.ts';
 import { $, esc } from './util.ts';
@@ -331,7 +331,7 @@ function mapHtml(s: GameState, run: RunInfo, vote: VoteState | null, notice: Not
           ${statusHtml(vote, 'Vote for the next room')}${progressHtml(s, vote)}
           <span class="rv-stats">${timerHtml(vote)}<span class="rv-pill gold" title="Party gold">💰 ${run.gold}</span></span>
         </div>
-        ${run.relics.length ? `<div class="rv-relics" title="The party's relics">${relicsHtml(run.relics)}</div>` : ''}
+        ${run.relics.length || run.blessings.length ? `<div class="rv-relics" title="The party's relics and blessings">${relicsHtml(run.relics)}${blessingsHtml(run.blessings)}</div>` : ''}
       </header>
       ${notice ? noticeHtml(notice) : ''}
     </div>

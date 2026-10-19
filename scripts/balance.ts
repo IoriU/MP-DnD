@@ -39,8 +39,18 @@ const FIELD_RES: [string, RegExp][] = [
 // Items (Phase 6): the shop, loot and relics, counted from their log lines.
 const ITEM_RES: [string, RegExp][] = [
   ['bought', /^🛒 .* buys /], ['sold', /^🛒 .* sells /], ['lessons', /pays \d+ gold for a lesson/], ['forgot', /gold to forget/],
-  ['relics', /The party gains the /], ['equipped', / equips the /], ['given', /^🤝 /], ['elite gear', /\(killing blow\)|picks up the /],
+  ['relics', /The party gains the /], ['equipped', / equips the /], ['given', /^🤝 .* gives /], ['elite gear', /\(killing blow\)|picks up the /],
   ['drops', / finds a /], ['bag full', /Every bag is full/], ['phoenix', /Phoenix Feather flares/], ['weapon procs', /^\S+ The .* adds \d+ /],
+];
+// Elites, blessings and NPC allies (Phase 7), counted from their log lines.
+const ELITE_RES: [string, RegExp][] = [
+  ['shielded', /: .*Shielded \(/], ['vampiric', /: .*Vampiric \(/], ['enraged', /: .*Enraged \(/], ['swift', /: .*Swift \(/],
+  ['summoner', /: .*Summoner \(/], ['burning', /: .*Burning \(/], ['frost', /: .*Frost \(/], ['storm', /: .*Storm \(/],
+  ['ward breaks', /ward shatters/], ['ward re-forms', /ward re-forms/], ['aura hits', /'s aura: \d+/], ['drains', /drinks \d+ HP from the wound/],
+  ['rages', /flies into a rage/], ['summons', /calls for help/],
+  ['elite picks', /^💀 [^!]+ (takes the|upgrades|masters|learns|gains|stocks up|gets better)/], ['blessings', /receives the Blessing/],
+  ['allies joined', /joins the party for the next/], ['ally hits', / the (Sellsword|Acolyte|Ranger|War Hound) (cuts|smites|shoots|bites) .+(hit|CRITICAL HIT) for/],
+  ['acolytes', /the Acolyte joins the party/], ['ally heals', /^😇 .+ heals /], ['ally kills', /is slain by .+ the /], ['ally falls', /^💔 /], ['ally leaves', /heads home/],
 ];
 const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")
@@ -77,6 +87,7 @@ export interface RunResult {
   field: Record<string, number>; // FIELD_RES counts
   combosByAct: Record<number, number>; // field reactions set off by a hero's skill, per act
   items: Record<string, number>; // ITEM_RES counts
+  elites: Record<string, number>; // ELITE_RES counts
   goldAtEnd: number;
   relicsAtEnd: string[];
   gearAtEnd: string[]; // "Pip: Flametongue, Chain Shirt"
@@ -110,6 +121,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     field: {},
     combosByAct: {},
     items: {},
+    elites: {},
     goldAtEnd: 0,
     relicsAtEnd: [],
     gearAtEnd: [],
@@ -175,6 +187,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       if (/→\d+ \([^)]*from behind/.test(l.text)) t.behind++;
       for (const [name, re] of FIELD_RES) if (re.test(l.text)) r.field[name] = (r.field[name] ?? 0) + 1;
       for (const [name, re] of ITEM_RES) if (re.test(l.text)) r.items[name] = (r.items[name] ?? 0) + 1;
+      for (const [name, re] of ELITE_RES) if (re.test(l.text)) r.elites[name] = (r.elites[name] ?? 0) + 1;
       if (/^🛒 A merchant spreads/.test(l.text)) r.shops++;
       // A reaction right after a hero's skill line is a combo the heroes set off (not a monster's firebomb).
       if (REACTION_RE.test(l.text) && heroActed && s.run) r.combosByAct[s.run.act] = (r.combosByAct[s.run.act] ?? 0) + 1;
@@ -372,6 +385,9 @@ skills used (${uses.size} different):`);
   for (const r of results) for (const [k, v] of Object.entries(r.items)) items.set(k, (items.get(k) ?? 0) + v);
   console.log(`items: shops visited ${results.reduce((n, r) => n + r.shops, 0)} · ${ITEM_RES.map(([k]) => `${k} ${items.get(k) ?? 0}`).join(' · ')}`);
   console.log(`gold left at the end: avg ${avg(results.map((r) => r.goldAtEnd)).toFixed(0)}`);
+  const elites = new Map<string, number>();
+  for (const r of results) for (const [k, v] of Object.entries(r.elites)) elites.set(k, (elites.get(k) ?? 0) + v);
+  console.log(`elites: ${ELITE_RES.map(([k]) => `${k} ${elites.get(k) ?? 0}`).join(' · ')}`);
   const last = results.filter((r) => r.heroes.length).at(-1);
   if (last) {
     console.log(`builds at the end of run ${last.code}:`);

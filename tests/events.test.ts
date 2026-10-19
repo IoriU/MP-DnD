@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import { EVENTS, getEvent, pickEvent } from '../server/events.ts';
 import type { CheckResult, EventChoiceDef, EventCtx, EventDef, EventEffect, EventOutcome, EventStat } from '../server/events.ts';
 import { makeRng } from '../server/rng.ts';
-import { isItemId, isRelicId } from '../shared/items.ts';
+import { isBlessingId, isItemId, isRelicId } from '../shared/items.ts';
+import { isAllyId } from '../shared/elites.ts';
 import { MONSTERS } from '../shared/rules.ts';
 
 const SEEDS = 40;
@@ -158,6 +159,12 @@ test('every choice resolves to text and valid effects', () => {
         case 'relic':
           assert.ok(isRelicId(e.id), `unknown relic ${e.id}`);
           break;
+        case 'blessing':
+          assert.ok(e.id === undefined || isBlessingId(e.id), `unknown blessing ${e.id}`);
+          break;
+        case 'ally':
+          assert.ok(e.id === undefined || isAllyId(e.id), `unknown ally ${e.id}`);
+          break;
         case 'item':
           assert.ok(e.id === undefined || isItemId(e.id), `unknown item ${e.id}`);
           assert.ok(e.rarity === undefined || ['common', 'uncommon', 'rare', 'legendary'].includes(e.rarity), `rarity ${e.rarity}`);
@@ -205,7 +212,7 @@ test('the five spec events behave as described', () => {
       if (!ok) assert.deepEqual(effect(r.out, 'damage'), { kind: 'damage', dice: { n: 1, d: 6 }, who: 'checker' });
     }
     // Forgotten Shrine
-    for (const r of ofChoice('shrine', 'pray', act)) assert.deepEqual(r.out.effects, [{ kind: 'heal', pct: 0.25 }]);
+    for (const r of ofChoice('shrine', 'pray', act)) assert.deepEqual(r.out.effects, [{ kind: 'blessing' }, { kind: 'heal', pct: 0.1 }]);
     for (const r of ofChoice('shrine', 'desecrate', act)) {
       assert.equal(kinds(r.out), 'gold,damage');
       assert.equal(effect(r.out, 'damage')!.who, 'all');

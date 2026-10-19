@@ -40,7 +40,7 @@ function hero(classId: ClassId, x: number, y: number, extra: Partial<PlayerEntit
   return {
     id: `h${++ids}`, kind: 'player', playerId: `p${ids}`, classId, name: classId, glyph: '', color: '#fff', x, y,
     hp, maxHp: hp, ac: CLASSES[classId].ac, speed: 6, statuses: [], facing: { x: 1, y: 0 }, level: 1, xp: 0, skills: startingSkills(classId),
-    levelUps: 0, offer: null, bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0, potions: 2, gear: {}, bag: [], relics: [], kills: 0, steals: 0,
+    levelUps: 0, offer: null, bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0, potions: 2, gear: {}, bag: [], relics: [], blessings: [], elitePicks: 0, kills: 0, steals: 0,
     slots: maxSlotsFor(classId, 1), maxSlots: maxSlotsFor(classId, 1), downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [],
     ...extra,
   };

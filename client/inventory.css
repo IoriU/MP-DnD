@@ -72,8 +72,9 @@
 .btn.danger { background: #4a1a14; border-color: var(--bad); color: #ffb3a6; }
 .btn.danger:hover:not(:disabled) { background: #6a241b; }
 
-/* Relics: the HUD row and the run header. */
-#relics { display: grid; gap: 2px; }
+/* Relics, blessings and allies: the HUD rows (#relics) and the run header. */
+#relics { display: grid; gap: 8px; }
+.rel-block { display: grid; gap: 2px; }
 .relics, .rv-relics { display: flex; flex-wrap: wrap; gap: 4px; }
 .rv-relics { margin-top: 2px; }
 .relic {
@@ -89,7 +90,28 @@
 }
 .relic.rare { border-color: #3d6aa8; }
 .relic.boss { border-color: var(--accent); background: #2a210f; box-shadow: 0 0 6px #e8b04a44; }
-.relic:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+.relic:focus-visible, .ally-chip:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+/* A blessing lasts only until the end of the act: same chip as a relic, with a cool teal edge. */
+.relic.blessing { border-color: #3d8f86; background: #11262a; box-shadow: 0 0 6px #4fd1c444; }
+
+/* NPC allies: one green pill per ally. */
+.allies { display: grid; gap: 4px; }
+.ally-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 10px 3px 6px;
+  font-size: 12px;
+  background: #14261a;
+  border: 1px solid #2f6b3b;
+  border-radius: 99px;
+  cursor: help;
+}
+.ally-glyph { flex: none; font-size: 16px; line-height: 1; }
+.ally-chip b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ally-meta { flex: none; font-size: 11px; color: var(--muted); }
+.ally-meta em { font-style: normal; font-weight: 700; color: var(--good); }
 
 /* Worn gear on a party card. */
 .pc-gear { display: inline-flex; gap: 2px; }

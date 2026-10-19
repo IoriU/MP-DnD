@@ -1,7 +1,8 @@
 // Types shared by the server (rules + state) and the browser client (rendering).
 
 import type { SkillId, StatusId } from './skills.ts';
-import type { ItemId, RelicId, Slot } from './items.ts';
+import type { BlessingId, ItemId, RelicId, Slot } from './items.ts';
+import type { AllyId, TraitId } from './elites.ts';
 import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
 
 export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric';
@@ -47,7 +48,8 @@ export interface OwnedSkill {
 export type OfferCard =
   | { kind: 'learn'; skill: SkillId }
   | { kind: 'upgrade'; skill: SkillId; tier: 2 | 3 } // tier 3: the player also picks branch A or B
-  | { kind: 'boon'; boon: BoonId };
+  | { kind: 'boon'; boon: BoonId }
+  | { kind: 'gear'; item: ItemId }; // elite spoils: a piece of equipment for your bag
 
 export type BoonId = 'hp' | 'ac' | 'potions' | 'slot';
 
@@ -63,7 +65,9 @@ export interface PlayerEntity extends EntityBase {
   xp: number; // progress toward the next level
   skills: OwnedSkill[]; // basic attacks, cantrips, spells and passives, in hotbar order
   levelUps: number; // level-up picks still to make
+  elitePicks: number; // elite-spoils picks still to make (one per hero for every elite beaten)
   offer: OfferCard[] | null; // the cards for the current pick
+  offerKind?: 'level' | 'elite'; // which kind of pick the current offer is
   bonusHp: number; // permanent max HP from events, boons and items
   bonusAc: number;
   bonusSlots: number;
@@ -72,6 +76,7 @@ export interface PlayerEntity extends EntityBase {
   gear: Partial<Record<Slot, ItemId>>; // what the hero wears (shared/items.ts)
   bag: ItemId[]; // unequipped gear and consumables, up to BAG_SIZE
   relics: RelicId[]; // a copy of the party's relics, so the hero sheet can apply them
+  blessings: BlessingId[]; // a copy of the party's blessings (they last until the end of the act)
   kills: number;
   steals: number; // killing blows on monsters someone else did most of the damage to
   slots: number;
@@ -88,6 +93,12 @@ export interface MonsterEntity extends EntityBase {
   boss: boolean;
   elite: boolean;
   dmgBy: Record<string, number>; // hero entity id -> damage dealt (XP assists and kill steals)
+  ally?: boolean; // an NPC ally: fights for the party, run by the monster AI (shared/elites.ts)
+  traits?: TraitId[]; // elite traits (shared/elites.ts)
+  ward?: number; // Shielded: damage the ward still soaks
+  atkBonus?: number; // on top of its stat block (NPC allies grow with the act)
+  dmgBonus?: number;
+  summons?: number; // Summoner: minions called so far
 }
 
 export type Entity = PlayerEntity | MonsterEntity;
@@ -147,7 +158,16 @@ export interface RunInfo {
   visited: string[];
   gold: number; // the party's purse: anyone can spend it at a shop or an event
   relics: RelicId[]; // party-wide perks for the rest of the run
+  blessings: BlessingId[]; // party-wide perks until the end of the act
+  allies: AllyState[]; // NPC allies travelling with the party
   seed: number;
+}
+
+/** An NPC ally travelling with the party (shared/elites.ts). It fights at full HP in each fight until its fights run out or it falls. */
+export interface AllyState {
+  id: AllyId;
+  name: string; // e.g. "Brann the Sellsword"
+  fights: number; // fights left
 }
 
 export interface VoteState {

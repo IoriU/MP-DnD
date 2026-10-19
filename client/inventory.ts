@@ -3,9 +3,14 @@
 // Also the item and relic snippets the HUD, the map and the shop share.
 
 import './inventory.css';
-import { BAG_SIZE, ITEMS, RARITY_COLOR, RELICS, SLOTS, SLOT_NAME, bagRoom, isItemId, isRelicId, sellPrice, type ItemId, type Rarity, type RelicId } from '../shared/items.ts';
+import { ALLIES, isAllyId } from '../shared/elites.ts';
+import {
+  BAG_SIZE, BLESSINGS, ITEMS, RARITY_COLOR, RELICS, SLOTS, SLOT_NAME, bagRoom, isBlessingId, isItemId, isRelicId, sellPrice,
+  type BlessingId, type ItemId, type Rarity, type RelicId,
+} from '../shared/items.ts';
+import { MONSTERS } from '../shared/rules.ts';
 import { SKILLS, describeSkill, itemInfo } from '../shared/skills.ts';
-import type { GameState, ItemRequest, PlayerEntity } from '../shared/types.ts';
+import type { AllyState, GameState, ItemRequest, MonsterEntity, PlayerEntity } from '../shared/types.ts';
 import { send } from './net.ts';
 import { me, store } from './store.ts';
 import { $, esc } from './util.ts';
@@ -37,6 +42,34 @@ export function relicsHtml(ids: readonly RelicId[]): string {
     .map((id) => {
       const r = RELICS[id];
       return `<span class="relic ${r.rarity}" tabindex="0" role="img" aria-label="${esc(`${r.name}: ${r.desc}`)}" title="${esc(`${r.name}\n${r.desc}`)}">${r.icon}</span>`;
+    })
+    .join('');
+}
+
+/** The party's blessings (perks until the end of the act) as icons with tooltips, like relics but with a blue edge. */
+export function blessingsHtml(ids: readonly BlessingId[]): string {
+  return ids
+    .filter(isBlessingId)
+    .map((id) => {
+      const b = BLESSINGS[id];
+      const tip = `${b.name}\n${b.desc}\nLasts until the end of the act.`;
+      return `<span class="relic blessing" tabindex="0" role="img" aria-label="${esc(tip.replace(/\n/g, ' '))}" title="${esc(tip)}">${b.icon}</span>`;
+    })
+    .join('');
+}
+
+/** The NPC allies travelling with the party: glyph, name and fights left (plus HP while they're in a fight). */
+export function alliesHtml(allies: readonly AllyState[], inFight: readonly MonsterEntity[] = []): string {
+  return allies
+    .filter((a) => isAllyId(a.id))
+    .map((a) => {
+      const def = ALLIES[a.id];
+      const live = inFight.find((e) => e.name === a.name);
+      const left = `${a.fights} fight${a.fights === 1 ? '' : 's'} left`;
+      const tip = `${a.name}\n${def.desc}\n${left}${live ? `\n${live.hp} / ${live.maxHp} HP` : ''}`;
+      return `<span class="ally-chip" tabindex="0" role="img" aria-label="${esc(tip.replace(/\n/g, ' '))}" title="${esc(tip)}">
+        <span class="ally-glyph">${MONSTERS[def.monster]?.glyph ?? '🤝'}</span><b>${esc(a.name)}</b>
+        <span class="ally-meta">${live ? `<em>${live.hp}/${live.maxHp}</em> · ` : ''}${left}</span></span>`;
     })
     .join('');
 }

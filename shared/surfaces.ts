@@ -7,6 +7,7 @@
 //
 // Durations count rounds and tick down at the start of every round. `turns: null` is permanent (room features).
 
+import { traitResist } from './elites.ts';
 import { DIRS, canStep, dist, findPath, type MapLike } from './grid.ts';
 import { gearResist } from './items.ts';
 import { MONSTERS, type Dice, type Resist } from './rules.ts';
@@ -418,7 +419,7 @@ export const emptyField = (): Pick<FieldLike, 'ground' | 'clouds' | 'props'> => 
 
 /** How a creature takes an element: monsters by kind, heroes from equipment and passives (Attunement). */
 export function resistance(e: Entity, el: Element): Resist | null {
-  if (e.kind === 'monster') return MONSTERS[e.type]?.resist?.[el] ?? null;
+  if (e.kind === 'monster') return traitResist(e, el) ?? MONSTERS[e.type]?.resist?.[el] ?? null;
   const worn = gearResist(e, el);
   if (worn) return worn;
   if (el === 'fire' && hasBranch(e, 'elemental_affinity', 'B')) return 'resist';
@@ -442,6 +443,8 @@ export function immuneToStatus(e: Entity, id: StatusId): boolean {
     return r === 'immune' || r === 'absorb' || (e.kind === 'player' && hasBranch(e, 'elemental_affinity', 'B'));
   }
   if (id === 'poisoned') return resistance(e, 'poison') === 'immune';
+  if (id === 'chilled' || id === 'frozen') return resistance(e, 'cold') === 'immune';
+  if (id === 'shocked') return resistance(e, 'lightning') === 'immune';
   return false;
 }
 

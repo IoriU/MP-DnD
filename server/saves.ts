@@ -20,8 +20,14 @@ export interface SavedPlayer {
   bot: boolean;
 }
 
-/** Where to pick the run back up: the map vote, or a node to replay from its start (a fight, event or rest). */
-export type SavePoint = { kind: 'map' } | { kind: 'node'; nodeId: string; eventId?: string };
+/**
+ * Where to pick the run back up: the map vote, a node to replay from its start (a fight, event or rest), or the
+ * party's vote after an elite (the fight is won, so it isn't replayed).
+ */
+export type SavePoint =
+  | { kind: 'map' }
+  | { kind: 'node'; nodeId: string; eventId?: string }
+  | { kind: 'reward'; nodeId: string; choices: string[]; text: string };
 
 export interface SaveFile {
   version: number;

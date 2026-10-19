@@ -67,7 +67,7 @@ function camp(classes: ClassId[] = ['wizard']) {
   });
   const heroes = pids.map((id) => p.makePlayer(p.players.find((x: PlayerInfo) => x.id === id), 1) as PlayerEntity);
   p.entities = [...heroes];
-  p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 500, relics: [], seed: 1 };
+  p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 500, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'map';
   return { g, p, heroes, hero: heroes[0], ally: heroes[1], pid: pids[0] };
 }

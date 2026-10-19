@@ -36,7 +36,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **The map:** each act is a branching map. Click a glowing room to vote for it. When everyone has voted (or 20 seconds after the first vote) the majority wins; ties are rolled.
 - **Rooms:**
   - ⚔️ **Combat:** a fight.
-  - 💀 **Elite:** a tough fight worth a lot of XP; whoever lands the killing blow takes its gear.
+  - 💀 **Elite:** a tough fight with special traits (see below), worth a lot of XP and a reward for everyone.
   - ❓ **Event:** a scene with choices the party votes on.
   - 🔥 **Rest:** each hero picks **Long Rest** (heal 30% and restore every slot) or **Train** (upgrade a cantrip or spell).
   - 💰 **Treasure:** gold and a relic (the party votes on one of three).
@@ -84,6 +84,16 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - **Gold is shared** by the party. You find it in fights, treasure and events.
 - **Loot:** the hero who lands the killing blow on an elite takes its gear (another reason to steal kills). Regular fights sometimes drop a consumable, and an act boss leaves a powerful relic behind.
 - **Relics** help the whole party for the rest of the run: advantage on your first attack, +1 AC for everyone, potions that heal more, and so on. They come from 💰 treasure (the party votes on one of three), shops and bosses.
+- **💀 Elites** have one trait in act 1 and up to two later, shown on their tooltip and in their name (a "Burning Hobgoblin Captain"):
+  - 🔰 **Shielded:** a ward soaks the first quarter of its HP and comes back every 3rd round, so burst it down.
+  - 🩸 **Vampiric:** heals half the damage it deals.
+  - 😡 **Enraged:** below half HP it attacks once more each turn and hits harder.
+  - 💨 **Swift:** faster, acts earlier and is harder to hit.
+  - 📯 **Summoner:** calls in a minion every other round.
+  - 🔥 **Burning**, ❄️ **Frost**, ⚡ **Storm:** its attacks deal that element, it hurts everyone next to it at the start of its turn (and sets off the ground around it: oil burns, water freezes or crackles), and it's immune to that element.
+- **Elite rewards:** whoever lands the killing blow takes its gear. Then every hero picks **spoils** (a free skill upgrade, a piece of gear or a boon, like a level-up), and the party votes on a **blessing** or a **companion**:
+  - **Blessings** help every hero until the end of the act: +1 to hit and damage, +1 AC, +8 max HP, an extra slot, speed, saves, elemental resistance or healing every turn. Shrines and statues in events can bless you too.
+  - **Companions** (NPC allies) fight on your side for the next 3 fights: a 💂 Sellsword, a 😇 Acolyte who heals whoever is hurt most, a 🧝 Ranger or a 🐕 War Hound. They grow stronger each act. Careful with your Fireballs: friendly fire hits them too, and a companion who falls is gone for good.
 - **🛒 Shops:** everyone browses at once and spends the shared gold. Buy gear, consumables, potions or a relic, sell what you don't need, pay for a lesson (upgrade a cantrip or spell) or forget a skill to make room. The party moves on when everyone clicks Done.
 - **Sneak or Charge:** before most fights the party sees the room and votes. Sneaking is a group Stealth check: if at least half of you pass, the monsters lose their first turn; if not, you lose yours. Some fights are ambushes. The Rogue's **Hide** makes monsters ignore them and gives their next attack advantage.
 - **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Each level-up offers 3 cards (new skills, upgrades, passives, boons); pick one whenever you like, nobody has to wait.
@@ -124,7 +134,8 @@ shared/rules.ts    classes, monsters, acts, dice, XP and balance numbers  ← st
 shared/skills.ts   every skill and passive (tiers I/II/III-A/III-B), statuses, targeting, descriptions
 shared/tactics.ts  facing, back attacks, flanking: every reason a roll has advantage
 shared/surfaces.ts the battlefield: ground, clouds, props, the combo engine, hazards, previews
-shared/items.ts    equipment, consumables, relics and prices
+shared/items.ts    equipment, consumables, relics, blessings and prices
+shared/elites.ts   elite traits, NPC allies, and who is on whose side
 shared/grid.ts     line of sight, pathfinding
 shared/types.ts    the game state sent from server to clients
 server/game.ts     the "Dungeon Master": the run, voting, rooms, turns, combat, monster AI
@@ -132,7 +143,7 @@ server/actmap.ts   Slay-the-Spire-style act map generator
 server/room.ts     battle room generator
 server/events.ts   ❓ event scenes and their choices
 server/heroai.ts   auto-play brain for heroes (AFK players, bots, tests)
-server/progression.ts  XP shares, level-ups, level-up cards, training
+server/progression.ts  XP shares, level-ups, level-up cards, elite spoils, training
 server/saves.ts    saved runs on disk (saves/<CODE>.json) and the archive
 server/rng.ts      seeded random numbers
 server/index.ts    HTTP + WebSocket server and room codes

@@ -220,6 +220,11 @@ export const MONSTERS: Record<string, MonsterDef> = {
   warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, verb: 'cleaves' }),
   drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, resist: { fire: 'immune' }, verb: 'rends' }),
   wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, { attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, resist: { fire: 'resist' }, verb: 'rends' }),
+  // NPC allies (shared/elites.ts): they fight for the party; act 1 numbers, they grow with the act
+  sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, verb: 'cuts' }),
+  acolyte: m('Acolyte', '😇', 16, 13, 4, { n: 1, d: 8 }, 0, { range: 6, wis: 3, xp: 0, element: 'radiant', verb: 'smites' }),
+  ranger: m('Ranger', '🧝', 16, 14, 5, { n: 1, d: 8, bonus: 2 }, 0, { range: 8, dex: 3, xp: 0, verb: 'shoots' }),
+  war_hound: m('War Hound', '🐕', 18, 13, 5, { n: 2, d: 4, bonus: 2 }, 0, { speed: 8, dex: 2, xp: 0, verb: 'bites' }),
 };
 
 /**

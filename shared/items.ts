@@ -1,5 +1,5 @@
-// Items: equipment (a weapon, armor and a trinket per hero), consumables (thrown, drunk or read, mostly in a fight)
-// and relics (party-wide perks for the rest of the run).
+// Items: equipment (a weapon, armor and a trinket per hero), consumables (thrown, drunk or read, mostly in a fight),
+// relics (party-wide perks for the rest of the run) and blessings (party-wide perks for the rest of the act).
 // Like skills, content is data. Equipment stats are summed by `gearBonus` (the server's recalcHero and a few hooks
 // read them); consumables are 'item' skills in shared/skills.ts, used like the potion; relics are hooks keyed by id.
 
@@ -159,6 +159,42 @@ export const RELIC_STATS: Partial<Record<RelicId, GearStats>> = {
   crown_of_command: { hit: 1, saves: 1 },
 };
 
+// ---------------------------------------------------------------- blessings (party-wide, until the end of the act)
+
+export interface BlessingDef {
+  name: string;
+  icon: string;
+  desc: string;
+}
+
+const BLESSING_DEFS = {
+  valor: { name: 'Blessing of Valor', icon: '⚔️', desc: '+1 to every attack roll and +1 damage on basic attacks.' },
+  bulwark: { name: 'Blessing of the Bulwark', icon: '🛡️', desc: '+1 AC for every hero.' },
+  vigor: { name: 'Blessing of Vigor', icon: '❤️', desc: '+8 max HP for every hero.' },
+  arcana: { name: 'Blessing of Arcana', icon: '🔮', desc: '+1 max slot, and +1 to spell attacks and save DCs.' },
+  haste: { name: 'Blessing of Haste', icon: '💨', desc: '+1 movement and +3 initiative.' },
+  fortune: { name: 'Blessing of Fortune', icon: '🍀', desc: '+2 to saving throws, and reroll one natural 1 on an attack each fight.' },
+  warding: { name: 'Blessing of Warding', icon: '🌈', desc: 'Resist fire, cold and lightning (half damage).' },
+  renewal: { name: 'Blessing of Renewal', icon: '🌿', desc: 'Every hero heals 2 HP at the start of each of their turns in a fight.' },
+} satisfies Record<string, BlessingDef>;
+
+export type BlessingId = keyof typeof BLESSING_DEFS;
+export const BLESSINGS: Record<BlessingId, BlessingDef> = BLESSING_DEFS;
+export const BLESSING_IDS = Object.keys(BLESSINGS) as BlessingId[];
+export const isBlessingId = (id: unknown): id is BlessingId => typeof id === 'string' && Object.hasOwn(BLESSINGS, id);
+export const RENEWAL_HP = 2;
+
+/** Flat numbers blessings add to every hero (Renewal is a hook in server/game.ts). */
+export const BLESSING_STATS: Partial<Record<BlessingId, GearStats>> = {
+  valor: { hit: 1, dmg: 1 },
+  bulwark: { ac: 1 },
+  vigor: { hp: 8 },
+  arcana: { slots: 1, power: 1 },
+  haste: { speed: 1, init: 3 },
+  fortune: { saves: 2, lucky: 1 },
+  warding: { resist: { fire: 'resist', cold: 'resist', lightning: 'resist' } },
+};
+
 // ---------------------------------------------------------------- prices
 
 export const GEAR_PRICE: Record<Rarity, number> = { common: 45, uncommon: 75, rare: 120, legendary: 180 };
@@ -168,6 +204,8 @@ export const POTION_PRICE = 25;
 export const FORGET_PRICE = 30; // shop service: forget a skill to make room
 export const trainPrice = (act: number) => 50 + 25 * act; // shop service: upgrade a cantrip or spell
 export const SELL_SHARE = 0.5;
+/** Gear an elite leaves behind (for whoever lands the killing blow) and offers as elite spoils, by act. */
+export const ELITE_GEAR: Record<number, Rarity[]> = { 1: ['uncommon'], 2: ['uncommon', 'rare'], 3: ['rare'] };
 
 export const itemPrice = (id: ItemId): number => {
   const def = ITEMS[id];
@@ -177,9 +215,9 @@ export const sellPrice = (id: ItemId) => Math.floor(itemPrice(id) * SELL_SHARE);
 
 // ---------------------------------------------------------------- reading a hero's gear
 
-type Geared = Partial<Pick<PlayerEntity, 'gear' | 'relics'>>;
+type Geared = Partial<Pick<PlayerEntity, 'gear' | 'relics' | 'blessings'>>;
 
-/** Every equipment and relic stat block that applies to a hero. */
+/** Every equipment, relic and blessing stat block that applies to a hero. */
 export function statBlocks(p: Geared): GearStats[] {
   const out: GearStats[] = [];
   for (const id of Object.values(p.gear ?? {})) {
@@ -190,12 +228,16 @@ export function statBlocks(p: Geared): GearStats[] {
     const st = RELIC_STATS[r];
     if (st) out.push(st);
   }
+  for (const b of p.blessings ?? []) {
+    const st = BLESSING_STATS[b];
+    if (st) out.push(st);
+  }
   return out;
 }
 
 type NumKey = 'ac' | 'hp' | 'speed' | 'init' | 'saves' | 'slots' | 'stealth' | 'hit' | 'dmg' | 'power' | 'heal' | 'shove' | 'lucky';
 
-/** The sum of one number over a hero's equipment and the party's relics. */
+/** The sum of one number over a hero's equipment and the party's relics and blessings. */
 export const gearBonus = (p: Geared, key: NumKey): number => statBlocks(p).reduce((s, st) => s + (st[key] ?? 0), 0);
 
 /** Equipment that makes a hero alert (can't be surprised). */

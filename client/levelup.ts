@@ -1,7 +1,9 @@
 // The level-up panel: a floating card stack in the corner of the canvas (#levelup) for picking 1 of 3 cards.
+// Elite spoils (one pick per elite beaten) use the same panel, titled "Elite spoils", and can offer a piece of gear.
 // It never blocks play: it collapses to a "Level up!" button, and it starts collapsed during fights.
 
 import './levelup.css';
+import { RARITY_COLOR, SLOT_NAME, bagRoom, describeStats, gearDef } from '../shared/items.ts';
 import { BOONS, CLASSES } from '../shared/rules.ts';
 import {
   SKILLS, TIER_LABEL, countKind, describeSkill, limitFor, ownedSkill, skillTitle, skillsOfKind, statsAt,
@@ -18,7 +20,10 @@ let lastKey = '';
 let lastOffer = '';
 let lastPhase = '';
 let lastUps = -1; // levelUps in the previous state, to toast when it goes up
+let lastElite = -1; // the same for elitePicks
 let lockUntil = 0; // ignore clicks right after a pick, until the next offer arrives
+
+const BAG_FULL = 'Bag full: drop or equip something first';
 
 interface CardView {
   icon: string;
@@ -26,7 +31,12 @@ interface CardView {
   badge: string;
   kind: string; // css hook for the accent color
   body: string; // html
+  color?: string; // overrides the accent (gear takes its rarity color)
 }
+
+/** Picks still to make: level-ups and elite spoils. */
+const picksLeft = (m: PlayerEntity) => m.levelUps + m.elitePicks;
+const isElite = (m: PlayerEntity) => m.offerKind === 'elite';
 
 /** "Techniques" -> "Technique": every class flavor name is the plural of its singular. */
 const singular = (plural: string) => plural.replace(/s$/, '');
@@ -44,6 +54,14 @@ function cardView(m: PlayerEntity, c: OfferCard): CardView {
   if (c.kind === 'boon') {
     const b = BOONS[c.boon];
     return { icon: b.icon, title: b.name, badge: 'Boon', kind: 'boon', body: desc(b.desc) };
+  }
+  if (c.kind === 'gear') {
+    const g = gearDef(c.item);
+    if (!g) return { icon: '❔', title: 'Unknown gear', badge: 'Gear', kind: 'gear', body: '' }; // renamed or removed since a save was made
+    return {
+      icon: g.icon, title: g.name, badge: SLOT_NAME[g.slot], kind: 'gear', color: RARITY_COLOR[g.rarity],
+      body: `<div class="lu-tier">${g.rarity} ${SLOT_NAME[g.slot].toLowerCase()}</div>${desc(describeStats(g.stats))}${g.note ? desc(g.note) : ''}<div class="lu-note">🎒 Goes into your bag</div>`,
+    };
   }
   const def = SKILLS[c.skill];
   const base = statsAt(c.skill, 1);
@@ -76,11 +94,17 @@ function branchButton(m: PlayerEntity, card: number, skill: SkillId, branch: 'A'
 
 function cardHtml(m: PlayerEntity, c: OfferCard, i: number): string {
   const v = cardView(m, c);
-  const head = `<span class="lu-head2"><span class="lu-icon">${v.icon}</span><b class="lu-title">${esc(v.title)}</b><span class="lu-badge">${esc(v.badge)}</span></span>`;
+  const style = v.color ? ` style="--k:${v.color}"` : '';
+  const head = `<span class="lu-head2"><span class="lu-icon">${v.icon}</span><b class="lu-title"${v.color ? ` style="color:${v.color}"` : ''}>${esc(v.title)}</b><span class="lu-badge">${esc(v.badge)}</span></span>`;
   if (c.kind === 'upgrade' && c.tier === 3) {
     return `<div class="lu-card k-${v.kind}">${head}<div class="lu-tier up">Pick a branch</div>${branchButton(m, i, c.skill, 'A')}${branchButton(m, i, c.skill, 'B')}</div>`;
   }
-  return `<button type="button" class="lu-card k-${v.kind}" data-pick="${i}">${head}${v.body}<span class="lu-go">Choose</span></button>`;
+  // Gear needs room in the bag (and the bag is read-only in a fight, so say so).
+  if (c.kind === 'gear' && bagRoom(m) <= 0) {
+    const why = store.state?.phase === 'combat' ? `${BAG_FULL} (not during a fight)` : BAG_FULL;
+    return `<button type="button" class="lu-card k-${v.kind} off" disabled${style}>${head}${v.body}<span class="lu-why">⛔ ${esc(why)}</span></button>`;
+  }
+  return `<button type="button" class="lu-card k-${v.kind}"${style} data-pick="${i}">${head}${v.body}<span class="lu-go">Choose</span></button>`;
 }
 
 function forgetHtml(m: PlayerEntity, i: number): string {
@@ -103,15 +127,20 @@ function forgetHtml(m: PlayerEntity, i: number): string {
 }
 
 function panelHtml(m: PlayerEntity, isOpen: boolean): string {
-  if (!isOpen) return `<button type="button" class="lu-tab" data-lu="toggle" title="Open your level-up picks (L)">⬆️ Level up! (${m.levelUps})</button>`;
+  const elite = isElite(m);
+  const n = picksLeft(m);
+  if (!isOpen) {
+    return `<button type="button" class="lu-tab${elite ? ' elite' : ''}" data-lu="toggle" title="Open your ${elite ? 'elite spoils' : 'level-up picks'} (L)">${elite ? '💀 Spoils' : '⬆️ Level up!'} (${n})</button>`;
+  }
   const offer = m.offer ?? [];
   const body =
     forgetCard !== null ? forgetHtml(m, forgetCard) : offer.map((c, i) => cardHtml(m, c, i)).join('');
-  return `<div class="lu-panel" role="dialog" aria-label="Level up">
+  return `<div class="lu-panel${elite ? ' elite' : ''}" role="dialog" aria-label="${elite ? 'Elite spoils' : 'Level up'}">
     <div class="lu-top">
-      <b>⬆️ Level up! <span class="muted">${m.levelUps > 1 ? `${m.levelUps} picks waiting` : 'pick 1 of ' + offer.length}</span></b>
+      <b>${elite ? '💀 Elite spoils' : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : 'pick 1 of ' + offer.length}</span></b>
       <button type="button" class="lu-min" data-lu="toggle" title="Collapse (L)" aria-label="Collapse">–</button>
     </div>
+    ${elite ? '<div class="lu-explain">Pick one reward for beating the elite.</div>' : ''}
     <div class="lu-cards">${body}</div>
   </div>`;
 }
@@ -124,7 +153,7 @@ const manual = (s: GameState) => {
 
 /** Should the panel be shown at all? Not for auto-play heroes or outside a run. */
 function wanted(s: GameState, m: PlayerEntity): boolean {
-  if (m.levelUps <= 0 || !m.offer?.length) return false;
+  if (picksLeft(m) <= 0 || !m.offer?.length) return false;
   if (s.phase !== 'map' && s.phase !== 'event' && s.phase !== 'rest' && s.phase !== 'combat') return false;
   return manual(s);
 }
@@ -132,8 +161,12 @@ function wanted(s: GameState, m: PlayerEntity): boolean {
 export function renderLevelUp(s: GameState) {
   const el = $('#levelup');
   const m = me();
-  if (m && lastUps >= 0 && m.levelUps > lastUps && manual(s)) toast('⬆️ Level up! Pick a card in the corner of the map (L).');
+  if (m && manual(s)) {
+    if (lastElite >= 0 && m.elitePicks > lastElite) toast('💀 Elite spoils! Pick a reward in the corner of the map (L).');
+    else if (lastUps >= 0 && m.levelUps > lastUps) toast('⬆️ Level up! Pick a card in the corner of the map (L).');
+  }
   lastUps = m ? m.levelUps : -1;
+  lastElite = m ? m.elitePicks : -1;
   if (!m || !wanted(s, m)) {
     el.hidden = true;
     el.innerHTML = '';
@@ -153,7 +186,7 @@ export function renderLevelUp(s: GameState) {
     lockUntil = 0;
   }
   const isOpen = open ?? s.phase !== 'combat';
-  const key = JSON.stringify([isOpen, forgetCard, m.levelUps, m.level, offerKey, m.skills.map((o) => [o.id, o.tier, o.branch])]);
+  const key = JSON.stringify([isOpen, forgetCard, m.levelUps, m.elitePicks, m.offerKind, m.level, offerKey, bagRoom(m), m.skills.map((o) => [o.id, o.tier, o.branch])]);
   el.hidden = false;
   el.classList.toggle('collapsed', !isOpen);
   if (key === lastKey) return;
@@ -172,7 +205,7 @@ export function toggleLevelUp() {
   const m = me();
   if (!s || !m) return;
   if (!wanted(s, m)) {
-    if (m.levelUps > 0) toast('Auto-play picks your level-ups. Press P to take over.');
+    if (picksLeft(m) > 0) toast('Auto-play makes your level-up and elite-spoils picks. Press P to take over.');
     return;
   }
   open = !(open ?? s.phase !== 'combat');
@@ -191,6 +224,7 @@ function choose(card: number, branch?: 'A' | 'B') {
   const m = me();
   const c = m?.offer?.[card];
   if (!m || !c || Date.now() < lockUntil) return;
+  if (c.kind === 'gear' && bagRoom(m) <= 0) return toast(BAG_FULL);
   if (c.kind === 'learn') {
     const kind = SKILLS[c.skill].kind;
     if (countKind(m, kind) >= limitFor(m, kind)) {

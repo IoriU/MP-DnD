@@ -1,6 +1,7 @@
 // Positioning: facing, back attacks, flanking, and every reason an attack roll has advantage or disadvantage.
 // The server rolls with these, the client previews them on hover, and the hero AI plans around them.
 
+import { sameSide } from './elites.ts';
 import { dist } from './grid.ts';
 import { hasStatus } from './skills.ts';
 import type { Entity, Pos } from './types.ts';
@@ -33,14 +34,14 @@ export const canReact = (e: Entity) => canHelp(e) && !hasStatus(e, 'surprised') 
  * you shoot it from behind, or you're hidden.
  */
 export const turnsToFace = (watcher: Entity, mover: Entity, at: Pos) =>
-  watcher.kind !== mover.kind && dist(watcher, at) <= 1 && canReact(watcher) && !hasStatus(mover, 'hidden');
+  !sameSide(watcher, mover) && dist(watcher, at) <= 1 && canReact(watcher) && !hasStatus(mover, 'hidden');
 
-/** Flanking: in melee, with a friend standing on the tile directly across the target. Works for monsters too. */
+/** Flanking: in melee, with a friend (a hero or an NPC ally) standing on the tile directly across the target. Works for monsters too. */
 export function isFlanking(attacker: Entity, target: Entity, entities: Entity[]): boolean {
   if (dist(attacker, target) !== 1) return false;
   const x = 2 * target.x - attacker.x;
   const y = 2 * target.y - attacker.y;
-  return entities.some((e) => e.id !== attacker.id && e.kind === attacker.kind && e.x === x && e.y === y && canHelp(e));
+  return entities.some((e) => e.id !== attacker.id && sameSide(e, attacker) && e.x === x && e.y === y && canHelp(e));
 }
 
 export interface AdvantageInfo {

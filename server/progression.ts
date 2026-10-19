@@ -1,7 +1,7 @@
-// Hero progression: XP shares, level-ups, level-up offers (pick 1 of 3), and training at rest sites.
+// Hero progression: XP shares, level-ups, level-up offers (pick 1 of 3), elite spoils, and training at rest sites.
 // Pure functions on PlayerEntity, so they can be unit tested without a running game.
 
-import { gearBonus } from '../shared/items.ts';
+import { ELITE_GEAR, GEAR_IDS, ITEMS, bagRoom, gearBonus, gearDef, isItemId, type ItemId } from '../shared/items.ts';
 import { BOON_HP, CLASSES, LEVEL_CAP, MAX_BONUS_AC, XP_ASSIST, XP_KILL, XP_SHARED, maxHpFor, maxSlotsFor, xpToNext } from '../shared/rules.ts';
 import {
   COUNTED_KINDS,
@@ -133,6 +133,41 @@ export function makeOffer(p: PlayerEntity, r: Rng): OfferCard[] {
   return cards;
 }
 
+/**
+ * Elite spoils (one pick per hero for each elite beaten): an upgrade to a skill you own (or a new class skill if
+ * nothing can be upgraded), a piece of the act's elite gear, and a boon.
+ */
+export function makeEliteOffer(p: PlayerEntity, r: Rng, act: number): OfferCard[] {
+  const taken = new Set<string>();
+  const upgrades = candidates(p, 'class').concat(candidates(p, 'common')).filter((c) => c.card.kind === 'upgrade');
+  const learns = candidates(p, 'class').filter((c) => c.card.kind === 'learn');
+  const cards = takeWeighted(upgrades.length ? upgrades : learns, 1, r, taken);
+  const rarities = ELITE_GEAR[act] ?? ['rare'];
+  const worn = new Set(Object.values(p.gear));
+  const gear = GEAR_IDS.filter((id) => rarities.includes(ITEMS[id].rarity) && !worn.has(id));
+  if (gear.length) cards.push({ kind: 'gear', item: r.pick(gear) });
+  const boons = candidates(p, 'common').filter((c) => c.card.kind === 'boon');
+  cards.push(...takeWeighted(boons, 3 - cards.length, r, taken));
+  return cards;
+}
+
+/** Deals the next pick: elite spoils first, then level-ups. */
+export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
+  if (p.elitePicks > 0) {
+    p.offer = makeEliteOffer(p, r, act);
+    p.offerKind = 'elite';
+  } else if (p.levelUps > 0) {
+    p.offer = makeOffer(p, r);
+    p.offerKind = 'level';
+  } else {
+    p.offer = null;
+    delete p.offerKind;
+  }
+}
+
+/** Cards that still make sense after a save is loaded (skills and items can be renamed or removed between versions). */
+export const validCard = (c: OfferCard) => (c.kind === 'boon' ? true : c.kind === 'gear' ? isItemId(c.item) && !!gearDef(c.item) : Object.hasOwn(SKILLS, c.skill));
+
 /** Adds a new skill after the last one of its kind, so the hotbar stays grouped. */
 function insertSkill(p: PlayerEntity, id: SkillId) {
   const kind = SKILLS[id].kind;
@@ -194,15 +229,29 @@ function boon(p: PlayerEntity, id: BoonId): PickResult {
   }
 }
 
-/** Applies a level-up pick, then deals the next offer if more picks are waiting. */
-export function applyPick(p: PlayerEntity, req: PickRequest, r: Rng): PickResult {
+function takeGear(p: PlayerEntity, id: ItemId): PickResult {
+  if (bagRoom(p) <= 0) return { ok: false, error: 'Your bag is full: drop or equip something first (I opens the bag).' };
+  p.bag.push(id);
+  return { ok: true, text: `takes the ${gearDef(id)?.name ?? id}` };
+}
+
+/** Applies a level-up or elite pick, then deals the next offer if more picks are waiting. */
+export function applyPick(p: PlayerEntity, req: PickRequest, r: Rng, act = 1): PickResult {
   const card = p.offer?.[Number(req?.card)];
-  if (!card || !p.levelUps) return { ok: false, error: 'Pick a card.' };
+  const elite = p.offerKind === 'elite';
+  if (!card || !(elite ? p.elitePicks : p.levelUps)) return { ok: false, error: 'Pick a card.' };
   const res =
-    card.kind === 'learn' ? learn(p, card.skill, req.forget) : card.kind === 'upgrade' ? upgrade(p, card.skill, card.tier, req.branch) : boon(p, card.boon);
+    card.kind === 'learn'
+      ? learn(p, card.skill, req.forget)
+      : card.kind === 'upgrade'
+        ? upgrade(p, card.skill, card.tier, req.branch)
+        : card.kind === 'gear'
+          ? takeGear(p, card.item)
+          : boon(p, card.boon);
   if (!res.ok) return res;
-  p.levelUps--;
-  p.offer = p.levelUps > 0 ? makeOffer(p, r) : null;
+  if (elite) p.elitePicks--;
+  else p.levelUps--;
+  dealOffer(p, r, act);
   recalcHero(p);
   return res;
 }

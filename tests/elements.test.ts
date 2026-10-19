@@ -5,6 +5,7 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 import type { Server } from 'socket.io';
 import { reachable } from '../shared/grid.ts';
+import { MONSTERS } from '../shared/rules.ts';
 import { resolveAim, statsAt, type StatusId } from '../shared/skills.ts';
 import { CLOUDS, GROUNDS, OIL_FIRE_TURNS, SHOCK_TURNS, tilesAround, type CloudId, type GroundId, type PropId, type PropMap } from '../shared/surfaces.ts';
 import type { ClassId, Entity, GameState, LogLine, MonsterEntity, PlayerEntity, PlayerInfo } from '../shared/types.ts';
@@ -86,6 +87,11 @@ function arena(opts: { classes?: ClassId[]; rows?: string[] } = {}) {
   const monster = (type: string, x: number, y: number, o: { hp?: number; ac?: number } = {}): MonsterEntity => {
     p.spawnMonster(type, { x, y }, 1);
     const m = p.entities.at(-1) as MonsterEntity;
+    // Elites roll random traits (Phase 7): these tests want the plain stat block.
+    if (m.traits) {
+      const def = MONSTERS[type];
+      Object.assign(m, { traits: undefined, ward: 0, name: def.name, speed: def.speed });
+    }
     m.hp = m.maxHp = o.hp ?? 100;
     m.ac = o.ac ?? 1;
     p.turn.order.push(m.id);
@@ -944,7 +950,7 @@ test('winning the fight wipes the battlefield and the statuses it caused', () =>
   process.env.DELVERS_SAVES = dir;
   try {
     const a = arena();
-    a.p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 7, 4), currentId: null, visited: [], gold: 0, seed: 7 };
+    a.p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 7, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 7 };
     a.ground(4, 4, 'fire', 2);
     a.ground(5, 4, 'water', null);
     a.cloud(6, 4, 'smoke');

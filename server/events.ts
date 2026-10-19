@@ -1,7 +1,8 @@
 // ❓ Event nodes: short text scenes with choices the party votes on.
 // Pure content: a choice's resolve() only reads its ctx and returns text plus effects; game.ts applies them.
 
-import type { ItemId, Rarity, RelicId } from '../shared/items.ts';
+import type { BlessingId, ItemId, Rarity, RelicId } from '../shared/items.ts';
+import type { AllyId } from '../shared/elites.ts';
 import { ACTS } from '../shared/rules.ts';
 import type { Dice } from '../shared/rules.ts';
 import type { Rng } from './rng.ts';
@@ -17,6 +18,8 @@ export type EventEffect =
   | { kind: 'restoreSlots' } // every hero's spell slots back to full
   | { kind: 'relic'; id: RelicId } // a party relic (shared/items.ts)
   | { kind: 'item'; id?: ItemId; gear?: boolean; rarity?: Rarity } // an item (a given one, or a random consumable or piece of gear) for the checker, or whoever has room
+  | { kind: 'blessing'; id?: BlessingId } // a party blessing until the end of the act (random if no id)
+  | { kind: 'ally'; id?: AllyId } // an NPC ally for the next few fights (random if no id)
   | { kind: 'fight'; monsters: string[]; elite?: boolean }; // starts a battle after the outcome text (ids from MONSTERS)
 
 export interface CheckResult {
@@ -195,10 +198,10 @@ const TEMPLATES: EventTemplate[] = [
       {
         id: 'pray',
         label: 'Pray',
-        hint: 'Heals the party a little',
+        hint: 'A blessing until the end of the act',
         resolve: () => ({
-          text: 'The party kneels and mumbles a polite prayer. Somewhere, a forgotten god is thrilled to finally have fans.',
-          effects: [{ kind: 'heal', pct: 0.25 }],
+          text: 'The party kneels and mumbles a polite prayer. Somewhere, a forgotten god is thrilled to finally have fans, and shows it.',
+          effects: [{ kind: 'blessing' }, { kind: 'heal', pct: 0.1 }],
         }),
       },
       {
@@ -452,6 +455,89 @@ const TEMPLATES: EventTemplate[] = [
       },
       leave('You tip your hat and move on. It feels like being watched by someone very polite.'),
     ],
+  },
+  {
+    id: 'statues',
+    title: 'The Twin Statues',
+    glyph: '🗿',
+    text: 'Two stone statues face each other across the hall: a warrior with a cracked shield and a robed sage holding an empty lamp. Each has an offering bowl at its feet.',
+    choices: (act) => {
+      const cost = 20 * act;
+      return [
+        {
+          id: 'warrior',
+          label: "Make an offering to the warrior",
+          hint: `Costs ${cost} gold. A blessing of battle until the end of the act`,
+          cost,
+          resolve: (ctx) => ({
+            text: 'The coins vanish from the bowl. Stone grinds as the warrior raises its shield in salute.',
+            effects: [{ kind: 'gold', amount: -cost }, { kind: 'blessing', id: ctx.rng.pick(['valor', 'bulwark', 'vigor'] as const) }],
+          }),
+        },
+        {
+          id: 'sage',
+          label: 'Make an offering to the sage',
+          hint: `Costs ${cost} gold. A blessing of the mind until the end of the act`,
+          cost,
+          resolve: (ctx) => ({
+            text: 'The coins vanish from the bowl, and the empty lamp lights itself with a soft blue flame.',
+            effects: [{ kind: 'gold', amount: -cost }, { kind: 'blessing', id: ctx.rng.pick(['arcana', 'fortune', 'warding', 'haste', 'renewal'] as const) }],
+          }),
+        },
+        {
+          id: 'topple',
+          label: 'Topple them for the gold inlay',
+          hint: 'STR check, DC 14',
+          resolve: (ctx) => {
+            const r = ctx.check('str', 14);
+            if (r.ok) {
+              const g = loot(ctx, 30, 45);
+              return { text: told(r, `${r.heroName} heaves both statues over and pries out ${g} gold of inlay. Nothing smites anyone. Yet.`), effects: [{ kind: 'gold', amount: g }] };
+            }
+            return {
+              text: told(r, `The warrior tips the wrong way and lands on ${r.heroName}'s foot.`),
+              effects: [{ kind: 'damage', dice: dice(2, 6), who: 'checker' }],
+            };
+          },
+        },
+        leave('You bow politely to both and walk on.'),
+      ];
+    },
+  },
+  {
+    id: 'captive',
+    title: 'The Caged Mercenary',
+    glyph: '⛓️',
+    text: 'A battered sellsword sits in a locked cage, guards nowhere in sight. "Get me out of here and I\'ll fight for you for free. For a while, anyway."',
+    choices: (act) => {
+      const cost = 25 * act;
+      return [
+        {
+          id: 'break',
+          label: 'Break the lock',
+          hint: 'STR check, DC 13',
+          resolve: (ctx) => {
+            const r = ctx.check('str', 13);
+            if (r.ok) return { text: told(r, `${r.heroName} rips the door off its hinges. The sellsword grabs a sword from the rack and falls in line.`), effects: [{ kind: 'ally', id: 'sellsword' }] };
+            return {
+              text: told(r, 'The lock holds, the cage rattles, and the guards come back from their break.'),
+              effects: [{ kind: 'fight', monsters: horde(ctx, crowd(ctx)) }],
+            };
+          },
+        },
+        {
+          id: 'key',
+          label: 'Buy the key from a passing goblin',
+          hint: `Costs ${cost} gold`,
+          cost,
+          resolve: () => ({
+            text: 'A goblin who definitely has nothing to do with the cage sells you the key. The sellsword joins up, grumbling about the price of freedom.',
+            effects: [{ kind: 'gold', amount: -cost }, { kind: 'ally', id: 'sellsword' }],
+          }),
+        },
+        leave('"Fine! I\'ll rot then!" You hear him complaining for a long way down the tunnel.'),
+      ];
+    },
   },
 ];
 

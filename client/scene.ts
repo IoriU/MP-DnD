@@ -2,6 +2,7 @@
 // No image assets: tiles are drawn shapes and creatures are emoji, so you can swap in real art later.
 
 import Phaser from 'phaser';
+import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
 import { dist, hasLOS, reachable } from '../shared/grid.ts';
 import { diceText, MONSTERS, RESIST_WORD, type Resist } from '../shared/rules.ts';
 import { STATUSES, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats } from '../shared/skills.ts';
@@ -55,6 +56,7 @@ const CLOUD_LOOK: Record<CloudId, { color: number; alpha: number }> = {
 const SHOCK = hexColor(ELECTRIFIED.color);
 const WARN = 0xff3b3b; // friendly fire and walking into harm
 const BLAST = 0xff8a1f;
+const ALLY = 0x6fe07a; // NPC allies: a green ring, so they don't read as enemies (red) or heroes (their own color)
 const ELEMENTS: Element[] = ['physical', 'fire', 'cold', 'lightning', 'poison', 'radiant', 'force'];
 const RESIST_ORDER: Resist[] = ['immune', 'absorb', 'resist', 'weak'];
 
@@ -66,6 +68,8 @@ interface Sprite {
   bar: Phaser.GameObjects.Graphics;
   tags: Phaser.GameObjects.Text; // status icons
   tagBg: Phaser.GameObjects.Graphics;
+  traits: Phaser.GameObjects.Text; // an elite's trait icons, under its HP bar
+  traitBg: Phaser.GameObjects.Graphics;
   key: string;
 }
 
@@ -95,10 +99,19 @@ function advantageLine(a: AdvantageInfo): string {
 const desc = (text: string) => `<span class="tip-desc">${esc(text)}</span>`;
 const roundsLeft = (turns: number | null) => (turns === null ? 'permanent' : `${turns} round${turns === 1 ? '' : 's'} left`);
 
-/** Names for a preview line; heroes in red (it's your side getting hurt), you as "you". */
+/** Names for a preview line; heroes and NPC allies in red (it's your side getting hurt), you as "you". */
 function names(list: Entity[], m: PlayerEntity): string {
-  return list.map((e) => (e.kind === 'player' ? `<span class="tip-adv down">${e.id === m.id ? 'you' : esc(e.name)}</span>` : esc(e.name))).join(', ');
+  return list.map((e) => (isFoe(e) ? esc(e.name) : `<span class="tip-adv down">${e.id === m.id ? 'you' : esc(e.name)}</span>`)).join(', ');
 }
+
+/** What the party's record says about an NPC ally on the map (its fights left), matched by name; and its kind. */
+function allyInfo(s: GameState, e: MonsterEntity): { def?: AllyDef; fights?: number } {
+  const rec = s.run?.allies.find((a) => a.name === e.name);
+  return { def: rec ? ALLIES[rec.id] : Object.values(ALLIES).find((a) => a.monster === e.type), fights: rec?.fights };
+}
+
+/** An elite's trait icons in a row ("🔥🔰"); empty for anything else. */
+const traitIcons = (e: Entity): string => (e.kind === 'monster' ? (e.traits ?? []).map((t) => TRAITS[t]?.icon ?? '').join('') : '');
 
 /** What stepping onto a tile does to this creature: "fire (1d4 + Burning)". Mirrors hazardAt in shared/surfaces.ts. */
 function tileHazards(f: FieldLike, i: number, who: Entity): string[] {
@@ -541,24 +554,28 @@ class DungeonScene extends Phaser.Scene {
     const bar = this.add.graphics();
     const tagBg = this.add.graphics();
     const tags = this.add.text(0, 0, '', { fontFamily: EMOJI_FONT, fontSize: '9px', resolution: 2 }).setOrigin(0.5, 0);
-    const c = this.add.container(0, 0, [ring, face, glyph, bar, tagBg, tags]).setDepth(e.kind === 'player' ? 11 : 10);
-    return { c, ring, face, glyph, bar, tags, tagBg, key: '' };
+    const traitBg = this.add.graphics();
+    const traits = this.add.text(0, 0, '', { fontFamily: EMOJI_FONT, fontSize: '9px', resolution: 2 }).setOrigin(0.5, 0);
+    const c = this.add.container(0, 0, [ring, face, glyph, bar, tagBg, tags, traitBg, traits]).setDepth(e.kind === 'player' ? 11 : 10);
+    return { c, ring, face, glyph, bar, tags, tagBg, traits, traitBg, key: '' };
   }
 
   private styleSprite(sp: Sprite, e: Entity) {
     const dead = e.kind === 'player' && e.dead;
     const down = e.kind === 'player' && e.downed;
-    const temp = e.kind === 'player' ? e.tempHp : 0;
+    const soak = e.kind === 'player' ? e.tempHp : (e.ward ?? 0); // damage a hero's temp HP or a Shielded elite's ward still soaks
     const shown = dead ? [] : e.statuses.slice(0, MAX_TAGS);
-    const key = `${e.hp}/${e.maxHp}/${temp}/${dead}/${down}/${e.facing?.x},${e.facing?.y}/${e.statuses.map((x) => x.id).join(',')}`;
+    const key = `${e.hp}/${e.maxHp}/${soak}/${dead}/${down}/${e.facing?.x},${e.facing?.y}/${e.statuses.map((x) => x.id).join(',')}`;
     if (sp.key === key) return;
     sp.key = key;
     const big = e.kind === 'monster' && (e.boss || e.elite);
+    const ally = isAllyNpc(e);
     const r = big ? 19 : 14;
-    const color = e.kind === 'player' ? hexColor(e.color) : big ? 0xe8b04a : 0xd94a3a;
+    const color = e.kind === 'player' ? hexColor(e.color) : ally ? ALLY : big ? 0xe8b04a : 0xd94a3a;
     // Frozen solid: an icy disc and a blue tint, so you can tell at a glance who's losing a turn.
     const frozen = !dead && hasStatus(e, 'frozen');
     sp.ring.clear().fillStyle(frozen ? 0x9fdcff : 0x000000, frozen ? 0.45 : 0.55).fillCircle(0, 0, r).lineStyle(big ? 3 : 2, color, dead ? 0.3 : 1).strokeCircle(0, 0, r);
+    if (ally) sp.ring.lineStyle(1.5, ALLY, 0.45).strokeCircle(0, 0, r + 3); // a second, fainter ring marks the party's side
     // Hidden heroes fade out. A small arrow on the ring shows which way the creature faces (attacks from behind have advantage).
     sp.glyph.setText(dead ? '🪦' : e.glyph).setAlpha(down ? 0.5 : hasStatus(e, 'hidden') ? 0.55 : 1).setAngle(down ? 90 : 0);
     if (frozen) sp.glyph.setTint(0xa8dcff);
@@ -582,14 +599,19 @@ class DungeonScene extends Phaser.Scene {
       const pct = e.hp / e.maxHp;
       sp.bar.fillStyle(0x000000, 0.85).fillRect(-w / 2, r - 1, w, 4);
       sp.bar.fillStyle(pct > 0.5 ? 0x5fd35f : pct > 0.25 ? 0xe8c547 : 0xe0523f).fillRect(-w / 2, r - 1, w * pct, 4);
-      // Temporary HP: a thin cyan strip above the bar.
-      if (temp > 0) sp.bar.fillStyle(0x6fd3ff, 0.95).fillRect(-w / 2, r - 4, w * Math.min(1, temp / e.maxHp), 2);
+      // Temporary HP, or an elite's ward: a thin cyan strip above the bar.
+      if (soak > 0) sp.bar.fillStyle(0x6fd3ff, 0.95).fillRect(-w / 2, r - 4, w * Math.min(1, soak / e.maxHp), 2);
     }
     // Status icons across the top of the token, on a dark pill so they read over the emoji.
     const icons = shown.map((x) => STATUSES[x.id].icon).join('') + (!dead && e.statuses.length > MAX_TAGS ? '+' : '');
     sp.tags.setText(icons).setPosition(0, -T / 2 + 1);
     sp.tagBg.clear();
     if (icons) sp.tagBg.fillStyle(0x000000, 0.7).fillRoundedRect(-sp.tags.width / 2 - 2, -T / 2, sp.tags.width + 4, sp.tags.height + 2, 4);
+    // An elite's traits sit in a matching pill just under its HP bar.
+    const marks = dead ? '' : traitIcons(e);
+    sp.traits.setText(marks).setPosition(0, r + 4);
+    sp.traitBg.clear();
+    if (marks) sp.traitBg.fillStyle(0x000000, 0.7).fillRoundedRect(-sp.traits.width / 2 - 2, r + 3, sp.traits.width + 4, sp.traits.height + 2, 4);
   }
 
   /** Tiles within `range` of the hero that a ranged skill could reach (beyond melee it needs line of sight). */
@@ -690,7 +712,7 @@ class DungeonScene extends Phaser.Scene {
     const there = { ...m, x, y }; // me, if I stood here
     const moved = x !== m.x || y !== m.y;
     for (const mon of s.entities) {
-      if (mon.kind !== 'monster' || dist(mon, there) !== 1) continue;
+      if (!isFoe(mon) || dist(mon, there) !== 1) continue;
       // Walking up to a monster makes it turn to face you (unless you're hidden), so only flanks survive the walk.
       const looking = moved && turnsToFace(mon, m, there) ? { ...mon, facing: dirTo(mon, there) } : mon;
       const why = [isBehind(looking, there) ? 'from behind' : '', isFlanking(there, mon, s.entities) ? 'flanking' : ''].filter(Boolean);
@@ -720,7 +742,7 @@ class DungeonScene extends Phaser.Scene {
     const e = this.entityAt(s, h);
     let id = store.selected;
     if (!id) {
-      if (e?.kind === 'monster') id = bestAttack(s, m, e);
+      if (isFoe(e)) id = bestAttack(s, m, e); // allies and heroes aren't attacked
       else if (prop) id = bestPropAttack(s, m, h);
       else if (!e) return this.walkPlan(s, m, h);
       if (!id) return null;
@@ -795,13 +817,30 @@ class DungeonScene extends Phaser.Scene {
   }
 
   private entityTip(s: GameState, e: Entity): string[] {
-    const tag = e.kind === 'monster' && e.boss ? ' <span class="tag">boss</span>' : e.kind === 'monster' && e.elite ? ' <span class="tag">elite</span>' : '';
-    const temp = e.kind === 'player' && e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '';
-    const lines = [`<b>${esc(e.name)}</b>${tag}`, `${e.hp} / ${e.maxHp} HP${temp} · AC ${e.ac}`];
+    const mon = e.kind === 'monster' ? e : null;
+    const tag = mon?.boss ? ' <span class="tag">boss</span>' : mon?.elite ? ' <span class="tag">elite</span>' : isAllyNpc(e) ? ' <span class="tag ally">ally</span>' : '';
+    const soak = e.kind === 'player' ? (e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '') : mon?.ward ? ` (+${mon.ward} 🔰 ward)` : '';
+    const lines = [`<b>${esc(e.name)}</b>${tag} ${traitIcons(e)}`.trim(), `${e.hp} / ${e.maxHp} HP${soak} · AC ${e.ac}`];
     if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name} ${x.turns}`).join(' · '));
     const resist = this.resistLine(e);
     if (resist) lines.push(resist);
-    const death = e.kind === 'monster' ? MONSTERS[e.type]?.death : undefined;
+    // An elite's traits, one short block each.
+    for (const t of mon?.traits ?? []) {
+      const tr = TRAITS[t];
+      if (tr) lines.push(`<span class="tip-trait"><b>${tr.icon} ${esc(tr.name)}:</b> ${esc(tr.desc)}</span>`);
+    }
+    // An NPC ally: what it is, how long it stays, and what it hits for.
+    if (mon && isAllyNpc(mon)) {
+      const { def, fights } = allyInfo(s, mon);
+      const stats = MONSTERS[mon.type];
+      lines.push(`<span class="tip-adv up">🤝 Ally${fights !== undefined ? ` · ${fights} fight${fights === 1 ? '' : 's'} left` : ''}</span>`);
+      if (def) lines.push(desc(def.desc));
+      if (stats) {
+        const dmg = { ...stats.dmg, bonus: (stats.dmg.bonus ?? 0) + (mon.dmgBonus ?? 0) };
+        lines.push(`<span class="muted">⚔️ +${stats.atk + (mon.atkBonus ?? 0)} to hit · ${diceText(dmg)}${stats.attacks > 1 ? ` ×${stats.attacks}` : ''}${stats.range > 1 ? ` · range ${stats.range}` : ''}</span>`);
+      }
+    }
+    const death = mon ? MONSTERS[mon.type]?.death : undefined;
     if (death) {
       const icon = death.ground ? GROUNDS[death.ground].icon : death.cloud ? CLOUDS[death.cloud].icon : '💀';
       lines.push(`<span class="tip-death">${icon} When it dies, it ${esc(death.text)}</span>`);
@@ -809,7 +848,7 @@ class DungeonScene extends Phaser.Scene {
     const under = this.standingIn(s, e);
     if (under) lines.push(under);
     const m = me();
-    if (e.kind === 'monster' && m && s.phase === 'combat') {
+    if (isFoe(e) && m && s.phase === 'combat') {
       const sel = store.selected;
       const atk = sel ? null : bestAttack(s, m, e);
       const adv = this.attackPreview(s, m, e);
@@ -839,7 +878,7 @@ class DungeonScene extends Phaser.Scene {
       if (r) by.set(r, [...(by.get(r) ?? []), el]);
     }
     const parts = RESIST_ORDER.filter((r) => by.has(r)).map((r) => {
-      const good = (r === 'weak') === (e.kind === 'monster'); // a monster's weakness, or your own resistance
+      const good = (r === 'weak') === isFoe(e); // an enemy's weakness, or your own side's resistance
       return `<span class="tip-adv ${good ? 'up' : 'down'}">${RESIST_WORD[r]} ${by.get(r)!.join(', ')}</span>`;
     });
     return parts.join(' · ');
@@ -943,7 +982,7 @@ class DungeonScene extends Phaser.Scene {
       }
       if (typeof plan.res !== 'string') this.drawAim(g, s, plan, plan.res);
     }
-    const color = e?.kind === 'monster' ? 0xff5e5e : e ? 0x7ddc6f : prop ? 0xffa24d : 0xf4ead5;
+    const color = isFoe(e) ? 0xff5e5e : e ? 0x7ddc6f : prop ? 0xffa24d : 0xf4ead5; // red for enemies, green for heroes and allies
     g.lineStyle(2, plan?.kind === 'aim' && plan.area ? 0xf4ead5 : color, plan?.kind === 'aim' && plan.area ? 0.9 : 0.8);
     g.strokeRect(h.x * T + 1, h.y * T + 1, T - 2, T - 2);
   }
@@ -999,8 +1038,8 @@ class DungeonScene extends Phaser.Scene {
     else for (const foe of res.foes) if (foe !== res.main) box(foe, 0xffa24d, 2, 0); // chain skills: the extra targets
     if (res.prop !== undefined) box(tilePos(s, res.prop), 0xffa24d, 3, 0.25);
     for (const e of [...(f?.blasted ?? []), ...(f?.exposed ?? [])]) {
-      if (e.kind === 'player') warn(e);
-      else box(e, BLAST, 2, 0);
+      if (isFoe(e)) box(e, BLAST, 2, 0);
+      else warn(e); // a hero or an NPC ally
     }
     for (const e of res.caught ?? []) warn(e);
   }
@@ -1026,13 +1065,13 @@ class DungeonScene extends Phaser.Scene {
       select(null);
       return;
     }
-    if (target?.kind === 'monster') {
+    if (isFoe(target)) {
       const ab = bestAttack(s, m, target);
       if (ab) send('act', ab, target.id);
       else toast(attackProblem(m));
       return;
     }
-    if (target) return; // clicked a party member
+    if (target) return; // clicked a hero or an NPC ally
     if (prop) {
       const ab = bestPropAttack(s, m, t);
       if (ab) send('act', ab, t);

@@ -12,7 +12,7 @@ function hero(classId: ClassId, level = 1): PlayerEntity {
   const p: PlayerEntity = {
     id: `h-${classId}`, kind: 'player', playerId: `p-${classId}`, classId, name: classId, glyph: '', color: '#fff', x: 0, y: 0,
     hp: 0, maxHp: 0, ac: 10, speed: 6, statuses: [], facing: { x: 1, y: 0 }, level, xp: 0, skills: startingSkills(classId), levelUps: 0, offer: null,
-    bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0, potions: 2, gear: {}, bag: [], relics: [], kills: 0, steals: 0, slots: 0, maxSlots: 0,
+    bonusHp: 0, bonusAc: 0, bonusSlots: 0, tempHp: 0, potions: 2, gear: {}, bag: [], relics: [], blessings: [], elitePicks: 0, kills: 0, steals: 0, slots: 0, maxSlots: 0,
     downed: false, dead: false, saves: { ok: 0, fail: 0 }, used: [],
   };
   recalcHero(p);

@@ -1,5 +1,6 @@
 // The sidebar: turn order, party, your skills, the dice log and chat.
 
+import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
 import { BAG_SIZE } from '../shared/items.ts';
 import { CLASSES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
@@ -8,7 +9,7 @@ import {
 } from '../shared/skills.ts';
 import { COMBOS, PROPS } from '../shared/surfaces.ts';
 import type { GameState, LogLine, PlayerEntity, StatusInst } from '../shared/types.ts';
-import { gearIconsHtml, relicsHtml, toggleInventory } from './inventory.ts';
+import { alliesHtml, blessingsHtml, gearIconsHtml, relicsHtml, toggleInventory } from './inventory.ts';
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { aimAt, blockReason, currentEntity, inApproach, isAuto, isMyTurn, me, mySkillStats, select, store, validTarget } from './store.ts';
@@ -152,10 +153,19 @@ export function renderHud(s: GameState) {
     ? `Act ${run.act} of ${run.maxAct} · ${run.actName} · 💰 ${run.gold} · Room ${s.code}`
     : `Room ${s.code}`;
 
-  // The party's relics, always in view during a run
+  // The party's relics, blessings and NPC allies, always in view during a run (blessings and allies only when there are some)
   const relics = $('#relics');
   relics.hidden = !run;
-  if (run) setHtml(relics, `<div class="section-label">🏺 Relics</div><div class="relics">${relicsHtml(run.relics) || '<span class="muted" title="Treasure rooms, shops and bosses give them">none yet</span>'}</div>`);
+  if (run) {
+    const block = (label: string, body: string) => `<div class="rel-block"><div class="section-label">${label}</div>${body}</div>`;
+    const liveAllies = s.phase === 'combat' ? s.entities.filter(isAllyNpc) : []; // their HP, while they're in the fight
+    setHtml(
+      relics,
+      block('🏺 Relics', `<div class="relics">${relicsHtml(run.relics) || '<span class="muted" title="Treasure rooms, shops and bosses give them">none yet</span>'}</div>`) +
+        (run.blessings.length ? block('✨ Blessings <i>until the end of the act</i>', `<div class="relics">${blessingsHtml(run.blessings)}</div>`) : '') +
+        (run.allies.length ? block('🤝 Allies', `<div class="allies">${alliesHtml(run.allies, liveAllies)}</div>`) : ''),
+    );
+  }
 
   // Turn order
   const init = $('#initiative');
@@ -166,11 +176,13 @@ export function renderHud(s: GameState) {
       .map((id) => {
         const e = s.entities.find((x) => x.id === id);
         if (!e) return '';
-        const cls = [id === cur?.id ? 'current' : '', e.kind, e.kind === 'player' && e.playerId === store.playerId ? 'mine' : ''].join(' ');
+        const ally = isAllyNpc(e);
+        const cls = [id === cur?.id ? 'current' : '', ally ? 'ally' : e.kind, e.kind === 'player' && e.playerId === store.playerId ? 'mine' : ''].join(' ');
         const auto = e.kind === 'player' && isAuto(s, e.playerId) ? ' 🤖' : '';
         const surprised = hasStatus(e, 'surprised') ? ` ${STATUSES.surprised.icon}` : ''; // loses its first turn
-        const tip = `Initiative ${t.init[id] ?? '?'}${surprised ? ' · Surprised: loses its first turn' : ''}`;
-        return `<span class="chip ${cls}" title="${tip}">${e.glyph} ${esc(e.name)}${auto}${surprised}</span>`;
+        const traits = e.kind === 'monster' ? (e.traits ?? []).map((tr) => TRAITS[tr]?.icon ?? '').join('') : ''; // an elite's traits
+        const tip = `${ally ? 'NPC ally: fights for the party · ' : ''}Initiative ${t.init[id] ?? '?'}${surprised ? ' · Surprised: loses its first turn' : ''}`;
+        return `<span class="chip ${cls}" title="${tip}">${e.glyph} ${esc(e.name)}${traits ? ` ${traits}` : ''}${auto}${surprised}</span>`;
       })
       .join('')}</div>`;
   }
@@ -212,11 +224,13 @@ export function renderHud(s: GameState) {
     } else if (s.phase === 'combat' && s.turn) {
       eco.innerHTML = myTurn
         ? `<span class="pill">👣 ${s.turn.movesLeft} moves</span><span class="pill ${s.turn.actionUsed ? 'used' : ''}">Action</span><span class="pill ${s.turn.bonusUsed ? 'used' : ''}">Bonus</span>`
-        : `<span class="muted">Waiting for ${cur ? esc(cur.name) : '...'}${cur?.kind === 'monster' ? ' (monster turn)' : ''}</span>`;
+        : `<span class="muted">Waiting for ${cur ? esc(cur.name) : '...'}${isAllyNpc(cur) ? " (ally's turn)" : isFoe(cur) ? ' (monster turn)' : ''}</span>`;
     } else if (s.phase === 'shop') {
       eco.innerHTML = '<span class="muted">🛒 Shopping: press I for your bag (equip, give, drop). Potions and heals wait until you are back on the map.</span>';
     } else {
-      const picks = m.levelUps > 0 ? ` <span class="pill lvl">⬆️ ${m.levelUps} level-up pick${m.levelUps > 1 ? 's' : ''} waiting</span>` : '';
+      const picks =
+        (m.levelUps > 0 ? ` <span class="pill lvl">⬆️ ${m.levelUps} level-up pick${m.levelUps > 1 ? 's' : ''} waiting</span>` : '') +
+        (m.elitePicks > 0 ? ` <span class="pill lvl">💀 ${m.elitePicks} elite spoil${m.elitePicks > 1 ? 's' : ''} waiting</span>` : '');
       eco.innerHTML = `<span class="muted">Between rooms: drink a potion or use a heal (pick it, then click a friend's card). Slots come back at a Long Rest.</span>${picks}`;
     }
     $('#end-turn').hidden = s.phase !== 'combat' || approaching;
@@ -315,12 +329,12 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
       ? `<span class="tag bad">down ✔${p.saves.ok} ✖${p.saves.fail}</span>`
       : '';
   const mine = p.playerId === store.playerId;
-  const ups =
-    p.levelUps > 0
-      ? mine
-        ? `<button type="button" class="tag lvl" data-open-levelup title="Open your level-up picks">⬆️ ${p.levelUps}</button>`
-        : `<span class="tag lvl" title="Level-up picks waiting">⬆️ ${p.levelUps}</span>`
-      : '';
+  // Waiting picks: level-ups (⬆️) and elite spoils (💀). Your own badges open the panel.
+  const pick = (n: number, icon: string, what: string) =>
+    n <= 0 ? '' : mine
+      ? `<button type="button" class="tag lvl" data-open-levelup title="Open your ${what}">${icon} ${n}</button>`
+      : `<span class="tag lvl" title="${what[0].toUpperCase() + what.slice(1)} waiting">${icon} ${n}</span>`;
+  const ups = pick(p.levelUps, '⬆️', 'level-up picks') + pick(p.elitePicks, '💀', 'elite spoils');
   const max = p.level >= LEVEL_CAP;
   const need = xpToNext(p.level);
   const xpPct = max ? 100 : Math.max(0, Math.min(100, Math.round((p.xp / need) * 100)));
