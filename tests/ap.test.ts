@@ -92,7 +92,7 @@ test('every skill costs 0 to 3 AP: passives 0, basic attacks 2, and the biggest 
       assert.ok(Number.isInteger(s.ap) && s.ap >= 0 && s.ap <= 3, `${id}: ${s.ap} AP`);
       if (def.kind === 'passive') assert.equal(s.ap, 0, `${id} is a passive`);
     }
-    if (def.kind === 'basic') assert.equal(def.base.ap, ATTACK_AP, `${id}: a basic attack`);
+    if (def.kind === 'basic') assert.equal(def.base.ap, id === 'quick_stab' ? 1 : ATTACK_AP, `${id}: a basic attack (the Skirmisher's Quick Stab is the 1-AP one)`);
   }
   for (const id of ['fireball', 'earth_splitter', 'shatter', 'hail_of_thorns', 'guiding_bolt', 'brutal_strike', 'heroic_anthem'] as const) {
     assert.equal(SKILLS[id].base.ap, 3, id);

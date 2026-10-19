@@ -2,12 +2,14 @@
 
 import { BOONS, CLASSES, CLASS_IDS } from '../../../shared/rules.ts';
 import { SKILLS, SKILL_IDS, TIER_LABEL, describeSkill, statsAt, type SkillId, type SkillKind, type SkillStats } from '../../../shared/skills.ts';
+import { SUBCLASSES, SUBCLASS_IDS, SUBCLASS_LEVEL } from '../../../shared/subclasses.ts';
 import { ITEM_SPRITES, type Sprite } from '../../sprites.ts';
 import { srcTag } from '../sources.ts';
 import { chip, esc, group, icon, q, type TabDef } from '../ui.ts';
 
 const KINDS: SkillKind[] = ['basic', 'cantrip', 'spell', 'passive', 'action', 'item'];
 const POOL_ORDER: string[] = [...CLASS_IDS, 'common'];
+const subIndex = (id: SkillId) => { const sub = SKILLS[id].sub; return sub ? SUBCLASS_IDS.indexOf(sub) : -1; }; // class skills first, then each subclass's
 
 /** Range and target in a few words. */
 function reach(s: SkillStats): string {
@@ -44,18 +46,20 @@ function row(id: SkillId): string {
   const sprite = def.kind === 'item' ? (ITEM_SPRITES as Record<string, Sprite | undefined>)[id] : undefined;
   const cd = def.kind === 'cantrip' ? `⏱ ${s.cooldown ?? 0}` : def.kind === 'spell' ? `🔮 ${s.slots ?? 1}` : '—';
   const starts = Object.values(CLASSES).filter((c) => (c.start as string[]).includes(id)).map((c) => chip(`starts: ${c.name}`, 'dim'));
+  const sub = def.sub ? SUBCLASSES[def.sub] : undefined;
+  const signature = sub && sub.signature === id ? [chip(`signature of ${esc(sub.name)}: learned with it, takes no slot`, 'sub')] : [];
   const short = describeSkill(id, 1).split('\n')[0];
-  return `<details class="entry sk" data-id="${id}" data-pool="${def.pool}" data-kind="${def.kind}" data-q="${q(s.name, id, def.kind, def.pool, def.a?.name, def.b?.name, short)}">
+  return `<details class="entry sk" data-id="${id}" data-pool="${def.pool}" data-kind="${def.kind}" data-sub="${def.sub ?? 'none'}" data-q="${q(s.name, id, def.kind, def.pool, sub?.name, def.a?.name, def.b?.name, short)}">
     <summary>
       <span class="sk-ic">${icon(sprite, s.icon, 28)}</span>
       <span class="sk-name"><b>${esc(s.name)}</b><code>${id}</code></span>
-      <span class="sk-tags">${chip(def.kind, `kind-${def.kind}`)}${chip(def.pool, 'pool')}</span>
+      <span class="sk-tags">${chip(def.kind, `kind-${def.kind}`)}${chip(def.pool, 'pool')}${sub ? chip(`${sub.icon} ${esc(sub.name)}`, 'sub', `${sub.name} subclass skill`) : ''}</span>
       <span class="sk-cost" title="action points">${passive ? '—' : s.ap ? `${s.ap} AP` : 'Free'}</span>
       <span class="sk-cd" title="${def.kind === 'cantrip' ? 'cooldown (turns)' : def.kind === 'spell' ? 'slots' : ''}">${cd}</span>
       <span class="sk-rng">${passive ? '—' : esc(reach(s))}</span>
       <span class="sk-desc">${esc(short)}</span>
     </summary>
-    <div class="entry-body">${tiers(id)}<div class="entry-foot">${starts.join('')}${srcTag('skill', id)}</div></div>
+    <div class="entry-body">${tiers(id)}<div class="entry-foot">${starts.join('')}${signature.join('')}${srcTag('skill', id)}</div></div>
   </details>`;
 }
 
@@ -65,13 +69,15 @@ export const skills: TabDef = {
   filters: [
     { key: 'pool', label: 'Pool', options: [...CLASS_IDS.map((id): [string, string] => [id, CLASSES[id].name]), ['common', 'Common']] },
     { key: 'kind', label: 'Kind', options: [...KINDS.map((k): [string, string] => [k, k]), ['boon', 'boon']] },
+    { key: 'sub', label: 'Subclass', options: [...SUBCLASS_IDS.map((id): [string, string] => [id, `${CLASSES[SUBCLASSES[id].classId].name}: ${SUBCLASSES[id].name}`]), ['none', 'none (class pool)']] },
   ],
   render() {
-    const ids = [...SKILL_IDS].sort((a, b) => POOL_ORDER.indexOf(SKILLS[a].pool) - POOL_ORDER.indexOf(SKILLS[b].pool) || KINDS.indexOf(SKILLS[a].kind) - KINDS.indexOf(SKILLS[b].kind));
+    const ids = [...SKILL_IDS].sort((a, b) => POOL_ORDER.indexOf(SKILLS[a].pool) - POOL_ORDER.indexOf(SKILLS[b].pool) || subIndex(a) - subIndex(b) || KINDS.indexOf(SKILLS[a].kind) - KINDS.indexOf(SKILLS[b].kind));
     const boons = Object.entries(BOONS)
-      .map(([id, b]) => `<div class="entry flat" data-id="boon:${id}" data-pool="common" data-kind="boon" data-q="${q(b.name, id, 'boon', b.desc)}"><div class="boon"><span class="sk-ic">${b.icon}</span><span class="sk-name"><b>${esc(b.name)}</b><code>${id}</code></span>${chip('boon', 'kind-boon')}<span class="sk-desc">${esc(b.desc)}</span>${srcTag('boon', id)}</div></div>`)
+      .map(([id, b]) => `<div class="entry flat" data-id="boon:${id}" data-pool="common" data-kind="boon" data-sub="none" data-q="${q(b.name, id, 'boon', b.desc)}"><div class="boon"><span class="sk-ic">${b.icon}</span><span class="sk-name"><b>${esc(b.name)}</b><code>${id}</code></span>${chip('boon', 'kind-boon')}<span class="sk-desc">${esc(b.desc)}</span>${srcTag('boon', id)}</div></div>`)
       .join('');
-    return `<p class="lead">Level-up cards draw two from the hero's class pool and one from the common pool (passives and boons). The header shows tier I; open a skill for II and III-A / III-B.</p>
+    return `<p class="lead">Level-up cards draw two from the hero's class pool and one from the common pool (passives and boons). The header shows tier I; open a skill for II and III-A / III-B.
+        Skills with a subclass chip are only offered to heroes of that subclass (picked at Lv ${SUBCLASS_LEVEL}); its signature is learned on the spot and takes no slot.</p>
       <div class="list">${ids.map(row).join('')}</div>
       ${group('Boons', boons, 'Common-pool level-up cards that are not skills.')}`;
   },

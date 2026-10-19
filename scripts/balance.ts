@@ -69,6 +69,12 @@ const AI_RES: [string, RegExp][] = [
   ['helps', / gets in .+'s face/], ['orders', /: "(Charge!|Hold the line!|Kill .+!)"$/], ['knocked down', /^🤕 .+ (drags|knocks) /], ['drained', /^🩸 .+ drinks the life/],
   ['cut free', / uses Cut Free/], ['webs burned', /The web around .+ burns away/],
 ];
+/** The heroes' AP, Block and subclass tricks (Phase 12), counted from the log like AI_RES. */
+const HERO_RES: [string, RegExp][] = [
+  ['subclasses picked', / becomes an? .+ and learns /], ['dashes', / uses Dash!/], ['braces', / uses Brace!/], ['block given', /^🧱 .+ (gets|covers) /],
+  ['snares set', /^🪤 .+ hides /], ['snares sprung', / steps into .*snare!/], ['counterattacks', / counterattacks!/], ['intercepts', /^🙅 /],
+  ['frightened', / flees in terror/], ['blood paid', / HP in blood\./], ['thorns', / spiked shield: /], ['smite heals', /The smite's light flows/],
+];
 const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")
 
@@ -215,7 +221,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       for (const [name, re] of FIELD_RES) if (re.test(l.text)) r.field[name] = (r.field[name] ?? 0) + 1;
       for (const [name, re] of ITEM_RES) if (re.test(l.text)) r.items[name] = (r.items[name] ?? 0) + 1;
       for (const [name, re] of ELITE_RES) if (re.test(l.text)) r.elites[name] = (r.elites[name] ?? 0) + 1;
-      for (const [name, re] of AI_RES) if (re.test(l.text)) r.ai[name] = (r.ai[name] ?? 0) + 1;
+      for (const [name, re] of [...AI_RES, ...HERO_RES]) if (re.test(l.text)) r.ai[name] = (r.ai[name] ?? 0) + 1;
       if (/^🛒 A merchant spreads/.test(l.text)) r.shops++;
       // A reaction right after a hero's skill line is a combo the heroes set off (not a monster's firebomb).
       if (REACTION_RE.test(l.text) && heroActed && s.run) r.combosByAct[s.run.act] = (r.combosByAct[s.run.act] ?? 0) + 1;
@@ -431,6 +437,7 @@ skills used (${uses.size} different):`);
   const ai = new Map<string, number>();
   for (const r of results) for (const [k, v] of Object.entries(r.ai)) ai.set(k, (ai.get(k) ?? 0) + v);
   console.log(`monster AI: ${AI_RES.map(([k]) => `${k} ${ai.get(k) ?? 0}`).join(' · ')}`);
+  console.log(`hero tricks: ${HERO_RES.map(([k]) => `${k} ${ai.get(k) ?? 0}`).join(' · ')}`);
   // Results per difficulty, and per difficulty and party size (the balance pass in Phase 13 tunes the numbers against these).
   const diffs = DIFFICULTY_IDS.filter((d) => results.some((r) => r.difficulty === d));
   const sizes = [...new Set(results.map((r) => r.party))].sort((a, b) => a - b);

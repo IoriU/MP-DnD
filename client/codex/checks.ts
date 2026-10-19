@@ -13,7 +13,7 @@ export interface Check {
   text: string;
 }
 
-export const POOLS = ['acts', 'encounters', 'monsters', 'allies', 'classes', 'skills', 'items', 'statuses', 'events', 'sprites'];
+export const POOLS = ['acts', 'encounters', 'monsters', 'allies', 'classes', 'subclasses', 'skills', 'items', 'statuses', 'events', 'sprites'];
 
 /** Coverage goals from PLAN.md Phase 12. */
 export const GOALS = { events: 15, encounters: 8, classes: 8 };
@@ -40,12 +40,19 @@ export function coverage(d: CodexData): Coverage[] {
   return out;
 }
 
-/** The skills in a class's pool, by kind. */
+/** The skills in a class's pool, by kind (`sub`: the subclass-only skills of that class, which are not in the pool counts). */
 export function poolCounts(d: CodexData, pool: string) {
-  const defs = Object.values(d.skills).filter((s) => s.pool === pool);
+  const all = Object.values(d.skills).filter((s) => s.pool === pool);
+  const defs = all.filter((s) => !s.sub);
   const n = (kind: string) => defs.filter((s) => s.kind === kind).length;
-  return { cantrip: n('cantrip'), spell: n('spell'), passive: n('passive'), basic: n('basic') };
+  return { cantrip: n('cantrip'), spell: n('spell'), passive: n('passive'), basic: n('basic'), sub: all.length - defs.length };
 }
+
+/** Skills a subclass adds to its class (its signature is one of them). */
+export const subclassSkills = (d: CodexData, sub: string): string[] => Object.keys(d.skills).filter((id) => d.skills[id].sub === sub);
+
+/** Fewest skills a subclass should have (its signature and two more). */
+export const MIN_SUBCLASS_SKILLS = 3;
 
 const ORDER: Record<Level, number> = { error: 0, warn: 1, info: 2 };
 
@@ -109,9 +116,25 @@ export function checks(d: CodexData = liveData()): Check[] {
     if ((def.a || def.b) && !def.t2) add('error', 'skills', `${def.base.name}: has a tier III branch but no tier II`, id);
     if ((def.kind === 'cantrip' || def.kind === 'spell' || def.kind === 'passive') && !def.t2) add('warn', 'skills', `${def.base.name}: ${def.kind} with no tier II (it can't be upgraded)`, id);
     if (def.kind === 'item' && id !== 'potion' && !d.items[id]) add('warn', 'items', `${def.base.name}: item skill with no ITEMS entry`, id);
+    if (def.sub) {
+      const sc = d.subclasses[def.sub];
+      if (!Object.hasOwn(d.subclasses, def.sub)) add('error', 'skills', `${def.base.name}: sub "${def.sub}" is not a subclass`, id);
+      else if (sc.classId !== def.pool) add('error', 'skills', `${def.base.name}: it is in the ${def.pool} pool, but ${sc.name} is a ${sc.classId} subclass`, id);
+    }
   }
   for (const [id, it] of Object.entries(d.items)) {
     if (it.kind === 'consumable' && !d.skills[id]) add('error', 'items', `Consumable "${id}" has no skill of the same id (its rules)`, id);
+  }
+
+  // ---- subclasses
+  for (const [id, sc] of Object.entries(d.subclasses)) {
+    if (!Object.hasOwn(d.classes, sc.classId)) add('error', 'subclasses', `${sc.name}: class "${sc.classId}" does not exist`, id);
+    const sig = Object.hasOwn(d.skills, sc.signature) ? d.skills[sc.signature] : undefined;
+    if (!sig) add('error', 'subclasses', `${sc.name}: signature "${sc.signature}" is not in SKILLS`, id);
+    else if (sig.pool !== sc.classId) add('error', 'subclasses', `${sc.name}: signature ${sig.base.name} is in the ${sig.pool} pool, not ${sc.classId}`, id);
+    else if (sig.sub !== id) add('error', 'subclasses', `${sc.name}: signature ${sig.base.name} has sub ${sig.sub ? `"${sig.sub}"` : 'unset'}, not "${id}"`, id);
+    const n = subclassSkills(d, id).length;
+    if (n < MIN_SUBCLASS_SKILLS) add('warn', 'subclasses', `${sc.name} has ${n} skill${n === 1 ? '' : 's'}: a subclass wants at least ${MIN_SUBCLASS_SKILLS} (its signature and two more)`, id);
   }
 
   // ---- statuses
@@ -138,7 +161,7 @@ export function checks(d: CodexData = liveData()): Check[] {
   }
   for (const [id, c] of Object.entries(d.classes)) {
     const n = poolCounts(d, id);
-    add('info', 'skills', `${c.name} pool: ${n.cantrip} cantrips, ${n.spell} spells, ${n.passive} passives (a hero holds ${MAX_CANTRIPS} cantrips, ${MAX_SPELLS} spells and ${passiveSlots(1)}-${passiveSlots(8)} passives)`, id);
+    add('info', 'skills', `${c.name} pool: ${n.cantrip} cantrips, ${n.spell} spells, ${n.passive} passives, plus ${n.sub} subclass skills (a hero holds ${MAX_CANTRIPS} cantrips, ${MAX_SPELLS} spells and ${passiveSlots(1)}-${passiveSlots(8)} passives)`, id);
   }
 
   return out.sort((a, b) => ORDER[a.level] - ORDER[b.level]);

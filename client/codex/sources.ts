@@ -7,6 +7,7 @@ import elitesSrc from '../../shared/elites.ts?raw';
 import itemsSrc from '../../shared/items.ts?raw';
 import rulesSrc from '../../shared/rules.ts?raw';
 import skillsSrc from '../../shared/skills.ts?raw';
+import subclassesSrc from '../../shared/subclasses.ts?raw';
 import surfacesSrc from '../../shared/surfaces.ts?raw';
 import { MONSTERS } from '../../shared/rules.ts';
 import type { EventFight } from './data.ts';
@@ -22,6 +23,7 @@ const FILES = {
   items: file('shared/items.ts', itemsSrc),
   elites: file('shared/elites.ts', elitesSrc),
   surfaces: file('shared/surfaces.ts', surfacesSrc),
+  subclasses: file('shared/subclasses.ts', subclassesSrc),
   events: file('server/events.ts', eventsSrc),
 };
 type FileKey = keyof typeof FILES;
@@ -33,6 +35,7 @@ const named = (id: string) => new RegExp(`name: ['"]${reEsc(id)}['"]`); // `name
 /** Each kind of entry: its file, the line where its table starts, and how to spot the entry's own line inside it. */
 const KINDS = {
   class: ['rules', /^export const CLASSES\b/, keyed],
+  subclass: ['subclasses', /^export const SUBCLASSES\b/, keyed],
   monster: ['rules', /^export const MONSTERS\b/, keyed],
   act: ['rules', /^export const ACTS\b/, named],
   encounter: ['rules', /^export const ACTS\b/, named],

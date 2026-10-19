@@ -5,10 +5,17 @@ import type { BlessingId, ItemId, RelicId, Slot } from './items.ts';
 import type { AllyId, TraitId } from './elites.ts';
 import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
 import type { Difficulty, MonsterAi } from './rules.ts';
+import type { SubclassId } from './subclasses.ts';
 
 export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric' | 'barbarian' | 'ranger' | 'paladin' | 'bard';
 export type Phase = 'lobby' | 'map' | 'combat' | 'event' | 'rest' | 'shop' | 'victory' | 'defeat';
 export type NodeType = 'combat' | 'elite' | 'event' | 'rest' | 'treasure' | 'shop' | 'boss';
+
+/** A hidden snare on a tile (Ranger Trapper): what the heroes' screens show. */
+export interface TrapView {
+  by: string; // the hero who set it (entity id)
+  icon: string;
+}
 
 export interface Pos {
   x: number;
@@ -51,7 +58,8 @@ export type OfferCard =
   | { kind: 'learn'; skill: SkillId }
   | { kind: 'upgrade'; skill: SkillId; tier: 2 | 3 } // tier 3: the player also picks branch A or B
   | { kind: 'boon'; boon: BoonId }
-  | { kind: 'gear'; item: ItemId }; // elite spoils: a piece of equipment for your bag
+  | { kind: 'gear'; item: ItemId } // elite spoils: a piece of equipment for your bag
+  | { kind: 'subclass'; sub: SubclassId }; // at SUBCLASS_LEVEL: pick one of your class's two subclasses
 
 export type BoonId = 'hp' | 'ac' | 'potions' | 'slot';
 
@@ -62,6 +70,7 @@ export interface PlayerEntity extends EntityBase {
   kind: 'player';
   playerId: string;
   classId: ClassId;
+  subclass?: SubclassId; // picked at SUBCLASS_LEVEL (shared/subclasses.ts)
   color: string;
   level: number;
   xp: number; // progress toward the next level
@@ -278,6 +287,7 @@ export interface GameState {
   ground: GroundMap; // the battlefield (shared/surfaces.ts): water, ice, fire, oil, poison, lava under the creatures
   clouds: CloudMap; // steam, smoke and poison gas above them
   props: PropMap; // oil barrels and braziers, standing on '#' tiles
+  traps?: Record<number, TrapView>; // hidden snares (tile index -> trap): the heroes see them, the monsters don't
   players: PlayerInfo[];
   entities: Entity[];
   turn: TurnState | null;

@@ -1,4 +1,6 @@
-import { MONSTER_AIS, type MonsterAi } from '../shared/rules.ts';
+import { CLASSES, MONSTER_AIS, type MonsterAi } from '../shared/rules.ts';
+import { SUBCLASSES } from '../shared/subclasses.ts';
+import type { PlayerEntity } from '../shared/types.ts';
 
 export const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -7,6 +9,12 @@ export function monsterAiTag(ai: MonsterAi | undefined): { label: string; tip: s
   if (ai !== 'ppo') return null;
   const def = MONSTER_AIS.ppo;
   return { label: `${def.icon} PPO`, tip: `${def.name}: ${def.desc}` };
+}
+
+/** "Fighter", or "Fighter · Guardian" once the hero has picked a subclass. */
+export function classLabel(h: Pick<PlayerEntity, 'classId' | 'subclass'>): string {
+  const sub = h.subclass ? SUBCLASSES[h.subclass] : undefined;
+  return sub ? `${CLASSES[h.classId].name} · ${sub.name}` : CLASSES[h.classId].name;
 }
 
 export function esc(text: string): string {

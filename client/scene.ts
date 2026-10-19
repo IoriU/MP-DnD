@@ -236,6 +236,8 @@ class DungeonScene extends Phaser.Scene {
   private flames: Flame[] = [];
   private propTexts: Phaser.GameObjects.GameObject[] = []; // prop sprites (or emoji when there's no art)
   private braziers: number[] = [];
+  private trapObjs: Phaser.GameObjects.Text[] = []; // the 🪤 on each hidden snare
+  private trapKey = '';
   private groundTiles: FieldTile<GroundId>[] = [];
   private cloudTiles: FieldTile<CloudId>[] = [];
   private groundKey = '';
@@ -415,6 +417,7 @@ class DungeonScene extends Phaser.Scene {
       this.pendingWalk = null;
     }
     this.syncField(s);
+    this.syncTraps(s);
     this.syncEntities(s);
     this.plan = this.computePlan();
     this.drawOverlay(s);
@@ -433,6 +436,7 @@ class DungeonScene extends Phaser.Scene {
     this.groundTiles = [];
     this.cloudTiles = [];
     this.braziers = [];
+    this.clearTraps();
     this.mapG.clear();
     for (const g of this.groundG.values()) g.clear();
     this.fieldFxG.clear();
@@ -565,6 +569,25 @@ class DungeonScene extends Phaser.Scene {
       this.groundKey = key;
       this.drawGround(s);
     }
+  }
+
+  /** Hidden snares (Ranger Trapper): a small, faint 🪤 on each tile, above the ground and under the creatures. */
+  private syncTraps(s: GameState) {
+    const traps = s.traps ?? {};
+    const key = `${s.width}:${JSON.stringify(traps)}`;
+    if (key === this.trapKey) return;
+    this.clearTraps();
+    this.trapKey = key;
+    this.trapObjs = Object.entries(traps).map(([k, t]) => {
+      const at = tilePos(s, Number(k));
+      return this.add.text(at.x * T + T / 2, at.y * T + T / 2, t.icon, { fontFamily: EMOJI_FONT, fontSize: '17px', resolution: 2 }).setOrigin(0.5).setAlpha(0.85).setDepth(3.5);
+    });
+  }
+
+  private clearTraps() {
+    for (const o of this.trapObjs) o.destroy();
+    this.trapObjs = [];
+    this.trapKey = '';
   }
 
   /** The ground layer: one soft-cornered pool per surface, with its static details (oil gloss, ice streaks, lava crust). */
@@ -1236,6 +1259,11 @@ class DungeonScene extends Phaser.Scene {
     const g = s.ground[i];
     const c = s.clouds[i];
     if (prop) lines.push(`<b>${PROPS[prop].icon} ${PROPS[prop].name}</b>`, desc(PROPS[prop].desc));
+    const trap = s.traps?.[i];
+    if (trap) {
+      const by = s.entities.find((e) => e.id === trap.by)?.name;
+      lines.push(`<b>${trap.icon} Snare${by ? ` (set by ${esc(by)})` : ''}</b>`, desc('The first monster to step in is snared.'));
+    }
     if (g) lines.push(`<b>${GROUNDS[g.id].icon} ${GROUNDS[g.id].name}</b> <span class="muted">· ${roundsLeft(g.turns)}</span>`, desc(GROUNDS[g.id].desc));
     if (g?.shock) lines.push(`<b class="tip-shock">${ELECTRIFIED.icon} ${ELECTRIFIED.name}</b>`, desc(ELECTRIFIED.desc));
     if (c) lines.push(`<b>${CLOUDS[c.id].icon} ${CLOUDS[c.id].name}</b> <span class="muted">· ${roundsLeft(c.turns)}</span>`, desc(CLOUDS[c.id].desc));

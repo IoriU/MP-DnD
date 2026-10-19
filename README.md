@@ -127,6 +127,19 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 | ⚜️ Paladin | AC 17 and holy fire. Divine Smite hits hard with radiant damage, Lay on Hands heals with a touch, Compelled Duel pulls a monster off your friends, and the Aura of Protection helps everyone near you resist. |
 | 🎻 Bard | Support from range. Vicious Mockery stings and dazes, Bardic Inspiration gives an ally advantage, Healing Ballad heals the whole party, Hideous Laughter takes a monster out of the fight. Fragile. |
 
+At **level 3** every hero picks a **subclass**, one of two for their class (the level-up offer is just those two cards). It gives a signature skill right away (no slot needed, and it can't be forgotten) and adds its own skills to your level-up cards from then on.
+
+| Class | Subclass A | Subclass B |
+|---|---|---|
+| 🛡️ Fighter | ⚔️ **Weapon Master**: damage, cleave, counters | 🛡️ **Guardian**: Block, self-heal, thorns |
+| 🗡️ Rogue | 🗡️ **Assassin**: poison, burst | 💨 **Skirmisher**: 1-AP stabs, hit and run |
+| 🧙 Wizard | ☄️ **Evoker**: big area spells that spare friends | ❄️ **Elementalist**: control, elemental reactions |
+| ✨ Cleric | 💖 **Life**: group heals | ⚖️ **Order**: Block from range, +1 AP buffs |
+| 🪓 Barbarian | 🩸 **Berserker**: HP for AP, big damage when hurt | 🦏 **Juggernaut**: lifesteal, taunt, can't be knocked down |
+| 🏹 Ranger | 🪤 **Trapper**: hidden snares, barrages | 🎯 **Sharpshooter**: long range, big shots |
+| ⚜️ Paladin | 🏰 **Protection**: takes hits for friends, Block aura | 🌟 **Devotion**: smites that heal, regeneration |
+| 🎻 Bard | 🎺 **Valor**: Inspiration gives +1 AP, war chants | 🤫 **Whispers**: fear and debuffs |
+
 Passives come in two kinds: hooks with their own rules (Sentinel, Favored Foe, Aura of Protection, Song of Rest...) and perks, stat blocks that add up like equipment (Thick Hide: +AC and max HP, Archery: +to hit...).
 
 ## Development
@@ -151,6 +164,7 @@ To test multiplayer alone, open several browser tabs. Each new tab is a new play
 ```
 shared/rules.ts    classes, monsters, acts, dice, XP and balance numbers  ← start here to tweak the game
 shared/skills.ts   every skill and passive (tiers I/II/III-A/III-B), statuses, targeting, descriptions
+shared/subclasses.ts  the two subclasses of each class (picked at level 3) and their signature skills
 shared/tactics.ts  facing, back attacks, flanking: every reason a roll has advantage
 shared/surfaces.ts the battlefield: ground, clouds, props, the combo engine, hazards, previews
 shared/items.ts    equipment, consumables, relics, blessings and prices

@@ -10,6 +10,7 @@ import { CLASSES, MAX_CANTRIPS, MAX_SPELLS, TIER3_LEVEL, passiveSlots, profBonus
 import { ITEMS, describeStats, gearBonus, gearDef, isItemId, type GearStats, type ItemId, type Rarity, type Slot } from './items.ts';
 import type { CloudId, GroundId, PropMap } from './surfaces.ts';
 import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, Pos, TurnState } from './types.ts';
+import { SUBCLASSES, type SubclassId } from './subclasses.ts';
 
 // ---------------------------------------------------------------- statuses
 
@@ -38,7 +39,11 @@ export type StatusId =
   | 'drained'
   | 'rallied'
   | 'charging'
-  | 'raging';
+  | 'raging'
+  | 'honed'
+  | 'envenomed'
+  | 'emboldened'
+  | 'frightened';
 
 export interface StatusDef {
   name: string;
@@ -84,6 +89,10 @@ export const STATUSES: Record<StatusId, StatusDef> = {
   rallied: { name: 'Rallied', icon: '📯', good: true, desc: '+1 to attack rolls and +1 damage per stack (stacks up to 3).' },
   charging: { name: 'Charging', icon: '🏃', good: true, desc: '+3 movement on its next turn.' },
   raging: { name: 'Raging', icon: '😤', good: true, desc: 'Melee hits deal + its power in damage, and physical damage against it is halved.' },
+  honed: { name: 'Honed', icon: '💢', good: true, desc: 'The next hit deals +1d8 per power.' },
+  envenomed: { name: 'Envenomed', icon: '☣️', good: true, desc: 'Weapon hits Poison the target (at its power).' },
+  emboldened: { name: 'Emboldened', icon: '⚡', good: true, desc: '+AP (its power) at the start of the next turn.' },
+  frightened: { name: 'Frightened', icon: '😨', good: false, desc: "Spends its turn running from whoever frightened it, and can't attack." },
 };
 
 /** Statuses that make a creature lose its turn. */
@@ -179,7 +188,10 @@ export interface SkillStats {
   selfStatus?: StatusApply[];
   taunt?: { radius: number; turns: number };
   dash?: number; // extra movement this turn
-  gainAp?: number; // AP back this turn, past the usual cap (Action Surge; once per turn)
+  gainAp?: number; // AP back this turn, past the usual cap (Action Surge, Blood Price)
+  hpCost?: number; // you pay this percent of your max HP first (Blood Price)
+  healSelf?: number; // you heal this share of what the skill healed friends (Restoring Touch)
+  trap?: { status: StatusApply[]; dmg?: Dice }; // hidden traps on the area's tiles: the first monster to step in gets it
   oncePerTurn?: boolean; // usable once per turn (Brace)
   resetCooldowns?: boolean; // every other cantrip is ready again
   restoreSlots?: number; // slots back (Ether)
@@ -192,6 +204,7 @@ export interface SkillStats {
 export interface SkillDef {
   kind: SkillKind;
   pool: ClassId | 'common';
+  sub?: SubclassId; // only for heroes of this subclass (shared/subclasses.ts)
   base: SkillStats; // tier I
   t2?: Partial<SkillStats>; // tier II, on top of tier I (no t2 = can't be upgraded)
   a?: Partial<SkillStats> & { name: string }; // tier III-A, on top of tier II
@@ -208,9 +221,9 @@ type PassiveTier = { value?: number; note?: string; perk?: GearStats }; // no no
 /** Passives only carry text and a number per tier; the server implements the behavior. */
 function passive(
   pool: SkillDef['pool'], icon: string, name: string,
-  t1: PassiveTier, t2: PassiveTier, a: PassiveTier & { name: string }, b: PassiveTier & { name: string },
+  t1: PassiveTier, t2: PassiveTier, a: PassiveTier & { name: string }, b: PassiveTier & { name: string }, sub?: SubclassId,
 ): SkillDef {
-  return { kind: 'passive', pool, base: { name, icon, ap: 0, target: 'self', range: 0, ...t1 }, t2, a, b };
+  return { kind: 'passive', pool, ...(sub ? { sub } : {}), base: { name, icon, ap: 0, target: 'self', range: 0, ...t1 }, t2, a, b };
 }
 
 // ---------------------------------------------------------------- content
@@ -282,7 +295,7 @@ const SKILL_DEFS = {
   },
   action_surge: {
     kind: 'spell', pool: 'fighter',
-    base: { name: 'Action Surge', icon: '⚡', ap: 1, target: 'self', range: 0, slots: 1, gainAp: 2, note: 'Once per turn.' },
+    base: { name: 'Action Surge', icon: '⚡', ap: 1, target: 'self', range: 0, slots: 1, gainAp: 2, oncePerTurn: true },
     t2: { dash: 3 },
     a: { name: 'Battle Surge', ap: 0 },
     b: { name: 'Second Surge', resetCooldowns: true },
@@ -822,6 +835,313 @@ const SKILL_DEFS = {
     { perk: { power: 1, heal: 1 } },
     { name: 'Spellsinger', perk: { power: 2, slots: 1 } },
     { name: 'Soothing Voice', perk: { power: 1, heal: 3 } }),
+
+  // ---------------------------------------------- subclasses (shared/subclasses.ts): picked at level 3, `sub` marks
+  // the subclass's own skills. The signature (first of each) is learned at once and takes no slot.
+  // Fighter: Weapon Master
+  cleave: {
+    kind: 'cantrip', pool: 'fighter', sub: 'weapon_master',
+    base: { name: 'Cleave', icon: '🪓', ap: 2, target: 'around', radius: 1, range: 0, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(1, 8), mod: true },
+    t2: { dmg: d(1, 10) },
+    a: { name: 'Sweeping Cleave', push: 1 },
+    b: { name: 'Rending Cleave', onHit: [st('marked', 1)] },
+  },
+  precision_strike: {
+    kind: 'spell', pool: 'fighter', sub: 'weapon_master',
+    base: { name: 'Precision Strike', icon: '🎯', ap: 1, target: 'self', range: 0, slots: 1, selfStatus: [st('focused', 1), st('honed', 1, 1)] },
+    t2: { selfStatus: [st('focused', 1), st('honed', 1, 2)] },
+    a: { name: 'Deadly Precision', selfStatus: [st('focused', 1), st('honed', 1, 3)] },
+    b: { name: 'Quick Precision', ap: 0 },
+  },
+  counterattack: passive('fighter', '🤺', 'Counterattack',
+    { note: 'Once per round, when a monster misses you in melee, you hit back with your weapon.' },
+    { value: 2, note: 'Once per round, when a monster misses you in melee, you hit back with your weapon (+2 damage).' },
+    { name: 'Relentless Counter', value: 2, note: 'Twice per round, when a monster misses you in melee, you hit back with your weapon (+2 damage).' },
+    { name: 'Disarming Counter', value: 2, note: 'Once per round, when a monster misses you in melee, you hit back with your weapon (+2 damage), and a hit Dazes it.' }, 'weapon_master'),
+  // Fighter: Guardian
+  shield_wall: {
+    kind: 'cantrip', pool: 'fighter', sub: 'guardian',
+    base: { name: 'Shield Wall', icon: '🧱', ap: 1, target: 'self', range: 0, cooldown: 2, block: d(2, 6), blockLevel: true, taunt: { radius: 1, turns: 1 } },
+    t2: { block: d(3, 6) },
+    a: { name: 'Bastion', taunt: { radius: 2, turns: 2 } },
+    b: { name: 'Phalanx', target: 'allies', radius: 1 },
+  },
+  iron_recovery: {
+    kind: 'spell', pool: 'fighter', sub: 'guardian',
+    base: { name: 'Iron Recovery', icon: '⛑️', ap: 1, target: 'self', range: 0, slots: 1, heal: d(2, 8), healLevel: true, block: d(1, 8), blockLevel: true },
+    t2: { heal: d(3, 8) },
+    a: { name: 'Second Breath', cleanse: true },
+    b: { name: 'Unbreakable', tempHp: d(2, 6) },
+  },
+  spiked_shield: passive('fighter', '🦔', 'Spiked Shield',
+    { value: 50, note: 'When your Block soaks a melee hit, the attacker takes half of what it soaked.' },
+    { value: 100, note: 'When your Block soaks a melee hit, the attacker takes all of what it soaked.' },
+    { name: 'Barbed Shield', value: 100, note: 'When your Block soaks a melee hit, the attacker takes all of what it soaked, and is Poisoned.' },
+    { name: 'Retribution', value: 100, note: 'When your Block soaks any hit (ranged too), the attacker takes all of what it soaked.' }, 'guardian'),
+  // Rogue: Assassin
+  envenom: {
+    kind: 'cantrip', pool: 'rogue', sub: 'assassin',
+    base: { name: 'Envenom', icon: '☣️', ap: 1, target: 'self', range: 0, cooldown: 3, selfStatus: [st('envenomed', 2, 1)] },
+    t2: { selfStatus: [st('envenomed', 2, 2)] },
+    a: { name: 'Lethal Toxin', selfStatus: [st('envenomed', 2, 3)] },
+    b: { name: 'Lasting Venom', selfStatus: [st('envenomed', 3, 2)] },
+  },
+  assassinate: {
+    kind: 'spell', pool: 'rogue', sub: 'assassin',
+    base: { name: 'Assassinate', icon: '💀', ap: 3, target: 'enemy', range: 1, slots: 1, stat: 'dex', roll: 'attack', dmg: d(3, 8), mod: true, sneak: true, critFull: true },
+    t2: { dmg: d(4, 8) },
+    a: { name: 'Shadow Kill', range: 6, teleport: true },
+    b: { name: 'Vanish', selfStatus: [st('hidden', 1)] },
+  },
+  death_mark: passive('rogue', '☠️', 'Death Mark',
+    { value: 1, note: 'Sneak Attack deals +1d6 against Poisoned targets.' },
+    { value: 2, note: 'Sneak Attack deals +2d6 against Poisoned targets.' },
+    { name: 'Coup de Grâce', value: 3, note: 'Sneak Attack deals +3d6 against Poisoned targets.' },
+    { name: 'Marked for Death', value: 2, note: 'Sneak Attack deals +2d6 against Poisoned or Marked targets.' }, 'assassin'),
+  // Rogue: Skirmisher
+  quick_stab: { kind: 'basic', pool: 'rogue', sub: 'skirmisher', base: { name: 'Quick Stab', icon: '🔪', ap: 1, target: 'enemy', range: 1, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, sneak: true } },
+  tumble: {
+    kind: 'cantrip', pool: 'rogue', sub: 'skirmisher',
+    base: { name: 'Tumble', icon: '🤸', ap: 1, target: 'self', range: 0, cooldown: 2, dash: 4, selfStatus: [st('shielded', 1, 2)] },
+    t2: { dash: 5 },
+    a: { name: 'Long Roll', dash: 7 },
+    b: { name: 'Evasive Roll', selfStatus: [st('shielded', 1, 4)] },
+  },
+  strike_and_fade: passive('rogue', '🌫️', 'Strike and Fade',
+    { value: 2, note: 'Your first attack each turn gives you +2 movement.' },
+    { value: 3, note: 'Your first attack each turn gives you +3 movement.' },
+    { name: 'Blitz', value: 4, note: 'Your first attack each turn gives you +4 movement.' },
+    { name: 'Fade', value: 3, note: 'Your first attack each turn gives you +3 movement and +2 AC until your next turn.' }, 'skirmisher'),
+  // Wizard: Evoker
+  sculpt_spells: passive('wizard', '🔷', 'Sculpt Spells',
+    { note: 'Your area attacks never hit friends.' },
+    { value: 2, note: 'Your area attacks never hit friends, and deal +2 damage.' },
+    { name: 'Overchannel', value: 4, note: 'Your area attacks never hit friends, and deal +4 damage.' },
+    { name: 'Careful Weave', value: 2, note: 'Your area attacks never hit friends or NPC allies, and deal +2 damage.' }, 'evoker'),
+  meteor: {
+    kind: 'spell', pool: 'wizard', sub: 'evoker',
+    base: { name: 'Meteor', icon: '🌠', ap: 3, target: 'area', range: 10, radius: 2, slots: 2, roll: 'save', save: 'dex', half: true, dmg: d(6, 6), element: 'fire' },
+    t2: { dmg: d(8, 6) },
+    a: { name: 'Meteor Swarm', radius: 3 },
+    b: { name: 'Comet', element: 'cold' },
+  },
+  empowered_evocation: passive('wizard', '💥', 'Empowered Evocation',
+    { value: 2, note: 'Your spells deal +2 damage to each target.' },
+    { value: 3, note: 'Your spells deal +3 damage to each target.' },
+    { name: 'Arcane Surge', value: 5, note: 'Your spells deal +5 damage to each target.' },
+    { name: 'Spell Pierce', value: 3, note: 'Your spells deal +3 damage to each target and ignore resistances.' }, 'evoker'),
+  // Wizard: Elementalist
+  frost_nova: {
+    kind: 'cantrip', pool: 'wizard', sub: 'elementalist',
+    base: { name: 'Frost Nova', icon: '❄️', ap: 2, target: 'around', radius: 1, range: 0, cooldown: 2, roll: 'save', save: 'dex', half: true, dmg: d(1, 6), element: 'cold', onHit: [st('chilled', 2)], push: 1 },
+    t2: { dmg: d(2, 6) },
+    a: { name: 'Deep Freeze', onHit: [st('chilled', 2), st('dazed', 1)] },
+    b: { name: 'Shatterwave', push: 2 },
+  },
+  flash_freeze: {
+    kind: 'spell', pool: 'wizard', sub: 'elementalist',
+    base: { name: 'Flash Freeze', icon: '🧊', ap: 2, target: 'area', range: 8, radius: 2, slots: 1, roll: 'save', save: 'dex', half: true, dmg: d(2, 6), element: 'cold', onHit: [st('chilled', 2)], note: 'Wet creatures freeze solid.' },
+    t2: { dmg: d(3, 6) },
+    a: { name: 'Glacier', surface: { ground: 'ice' } },
+    b: { name: 'Hailstorm', onHit: [st('chilled', 2), st('prone', 1)] },
+  },
+  catalyst: passive('wizard', '⚗️', 'Catalyst',
+    { value: 50, note: 'Fire, poison, shocks and explosions you set off on the battlefield deal +50% to monsters.' },
+    { value: 75, note: 'Fire, poison, shocks and explosions you set off on the battlefield deal +75% to monsters.' },
+    { name: 'Chain Reaction', value: 100, note: 'Fire, poison, shocks and explosions you set off on the battlefield deal double to monsters.' },
+    { name: 'Elemental Weave', value: 50, note: 'Fire, poison, shocks and explosions you set off deal +50% to monsters, and your fire, cold and lightning skills +2.' }, 'elementalist'),
+  // Cleric: Life
+  mass_healing_word: {
+    kind: 'spell', pool: 'cleric', sub: 'life',
+    base: { name: 'Mass Healing Word', icon: '💞', ap: 1, target: 'allies', radius: 4, range: 0, slots: 1, heal: d(1, 6), healMod: true },
+    t2: { heal: d(2, 6) },
+    a: { name: 'Mass Cure', ap: 2, heal: d(3, 6) },
+    b: { name: 'Beacon of Hope', status: [st('blessed', 2)] },
+  },
+  prayer_of_healing: {
+    kind: 'spell', pool: 'cleric', sub: 'life',
+    base: { name: 'Prayer of Healing', icon: '🙏', ap: 2, target: 'allies', radius: 3, range: 0, slots: 2, heal: d(2, 8), healMod: true },
+    t2: { heal: d(3, 8) },
+    a: { name: 'Prayer of Vigor', tempHp: d(1, 8) },
+    b: { name: 'Sanctified Prayer', cleanse: true },
+  },
+  disciple_of_life: passive('cleric', '💗', 'Disciple of Life',
+    { perk: { heal: 2 } },
+    { perk: { heal: 3 } },
+    { name: 'Supreme Healing', perk: { heal: 5 } },
+    { name: 'Preserve Life', perk: { heal: 3, hp: 6 } }, 'life'),
+  // Cleric: Order
+  warding_light: {
+    kind: 'cantrip', pool: 'cleric', sub: 'order',
+    base: { name: 'Warding Light', icon: '🔆', ap: 1, target: 'ally', range: 6, cooldown: 2, block: d(1, 8), blockLevel: true },
+    t2: { block: d(2, 8) },
+    a: { name: 'Wide Ward', target: 'allies', radius: 3, range: 0 },
+    b: { name: 'Sanctuary Ward', status: [st('shielded', 1, 2)] },
+  },
+  command: {
+    kind: 'spell', pool: 'cleric', sub: 'order',
+    base: { name: 'Command', icon: '☝️', ap: 2, target: 'enemy', range: 6, slots: 1, roll: 'save', save: 'wis', onHit: [st('dazed', 1), st('prone', 1)] },
+    t2: { onHit: [st('dazed', 2), st('prone', 1)] },
+    a: { name: 'Mass Command', target: 'area', radius: 1 },
+    b: { name: 'Halt!', onHit: [st('dazed', 2), st('netted', 1)] },
+  },
+  voice_of_authority: passive('cleric', '📣', 'Voice of Authority',
+    { value: 1, note: 'Once per round, a friend you buff, heal or Block gets +1 AP on their next turn.' },
+    { value: 1, note: 'Once per turn, a friend you buff, heal or Block gets +1 AP on their next turn.' },
+    { name: 'Commanding Presence', value: 1, note: 'Every friend you buff, heal or Block gets +1 AP on their next turn.' },
+    { name: 'Zealous Command', value: 2, note: 'Once per turn, a friend you buff, heal or Block gets +2 AP on their next turn.' }, 'order'),
+  // Barbarian: Berserker
+  blood_price: {
+    kind: 'cantrip', pool: 'barbarian', sub: 'berserker',
+    base: { name: 'Blood Price', icon: '🩸', ap: 0, target: 'self', range: 0, cooldown: 0, hpCost: 10, gainAp: 1, oncePerTurn: true },
+    t2: { hpCost: 6 },
+    a: { name: 'Blood Frenzy', hpCost: 12, gainAp: 2 },
+    b: { name: 'Savage Price', selfStatus: [st('rallied', 2, 1, 3)] },
+  },
+  frenzy: {
+    kind: 'cantrip', pool: 'barbarian', sub: 'berserker',
+    base: { name: 'Frenzy', icon: '🌪️', ap: 2, target: 'enemy', range: 1, cooldown: 2, stat: 'str', roll: 'attack', dmg: d(1, 10), mod: true, hits: 2, selfStatus: [st('marked', 1)] },
+    t2: { dmg: d(1, 12) },
+    a: { name: 'Rampage', hits: 3 },
+    b: { name: 'Reckless Frenzy', adv: true },
+  },
+  bloodlust: passive('barbarian', '🔥', 'Bloodlust',
+    { value: 3, note: 'Below half HP, your melee hits deal +3 damage.' },
+    { value: 4, note: 'Below half HP, your melee hits deal +4 damage.' },
+    { name: 'Death Wish', value: 6, note: 'Below half HP, your melee hits deal +6 damage.' },
+    { name: 'Red Mist', value: 4, note: 'Below half HP, or while Raging, your melee hits deal +4 damage.' }, 'berserker'),
+  // Barbarian: Juggernaut
+  blood_drinker: passive('barbarian', '🍷', 'Blood Drinker',
+    { value: 25, note: 'Your melee hits heal you for a quarter of the damage they deal.' },
+    { value: 33, note: 'Your melee hits heal you for a third of the damage they deal.' },
+    { name: 'Sanguine', value: 50, note: 'Your melee hits heal you for half the damage they deal.' },
+    { name: 'Shared Feast', value: 25, note: 'Your melee hits heal you for a quarter of the damage they deal, and every friend next to you for 1.' }, 'juggernaut'),
+  challenge: {
+    kind: 'cantrip', pool: 'barbarian', sub: 'juggernaut',
+    base: { name: 'Challenge', icon: '🫵', ap: 1, target: 'self', range: 0, cooldown: 3, taunt: { radius: 2, turns: 1 }, block: d(1, 8), blockLevel: true },
+    t2: { taunt: { radius: 2, turns: 2 } },
+    a: { name: 'Roar of Defiance', taunt: { radius: 3, turns: 2 } },
+    b: { name: 'Iron Hide', block: d(2, 8) },
+  },
+  unstoppable: passive('barbarian', '🐂', 'Unstoppable',
+    { note: "While Raging, you can't be knocked Prone, Netted or Webbed." },
+    { note: "You can't be knocked Prone, and while Raging you can't be Netted or Webbed either." },
+    { name: 'Iron Will', note: "You can't be knocked Prone, and while Raging you can't be Netted, Webbed, Dazed or Frightened." },
+    { name: 'Rampaging', value: 2, note: "You can't be knocked Prone, while Raging you can't be Netted or Webbed, and Raging gives +2 movement." }, 'juggernaut'),
+  // Ranger: Trapper
+  snare_trap: {
+    kind: 'cantrip', pool: 'ranger', sub: 'trapper',
+    base: { name: 'Snare Trap', icon: '🪤', ap: 1, target: 'area', range: 4, radius: 0, cooldown: 2, trap: { status: [st('netted', 2)], dmg: d(1, 6) }, note: "Monsters don't see snares. Up to 3 at a time." },
+    t2: { trap: { status: [st('netted', 2)], dmg: d(2, 6) } },
+    a: { name: 'Spiked Snare', trap: { status: [st('netted', 2), st('prone', 1)], dmg: d(2, 6) } },
+    b: { name: 'Wide Snare', radius: 1 },
+  },
+  barrage: {
+    kind: 'spell', pool: 'ranger', sub: 'trapper',
+    base: { name: 'Barrage', icon: '🏹', ap: 2, target: 'area', range: 10, radius: 2, slots: 1, stat: 'dex', roll: 'attack', dmg: d(1, 8), mod: true },
+    t2: { dmg: d(2, 8) },
+    a: { name: 'Arrow Storm', radius: 3 },
+    b: { name: 'Pinning Barrage', onHit: [st('netted', 1)] },
+  },
+  ambusher: passive('ranger', '🌿', 'Ambusher',
+    { value: 2, note: 'Your hits deal +2 damage against Netted, Webbed or Prone targets.' },
+    { value: 3, note: 'Your hits deal +3 damage against Netted, Webbed or Prone targets.' },
+    { name: "Hunter's Glee", value: 5, note: 'Your hits deal +5 damage against Netted, Webbed or Prone targets.' },
+    { name: 'Snare Master', value: 3, note: 'Your hits deal +3 damage against Netted, Webbed or Prone targets, and your traps +1d6.' }, 'trapper'),
+  // Ranger: Sharpshooter
+  aimed_shot: {
+    kind: 'cantrip', pool: 'ranger', sub: 'sharpshooter',
+    base: { name: 'Aimed Shot', icon: '🎯', ap: 3, target: 'enemy', range: 14, cooldown: 1, stat: 'dex', roll: 'attack', dmg: d(2, 10), mod: true },
+    t2: { dmg: d(3, 10) },
+    a: { name: 'Headshot', critFull: true },
+    b: { name: 'Pinning Shot', onHit: [st('netted', 1)] },
+  },
+  piercing_shot: {
+    kind: 'spell', pool: 'ranger', sub: 'sharpshooter',
+    base: { name: 'Piercing Shot', icon: '➶', ap: 2, target: 'enemy', range: 10, slots: 1, stat: 'dex', roll: 'attack', dmg: d(2, 8), mod: true, chain: 2 },
+    t2: { chain: 3 },
+    a: { name: 'Ricochet', dmg: d(3, 8) },
+    b: { name: 'Barbed Shot', onHit: [st('poisoned', 2)] },
+  },
+  deadeye: passive('ranger', '👁️‍🗨️', 'Deadeye',
+    { value: 2, note: 'Your hits on targets 5 or more tiles away deal +2 damage.' },
+    { value: 3, note: 'Your hits on targets 5 or more tiles away deal +3 damage.' },
+    { name: 'Eagle Eye', value: 5, note: 'Your hits on targets 5 or more tiles away deal +5 damage.' },
+    { name: 'Long Shot', value: 3, note: 'Your hits on targets 4 or more tiles away deal +3 damage.' }, 'sharpshooter'),
+  // Paladin: Protection
+  intercept: passive('paladin', '🙅', 'Intercept',
+    { note: 'Once per round, when a monster attacks a friend next to you, you take the attack instead.' },
+    { value: 3, note: 'Once per round, when a monster attacks a friend next to you, you take the attack instead, with 3 Block.' },
+    { name: 'Shield of the Many', value: 3, note: 'Twice per round, when a monster attacks a friend next to you, you take the attack instead, with 3 Block.' },
+    { name: 'Retaliation', value: 3, note: 'Once per round, you take an attack meant for a friend next to you (with 3 Block), then hit back.' }, 'protection'),
+  aegis: {
+    kind: 'spell', pool: 'paladin', sub: 'protection',
+    base: { name: 'Aegis', icon: '🛡️', ap: 2, target: 'allies', radius: 1, range: 0, slots: 1, block: d(2, 6), blockLevel: true },
+    t2: { block: d(3, 6) },
+    a: { name: 'Aegis of Light', radius: 2 },
+    b: { name: 'Holy Aegis', status: [st('shielded', 1, 2)] },
+  },
+  aura_of_warding: passive('paladin', '💠', 'Aura of Warding',
+    { value: 2, note: 'At the start of your turn, every friend next to you gets 2 Block.' },
+    { value: 3, note: 'At the start of your turn, every friend next to you gets 3 Block.' },
+    { name: 'Wide Ward', value: 3, note: 'At the start of your turn, every friend within 2 tiles gets 3 Block.' },
+    { name: 'Warden', value: 3, note: 'At the start of your turn, you and every friend next to you get 3 Block.' }, 'protection'),
+  // Paladin: Devotion
+  blessed_smites: passive('paladin', '🌟', 'Blessed Smites',
+    { value: 50, note: 'Divine Smite heals you for half the damage it deals.' },
+    { value: 50, note: 'Divine Smite and Radiant Strike heal you for half the damage they deal.' },
+    { name: 'Holy Wrath', value: 100, note: 'Divine Smite and Radiant Strike heal you for all the damage they deal.' },
+    { name: 'Shared Grace', value: 50, note: 'Divine Smite and Radiant Strike heal half the damage they deal: to you, or a friend within 4 tiles who is hurt worse.' }, 'devotion'),
+  restoring_touch: {
+    kind: 'cantrip', pool: 'paladin', sub: 'devotion',
+    base: { name: 'Restoring Touch', icon: '🤲', ap: 1, target: 'ally', range: 1, cooldown: 2, heal: d(2, 6), healLevel: true, healSelf: 0.5 },
+    t2: { heal: d(3, 6) },
+    a: { name: 'Shared Light', target: 'allies', radius: 1, healSelf: 0 },
+    b: { name: 'Purifying Light', cleanse: true },
+  },
+  divine_vitality: passive('paladin', '💛', 'Divine Vitality',
+    { value: 2, note: 'You heal 2 HP at the start of each of your turns.' },
+    { value: 3, note: 'You heal 3 HP at the start of each of your turns.' },
+    { name: 'Radiant Vitality', value: 4, note: 'You heal 4 HP at the start of each of your turns.' },
+    { name: 'Vitality Aura', value: 3, note: 'You heal 3 HP at the start of each of your turns, and every friend next to you 1.' }, 'devotion'),
+  // Bard: Valor
+  rousing: passive('bard', '📯', 'Rousing Inspiration',
+    { value: 1, note: 'Your Bardic Inspiration also gives +1 AP on their next turn.' },
+    { value: 1, note: 'Your Bardic Inspiration also gives +1 AP on their next turn, and +1d4 damage on their hits (Blessed) for 2 turns.' },
+    { name: 'Heroic Rousing', value: 2, note: 'Your Bardic Inspiration also gives +2 AP on their next turn, and +1d4 damage on their hits for 2 turns.' },
+    { name: 'Encouraging Word', value: 1, note: 'Your Bardic Inspiration also gives +1 AP on their next turn, +1d4 damage on their hits for 2 turns, and heals 1d6 + your level.' }, 'valor'),
+  war_chant: {
+    kind: 'spell', pool: 'bard', sub: 'valor',
+    base: { name: 'War Chant', icon: '🥁', ap: 2, target: 'allies', radius: 4, range: 0, slots: 1, status: [st('rallied', 3, 1, 3), st('rallied', 3, 1, 3)], block: d(1, 6) },
+    t2: { block: d(2, 6) },
+    a: { name: 'Chant of Fury', status: [st('rallied', 3, 1, 3), st('rallied', 3, 1, 3), st('rallied', 3, 1, 3)] },
+    b: { name: 'Chant of Iron', status: [st('rallied', 3, 1, 3), st('rallied', 3, 1, 3), st('shielded', 2, 1)] },
+  },
+  combat_inspiration: passive('bard', '⚔️', 'Combat Inspiration',
+    { value: 1, note: 'A friend you inspire hits harder: +1d4 damage on their hits (Blessed) for 2 turns.' },
+    { value: 1, note: 'A friend you inspire gets +1d4 damage on their hits (Blessed) and +1 AC for 2 turns.' },
+    { name: 'Battle Muse', value: 2, note: 'A friend you inspire gets +1d4 damage on their hits (Blessed) and +2 AC for 3 turns.' },
+    { name: 'Rallying Muse', value: 1, note: 'A friend you inspire gets +1d4 damage on their hits (Blessed), +1 AC and a stack of Rallied for 2 turns.' }, 'valor'),
+  // Bard: Whispers
+  dissonant_whispers: {
+    kind: 'cantrip', pool: 'bard', sub: 'whispers',
+    base: { name: 'Dissonant Whispers', icon: '🌀', ap: 2, target: 'enemy', range: 6, cooldown: 2, roll: 'save', save: 'wis', half: true, dmg: d(2, 6), element: 'force', onHit: [st('frightened', 1)] },
+    t2: { dmg: d(3, 6) },
+    a: { name: 'Terror', onHit: [st('frightened', 2)] },
+    b: { name: 'Mind Spike', onHit: [st('frightened', 1), st('dazed', 1)] },
+  },
+  cutting_words: {
+    kind: 'cantrip', pool: 'bard', sub: 'whispers',
+    base: { name: 'Cutting Words', icon: '✂️', ap: 1, target: 'enemy', range: 6, cooldown: 2, onHit: [st('dazed', 1)] },
+    t2: { onHit: [st('dazed', 2)] },
+    a: { name: 'Withering Words', onHit: [st('dazed', 2), st('marked', 1)] },
+    b: { name: 'Biting Words', onHit: [st('dazed', 2), st('blinded', 1)] },
+  },
+  psychic_blades: passive('bard', '🔮', 'Psychic Blades',
+    { value: 1, note: 'Your hits deal +1d6 against monsters with a debuff on them.' },
+    { value: 2, note: 'Your hits deal +2d6 against monsters with a debuff on them.' },
+    { name: 'Mind Shatter', value: 3, note: 'Your hits deal +3d6 against monsters with a debuff on them.' },
+    { name: 'Lingering Dread', value: 2, note: 'Your hits deal +2d6 against monsters with a debuff on them, and leave them Dazed.' }, 'whispers'),
 } satisfies Record<string, SkillDef>;
 
 export type SkillId = keyof typeof SKILL_DEFS;
@@ -899,7 +1219,7 @@ export const blockOf = (e: Pick<Entity, 'block'>): number => Object.values(e.blo
 // ---------------------------------------------------------------- numbers for a hero
 
 export const statFor = (p: Pick<PlayerEntity, 'classId'>, s: SkillStats): Stat => s.stat ?? CLASSES[p.classId].stat;
-type Hero = Pick<PlayerEntity, 'classId' | 'level'> & Partial<Pick<PlayerEntity, 'gear' | 'relics'>>;
+type Hero = Pick<PlayerEntity, 'classId' | 'level'> & Partial<Pick<PlayerEntity, 'gear' | 'relics' | 'maxHp'>>;
 
 /** Attack bonus with a skill: proficiency + its stat, plus equipment (an Arcane Focus helps skills on your casting stat). */
 export const attackBonus = (p: Hero, s: SkillStats) =>
@@ -1028,6 +1348,9 @@ export function describe(s: SkillStats, hero?: Hero): string {
   if (s.dash) parts.push(`+${s.dash} movement this turn`);
   if (s.gainAp) parts.push(`+${s.gainAp} AP this turn`);
   if (s.oncePerTurn) parts.push('Once per turn');
+  if (s.hpCost) parts.push(`Costs ${s.hpCost}% of your max HP${hero ? ` (${hpCostOf(hero, s)})` : ''}`);
+  if (s.healSelf) parts.push(`You heal ${s.healSelf === 0.5 ? 'half' : `${Math.round(s.healSelf * 100)}%`} of it too`);
+  if (s.trap) parts.push(`Sets a hidden trap${(s.radius ?? 0) > 0 ? ` on every tile within ${s.radius}` : ''}: the first monster to step in ${s.trap.dmg ? `takes ${diceStr(s.trap.dmg)} and ` : ''}is ${statusList(s.trap.status)}`);
   if (s.resetCooldowns) parts.push('Your other cantrips are ready again');
   if (s.restoreSlots) parts.push(`Get ${s.restoreSlots} slot${s.restoreSlots > 1 ? 's' : ''} back (Spell slots, Grit or Cunning)`);
   if (s.note) parts.push(s.note);
@@ -1074,9 +1397,9 @@ export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean
     if (hasStatus(p, 'stunned')) return 'You are stunned';
     if (hasStatus(p, 'frozen')) return 'You are frozen solid';
     if (s.ap > turn.ap) return `Needs ${s.ap} AP (${turn.ap} left)`;
-    if (own.cd > 0) return `Ready in ${own.cd} turn${own.cd > 1 ? 's' : ''}`;
-    if (s.gainAp && p.used.includes('turn:surge')) return 'Only once per turn';
     if (s.oncePerTurn && p.used.includes(`turn:${id}`)) return 'Only once per turn';
+    if (own.cd > 0) return `Ready in ${own.cd} turn${own.cd > 1 ? 's' : ''}`;
+    if (s.hpCost && p.hp <= hpCostOf(p, s)) return 'Not enough HP to pay for it';
   } else if (!s.heal && !s.restoreSlots) {
     return 'Only in combat';
   } else if (def.kind === 'cantrip') {
@@ -1164,8 +1487,13 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
       if (ctx.map.tiles[center.y * ctx.map.width + center.x] === '#' && !ctx.map.props?.[center.y * ctx.map.width + center.x]) return 'Pick an open spot.';
       if (!ctx.inCombat) return 'Only in combat';
       if (!inRange(center)) return dist(caster, center) > s.range ? `Out of range (${s.name} reaches ${s.range} tiles).` : 'No line of sight.';
+      if (s.trap && ctx.entities.some((e) => e.x === center.x && e.y === center.y && !(e.kind === 'player' && e.dead))) return 'Pick an empty spot.';
+      if (s.trap && ctx.map.tiles[center.y * ctx.map.width + center.x] === '#') return 'Pick an open spot.';
+      // Sculpt Spells: an Evoker's blasts go around friends (and NPC allies, with Careful Weave).
+      const sculpt = caster.kind === 'player' && caster.skills ? passiveOf(caster, 'sculpt_spells') : null;
+      const spared = (e: Entity) => !!sculpt && (e.kind === 'player' || hasBranch(caster as PlayerEntity, 'sculpt_spells', 'B'));
       const caught = hitsArea(s)
-        ? ctx.entities.filter((e) => (e.kind === 'player' ? !e.dead && !e.downed : !!e.ally) && dist(e, center) <= (s.radius ?? 1))
+        ? ctx.entities.filter((e) => (e.kind === 'player' ? !e.dead && !e.downed : !!e.ally) && dist(e, center) <= (s.radius ?? 1) && !spared(e))
         : [];
       return { center, main: byId, foes: foesNear(ctx, center, s.radius ?? 1), friends: [], caught };
     }
@@ -1194,7 +1522,13 @@ export function limitFor(p: PlayerEntity, kind: SkillKind): number {
   return Infinity;
 }
 
-export const countKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind).length;
+export const countKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind && !isSignature(p, s.id)).length;
+
+/** The subclass's signature skill: learned with the subclass, takes no slot, and can't be forgotten. */
+export const isSignature = (p: Pick<PlayerEntity, 'subclass'>, id: SkillId): boolean => !!p.subclass && SUBCLASSES[p.subclass]?.signature === id;
+
+/** HP a skill's price costs this hero (Blood Price). */
+export const hpCostOf = (p: { maxHp?: number }, s: SkillStats): number => (s.hpCost && p.maxHp ? Math.max(1, Math.round((p.maxHp * s.hpCost) / 100)) : 0);
 
 /** The upgrade a skill would get next, if it can be upgraded now. */
 export function nextTier(p: PlayerEntity, id: SkillId): 2 | 3 | null {

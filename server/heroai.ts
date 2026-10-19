@@ -16,6 +16,7 @@ import {
   SKILLS,
   SKIP_TURN,
   SLOWED,
+  STATUSES,
   attackBonus,
   avgDice,
   blockOf,
@@ -27,6 +28,8 @@ import {
   healBonus,
   hitsOf,
   hotbar,
+  hpCostOf,
+  isSignature,
   limitFor,
   ROOTED,
   nextTier,
@@ -119,7 +122,7 @@ const without = <T extends Entity>(e: T, id: StatusId): T => (hasStatus(e, id) ?
 const skipsTurn = (e: Entity) => SKIP_TURN.some((id) => hasStatus(e, id));
 const isOffensive = (s: SkillStats) => s.target === 'enemy' || s.target === 'area' || s.target === 'around';
 /** Grease, Create Water: no damage, they only leave something on the ground (and may have no foe in them). */
-const isSetup = (s: SkillStats) => !!s.surface && s.surface.at !== 'self' && !s.dmg;
+const isSetup = (s: SkillStats) => (!!s.surface && s.surface.at !== 'self' && !s.dmg) || !!s.trap; // ...or a snare
 
 // ---------------------------------------------------------------- numbers about monsters
 
@@ -374,6 +377,17 @@ function passiveDamage(me: PlayerEntity, id: SkillId, s: SkillStats, m: Entity):
   let b = 0;
   if (s.element === 'fire') b += passiveOf(me, 'elemental_affinity')?.value ?? 0;
   if (m.hp < m.maxHp / 2) b += passiveOf(me, 'opportunist')?.value ?? 0;
+  // Subclass passives (server/game.ts bonusDamage).
+  if (hasStatus(m, 'netted') || hasStatus(m, 'webbed') || hasStatus(m, 'prone')) b += passiveOf(me, 'ambusher')?.value ?? 0;
+  const eye = passiveOf(me, 'deadeye');
+  if (eye && dist(me, m) >= (hasBranch(me, 'deadeye', 'B') ? 4 : 5)) b += eye.value;
+  const lust = passiveOf(me, 'bloodlust');
+  if (lust && s.range <= 1 && (me.hp < me.maxHp / 2 || (hasBranch(me, 'bloodlust', 'B') && hasStatus(me, 'raging')))) b += lust.value;
+  const blades = passiveOf(me, 'psychic_blades');
+  if (blades && m.statuses.some((x) => !STATUSES[x.id].good)) b += blades.value * 3.5;
+  if (SKILLS[id].kind === 'spell') b += passiveOf(me, 'empowered_evocation')?.value ?? 0;
+  if (s.target === 'area') b += passiveOf(me, 'sculpt_spells')?.value ?? 0;
+  if (hasBranch(me, 'catalyst', 'B') && (s.element === 'fire' || s.element === 'cold' || s.element === 'lightning')) b += 2;
   if (s.roll !== 'attack') return b;
   const die = SKILLS[id].kind === 'basic' ? (passiveOf(me, 'divine_strike')?.value ?? 0) : 0;
   if (die) b += (die + 1) / 2;
@@ -413,6 +427,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   const crits: number[] = [];
   const advs: boolean[] = []; // that hit rolls with advantage (Sneak Attack)
   let ambush = 0; // Shadow Strike: extra d6s on the attack from hiding
+  let honed = 0; // expected extra damage on the first hit
   if (s.roll === 'attack') {
     const bonus = attackBonus(me, s) + (hasStatus(me, 'blessed') ? 2 : 0) - (hasStatus(me, 'dazed') ? 2 : 0);
     const base = d20(bonus, acOf(m));
@@ -431,6 +446,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
       advs.push(a > 0);
     }
     if (main) ambush = me.statuses.find((x) => x.id === 'hidden')?.power ?? 0;
+    if (main) honed = (me.statuses.find((x) => x.id === 'honed')?.power ?? 0) * 4.5; // Precision Strike: d8s on the next hit
   } else {
     let p = 1;
     if (s.roll === 'save') {
@@ -448,11 +464,13 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   const per = roll + (dice.bonus ?? 0) + damageMod(me, s) + passiveDamage(me, id, s, m) + (s.execute && m.hp < m.maxHp / 2 ? avgDice(s.execute) : 0);
   const land = 1 - ps.reduce((q, p) => q * (1 - p), 1);
   // Sneak Attack: once, on the first hit that lands with a friend next to the target or with advantage.
-  const sneak = main && s.sneak && !me.used.includes('turn:sneak') ? sneakDice(me.level) : 0;
+  const mark = passiveOf(me, 'death_mark'); // Death Mark: more dice on the Poisoned (or Marked)
+  const doomed = !!mark && (hasStatus(m, 'poisoned') || (hasBranch(me, 'death_mark', 'B') && hasStatus(m, 'marked')));
+  const sneak = main && s.sneak && !me.used.includes('turn:sneak') ? sneakDice(me.level) + (doomed ? mark.value : 0) : 0;
   const ally = sneak > 0 && allyNextTo(sim, m);
   const pSneak = sneak ? 1 - ps.reduce((q, p, i) => (ally || advs[i] ? q * (1 - p) : q), 1) : 0;
   const half = s.roll === 'save' && !!s.half;
-  let dmg = sneak * 3.5 * pSneak + ambush * 3.5 * (ps[0] ?? 0);
+  let dmg = sneak * 3.5 * pSneak + (ambush * 3.5 + honed) * (ps[0] ?? 0);
   for (let i = 0; i < hits; i++) dmg += ps[i] * per + crits[i] * roll + (half ? ((1 - ps[i]) * per) / 2 : 0);
   const factor = factorOf(m, s.element);
   if (factor <= 0) return { dmg: factor * dmg, kill: 0, land }; // immune, or it heals
@@ -461,7 +479,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   let kill = 0;
   successOdds(ps).forEach((pk, k) => {
     if (pk < 1e-4) return;
-    let mean = k * per + (k ? extraDice * 3.5 : 0);
+    let mean = k * per + (k ? extraDice * 3.5 + honed : 0);
     let variance = k * rollVar + (k ? (extraDice * 35) / 12 : 0);
     if (half) {
       mean += ((hits - k) * per) / 2;
@@ -498,6 +516,9 @@ function foeStatusValue(sim: Sim, m: MonsterEntity, list: StatusApply[]): number
       }
       case 'blinded':
         v += 0.4 * t * acting;
+        break;
+      case 'frightened': // it runs instead of attacking (and gets away from whoever it was on)
+        v += 1.1 * t * acting;
         break;
       case 'prone': {
         // Melee friends near it get advantage until it gets up (and it loses half its movement doing that).
@@ -770,6 +791,14 @@ function heroStatusValue(sim: Sim, f: PlayerEntity, st: StatusApply): number {
     }
     case 'marked': // Reckless Attack: the monsters get advantage on you
       return -0.3 * exposure(sim, f) * turns;
+    case 'honed': // used up by this turn's attack (setupGain counts that), else saved for the next one
+      return (f.id === sim.me.id && sim.actionLater) || hasStatus(f, 'honed') ? 0 : 1.5 * (st.power ?? 1);
+    case 'envenomed': {
+      // Envenom: every weapon hit for a couple of turns poisons (about 2.5 a hit, more with Death Mark).
+      if (hasStatus(f, 'envenomed') || !f.skills.some((o) => SKILLS[o.id].kind === 'basic')) return 0;
+      const fight = sim.monsters.some((m) => dist(m, f) <= f.speed + 1);
+      return fight ? turns * 2.5 * (st.power ?? 1) * (passiveOf(f, 'death_mark') ? 1.5 : 1) : 0.3;
+    }
     default:
       return 0;
   }
@@ -832,6 +861,25 @@ function blockWorth(sim: Sim, f: PlayerEntity, n: number): number {
   return soak * (left <= 0 ? 2 : healWeight({ ...f, hp: left }));
 }
 
+/**
+ * Snare Trap: a melee monster on its way to someone walks into the tiles between it and its target, so a snare there is
+ * likely to catch it (about 35% if it's right next to it and still has to walk). Worth what Netted and the damage are.
+ */
+function trapValue(sim: Sim, s: SkillStats, at: Pos): number {
+  const r = s.radius ?? 0;
+  let v = 0;
+  for (const m of sim.monsters) {
+    if (!isMelee(m) || skipsTurn(m) || ROOTED.some((id) => hasStatus(m, id))) continue;
+    const target = targetOf(sim, m);
+    if (!target || dist(m, target) <= 1) continue; // already there: it won't walk
+    const near = dist(m, at) <= 1 + r && dist(at, target) < dist(m, target);
+    if (!near) continue;
+    const odds = Math.min(0.6, 0.35 * (1 + r));
+    v += odds * (foeStatusValue(sim, m, s.trap!.status) + (s.trap!.dmg ? avgDice(s.trap!.dmg) : 0) + 0.5 * fullDamage(m));
+  }
+  return v;
+}
+
 /** Taunting is good when you're healthy and the monsters would otherwise go for someone else. */
 function tauntValue(sim: Sim, radius: number, turns: number): number {
   const me = sim.me;
@@ -887,7 +935,7 @@ function dashValue(sim: Sim, s: SkillStats): number {
  */
 function setupGain(sim: Sim, s: SkillStats, res: AimResult): number {
   const mine = [...(s.selfStatus ?? []), ...(res.friends.some((f) => f.id === sim.me.id) ? (s.status ?? []) : [])].filter(
-    (x) => x.id === 'focused' || x.id === 'hidden',
+    (x) => x.id === 'focused' || x.id === 'hidden' || x.id === 'honed',
   );
   const mark = !s.roll && (s.onHit ?? []).some((x) => x.id === 'marked') ? res.foes[0] : undefined;
   if (!mine.length && !mark) return 0;
@@ -1281,6 +1329,12 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
   for (const st of s.selfStatus ?? []) score += heroStatusValue(sim, me, st);
   if (s.selfBlock) score += blockWorth(sim, me, avgDice(s.selfBlock) + (s.blockLevel ? me.level : 0));
   if (s.taunt) score += tauntValue(sim, s.taunt.radius, s.taunt.turns);
+  if (s.hpCost) score -= heroLoss(me, hpCostOf(me, s), 0); // Blood Price: your own HP
+  if (s.trap) score += trapValue(sim, s, res.center);
+  if (s.healSelf && s.heal) {
+    const healed = res.friends.filter((f) => f.id !== me.id).reduce((n, f) => n + Math.min(avgDice(s.heal!) + healBonus(me, s), f.maxHp - f.hp), 0);
+    score += Math.min(healed * s.healSelf, me.maxHp - me.hp) * healWeight(me);
+  }
   if (s.gainAp) {
     const r = refreshValue(sim, s);
     score += r;
@@ -1583,7 +1637,7 @@ export function autoApproachChoice(heroes: PlayerEntity[], dc: number): 'sneak' 
 const randomBranch = (): 'A' | 'B' => (Math.random() < 0.5 ? 'A' : 'B');
 /** How much a hero has invested in a skill (healing skills are kept a little longer). */
 const skillWorth = (o: OwnedSkill) => o.tier + (statsOf(o).heal ? 0.5 : 0);
-const ownedOfKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind);
+const ownedOfKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind && !isSignature(p, s.id)); // the signature can't be forgotten
 
 /** How much an auto hero wants a level-up card. */
 function cardValue(p: PlayerEntity, c: OfferCard): number {
@@ -1601,6 +1655,8 @@ function cardValue(p: PlayerEntity, c: OfferCard): number {
       if (c.boon === 'ac') return p.bonusAc < MAX_BONUS_AC ? 4 : -Infinity;
       if (c.boon === 'slot') return countKind(p, 'spell') ? 4 : 1;
       return 3;
+    case 'subclass':
+      return 10; // the only cards in that offer: either, at random (so bot runs play both)
     case 'gear': {
       // Elite spoils: worth it when it beats what's worn (or there's room to carry it for a friend).
       const g = gearDef(c.item);

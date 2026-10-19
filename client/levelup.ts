@@ -1,14 +1,16 @@
 // The level-up panel: a floating card stack in the corner of the canvas (#levelup) for picking 1 of 3 cards.
 // Elite spoils (one pick per elite beaten) use the same panel, titled "Elite spoils", and can offer a piece of gear.
+// At level 3 the whole offer is the hero's two subclasses ("choose your path"): a signature skill now, more skills later.
 // It never blocks play: it collapses to a "Level up!" button, and it starts collapsed during fights.
 
 import './levelup.css';
 import { RARITY_COLOR, SLOT_NAME, bagRoom, describeStats, gearDef } from '../shared/items.ts';
 import { BOONS, CLASSES } from '../shared/rules.ts';
 import {
-  SKILLS, TIER_LABEL, countKind, describeSkill, limitFor, ownedSkill, skillTitle, skillsOfKind, statsAt,
+  SKILLS, SKILL_IDS, TIER_LABEL, countKind, describeSkill, isSignature, limitFor, ownedSkill, skillTitle, skillsOfKind, statsAt,
   type SkillId, type SkillKind,
 } from '../shared/skills.ts';
+import { SUBCLASSES, SUBCLASS_LEVEL } from '../shared/subclasses.ts';
 import type { GameState, OfferCard, PickRequest, PlayerEntity } from '../shared/types.ts';
 import { itemIcon } from './inventory.ts';
 import { send } from './net.ts';
@@ -39,6 +41,8 @@ interface CardView {
 /** Picks still to make: level-ups and elite spoils. */
 const picksLeft = (m: PlayerEntity) => m.levelUps + m.elitePicks;
 const isElite = (m: PlayerEntity) => m.offerKind === 'elite';
+/** The offer is the choice of subclass (all of it: the two cards of the hero's class). */
+const isPath = (m: PlayerEntity) => !!m.offer?.some((c) => c.kind === 'subclass');
 
 /** "Techniques" -> "Technique": every class flavor name is the plural of its singular. */
 const singular = (plural: string) => plural.replace(/s$/, '');
@@ -63,6 +67,17 @@ function cardView(m: PlayerEntity, c: OfferCard): CardView {
     return {
       icon: itemIcon(c.item, g.icon), title: g.name, badge: SLOT_NAME[g.slot], kind: 'gear', color: RARITY_COLOR[g.rarity],
       body: `<div class="lu-tier">${g.rarity} ${SLOT_NAME[g.slot].toLowerCase()}</div>${desc(describeStats(g.stats))}${g.note ? desc(g.note) : ''}<div class="lu-note">🎒 Goes into your bag</div>`,
+    };
+  }
+  if (c.kind === 'subclass') {
+    const sub = SUBCLASSES[c.sub];
+    const sig = statsAt(sub.signature, 1);
+    const more = SKILL_IDS.filter((id) => SKILLS[id].sub === c.sub && id !== sub.signature)
+      .map((id) => { const st = statsAt(id, 1); return `${st.icon} ${esc(st.name)}`; })
+      .join(' · ');
+    return {
+      icon: sub.icon, title: sub.name, badge: 'Subclass', kind: 'subclass',
+      body: `${desc(sub.blurb)}<div class="lu-tier up">Learn now · takes no slot</div><b class="lu-sig">${sig.icon} ${esc(sig.name)}</b>${desc(describeSkill(sub.signature, 1, undefined, m))}${more ? `<div class="lu-note">Later picks: ${more}</div>` : ''}`,
     };
   }
   const def = SKILLS[c.skill];
@@ -115,6 +130,7 @@ function forgetHtml(m: PlayerEntity, i: number): string {
   const kind = SKILLS[c.skill].kind;
   const learning = statsAt(c.skill, 1);
   const list = skillsOfKind(m, kind)
+    .filter((o) => !isSignature(m, o.id)) // a subclass's signature skill can't be forgotten
     .map((o) => {
       const st = statsAt(o.id, o.tier, o.branch);
       return `<button type="button" class="lu-card k-${kind} forget" data-forget="${o.id}">
@@ -130,6 +146,7 @@ function forgetHtml(m: PlayerEntity, i: number): string {
 
 function panelHtml(m: PlayerEntity, isOpen: boolean): string {
   const elite = isElite(m);
+  const path = isPath(m);
   const n = picksLeft(m);
   if (!isOpen) {
     return `<button type="button" class="lu-tab${elite ? ' elite' : ''}" data-lu="toggle" title="Open your ${elite ? 'elite spoils' : 'level-up picks'} (L)">${elite ? '💀 Spoils' : '⬆️ Level up!'} (${n})</button>`;
@@ -139,10 +156,11 @@ function panelHtml(m: PlayerEntity, isOpen: boolean): string {
     forgetCard !== null ? forgetHtml(m, forgetCard) : offer.map((c, i) => cardHtml(m, c, i)).join('');
   return `<div class="lu-panel${elite ? ' elite' : ''}" role="dialog" aria-label="${elite ? 'Elite spoils' : 'Level up'}">
     <div class="lu-top">
-      <b>${elite ? '💀 Elite spoils' : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : 'pick 1 of ' + offer.length}</span></b>
+      <b>${elite ? '💀 Elite spoils' : path ? `⬆️ Level ${SUBCLASS_LEVEL}: choose your path` : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : 'pick 1 of ' + offer.length}</span></b>
       <button type="button" class="lu-min" data-lu="toggle" title="Collapse (L)" aria-label="Collapse">–</button>
     </div>
     ${elite ? '<div class="lu-explain">Pick one reward for beating the elite.</div>' : ''}
+    ${path ? '<div class="lu-explain">Pick a subclass. Its signature skill is yours now (no slot needed), and its other skills join your future level-up picks.</div>' : ''}
     <div class="lu-cards">${body}</div>
   </div>`;
 }

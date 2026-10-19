@@ -715,7 +715,7 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
   - [x] Shown on party cards (+N 🧱), the HP bars, token tooltips, the log ("🧱 Bob covers Ann: 7 Block until Bob's next turn."), and the codex (monsters with shields).
   - Tests: `tests/block.test.ts` (9). One caught that the bot kill math ignored Block (it would swing at a 4-HP skeleton behind 12 Block).
   - **For Phase 13:** Brace is efficient next to the Shield spell (no slot); Shove now competes with Brace for the spare AP and gets used much less.
-- [ ] **Subclasses** (decided 2026-10-19): every class picks one of two at level 3, and its offers come from the class pool plus the subclass pool. Your class identities, with the Cleric protecting from range and the Paladin by touch so they don't overlap:
+- [ ] 🟡 **Subclasses** (decided 2026-10-19): every class picks one of two at level 3, and its offers come from the class pool plus the subclass pool. Your class identities, with the Cleric protecting from range and the Paladin by touch so they don't overlap:
 
   | Class | Subclass A | Subclass B | Own AP / Block trick |
   |---|---|---|---|
@@ -727,6 +727,35 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
   | Ranger | Trapper: traps that root or net, volleys | Sharpshooter: long range, big single hits | Traps cost AP now and spring on the monsters' turn |
   | Paladin | Protection: Block on allies next to you, takes hits for them | Devotion: self-sustain, heals by touch | Protects by touch |
   | Bard | Valor: buffs | Whispers: debuffs and crowd control | Inspiration gives an ally +1 AP |
+
+  The skill list you approved (★ = the signature, learned when the subclass is picked; it takes no slot and can't be forgotten). Every skill has tiers I → II → III-A / III-B:
+
+  | Subclass | ★ Signature | Second skill | Passive |
+  |---|---|---|---|
+  | ⚔️ Weapon Master | Cleave (2 AP cantrip: every enemy next to you) | Precision Strike (1 AP: advantage, +1d8 on the next hit) | Counterattack: a melee miss on you gets hit back |
+  | 🛡️ Guardian | Shield Wall (1 AP: 2d6 + level Block, taunts) | Iron Recovery (heal + Block) | Spiked Shield: Block that soaks a melee hit deals it back |
+  | 🗡️ Assassin | Envenom (weapon hits poison) | Assassinate (3 AP: crits a target at full HP) | Death Mark: +1d6 Sneak Attack on the Poisoned |
+  | 💨 Skirmisher | Quick Stab (a 1-AP basic attack) | Tumble (+4 tiles, +2 AC) | Strike and Fade: the first attack each turn gives +2 movement |
+  | ☄️ Evoker | Sculpt Spells (area attacks skip friends) | Meteor (3 AP: 6d6 fire, radius 2) | Empowered Evocation: + damage on spells |
+  | ❄️ Elementalist | Frost Nova (chill and push everything around you) | Flash Freeze (cold area: the Wet freeze) | Catalyst: battlefield fire, poison, shocks and blasts you set off deal +50% |
+  | 💖 Life | Mass Healing Word (heals and revives everyone near) | Prayer of Healing (big group heal) | Disciple of Life: + healing |
+  | ⚖️ Order | Warding Light (1 AP, range 6: Block on a friend) | Command (dazed and prone) | Voice of Authority: a friend you help gets +1 AP |
+  | 🩸 Berserker | Blood Price (0 AP: 10% of your max HP for +1 AP) | Frenzy (two swings, then you're Marked) | Bloodlust: + melee damage below half HP |
+  | 🦏 Juggernaut | Blood Drinker (melee hits heal you for ¼) | Challenge (taunt and Block) | Unstoppable: no Prone, Netted or Webbed while Raging |
+  | 🪤 Trapper | Snare Trap (hidden: the first monster in is Netted) | Barrage (arrows on an area) | Ambusher: + damage on the Netted and Prone |
+  | 🎯 Sharpshooter | Aimed Shot (3 AP, range 14) | Piercing Shot (goes on to 2 more) | Deadeye: + damage at 5+ tiles |
+  | 🏰 Protection | Intercept (take an attack meant for a friend next to you) | Aegis (Block on you and everyone next to you) | Aura of Warding: friends next to you get Block each turn |
+  | 🌟 Devotion | Blessed Smites (Divine Smite heals you for half) | Restoring Touch (heal a friend, and yourself half) | Divine Vitality: + HP every turn |
+  | 🎺 Valor | Rousing Inspiration (Inspiration gives +1 AP) | War Chant (Rallied ×2 and Block for everyone near) | Combat Inspiration: inspired friends get +1d4 on hits |
+  | 🤫 Whispers | Dissonant Whispers (Frightened: it runs) | Cutting Words (Dazed) | Psychic Blades: + damage on debuffed monsters |
+
+  - Renamed from the draft to avoid clashing with existing names: Bloodthirst → Blood Drinker, Sentinel Aura → Aura of Warding, Holy Vigor → Divine Vitality, Battle Hymn → War Chant, Hit and Run → Strike and Fade, Volley → Barrage. Intercept reuses the Fighter's Bodyguard code. Deadeye gives damage only (no extra range: ranges live on the skill).
+  - [x] Data (shared/subclasses.ts, 48 skills), the level-3 pick (a level-up offer of the class's two subclass cards; bots pick at random so runs play both), offers only from your own subclass, the shop can't forget a signature
+  - [x] Rules: Honed, Envenomed, Emboldened and Frightened statuses; HP costs, healing yourself, hidden snares (monsters don't see them), thorns, lifesteal, Catalyst, Spell Pierce, Intercept, Counterattack, auras and regeneration, Unstoppable
+  - [x] Monster AI: Frightened monsters run from whoever scared them (scripted and PPO alike)
+  - [x] Hero bots value them: the new damage passives, Honed and Death Mark in hit math, Envenom, Frightened, snares (placed between a monster and its target), Blood Price's HP
+  - [ ] UI: subclass cards at level 3, subclass on hero cards, snares on the board, the codex
+  - [ ] Tests and bot runs
 - [ ] **Rewards after every win** (decided 2026-10-19): each hero picks 1 of 3 cards, two skill cards and one item card. Level-ups give HP and power, and the subclass at level 3. Potions drop like Slay the Spire's: 40% after a fight, +10% after each fight without one, −10% after each one that drops.
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)

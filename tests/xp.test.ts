@@ -49,7 +49,7 @@ test('offers are three different cards the hero can take', () => {
       const p = hero(c, 1 + (i % LEVEL_CAP));
       const cards = makeOffer(p, r);
       assert.equal(cards.length, 3, `${c}: 3 cards`);
-      const keys = cards.map((k) => (k.kind === 'boon' ? `boon:${k.boon}` : k.kind === 'gear' ? k.item : k.skill));
+      const keys = cards.map((k) => (k.kind === 'boon' ? `boon:${k.boon}` : k.kind === 'gear' ? k.item : k.kind === 'subclass' ? k.sub : k.skill));
       assert.equal(new Set(keys).size, 3, `${c}: no duplicates (${keys})`);
       for (const k of cards) if (k.kind === 'upgrade') assert.equal(nextTier(p, k.skill), k.tier);
     }

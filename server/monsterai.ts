@@ -414,6 +414,18 @@ function candidates(v: MonsterView): Candidates {
   const still: MonsterPlan = { kind: 'move', path: [], instinct };
   if (!enemies.length) return { forced: { kind: 'move', path: [] }, list: [], fallback: still };
 
+  // ---- frightened (Dissonant Whispers): it runs from whoever scared it, as far as it can, and doesn't attack
+  const fear = me.statuses.find((s) => s.id === 'frightened');
+  if (fear) {
+    const from = enemies.find((e) => e.id === fear.by) ?? closestEnemy(me, entities) ?? enemies[0];
+    let best: { score: number; walk: Walk } | null = null;
+    for (const [i, walk] of walks) {
+      const score = dist(from, posOf(i)) - walk.harm * HARM - hazardAt(map, i, me) * 0.5 - walk.steps * STEP_COST;
+      if (!best || score > best.score) best = { score, walk };
+    }
+    return { forced: { kind: 'flee', path: best?.walk.path ?? [] }, list: [], fallback: still };
+  }
+
   // ---- a coward below its nerve runs (a few turns, then it fights cornered)
   // (Only while the rest of its side still fights: the last one standing has nowhere to run to.)
   if (role === 'coward' && me.hp < me.maxHp * COWARD_HP && (me.fled ?? 0) < COWARD_TURNS && friends.length) {

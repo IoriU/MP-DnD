@@ -9,6 +9,7 @@ import {
   SKILL_IDS,
   countKind,
   hasBranch,
+  isSignature,
   limitFor,
   nextTier,
   passiveOf,
@@ -18,6 +19,7 @@ import {
   type SkillId,
 } from '../shared/skills.ts';
 import type { BoonId, ClassId, OfferCard, OwnedSkill, PickRequest, PlayerEntity, RestPick } from '../shared/types.ts';
+import { SUBCLASSES, SUBCLASS_LEVEL, isSubclassId, subclassesOf, type SubclassId } from '../shared/subclasses.ts';
 import type { Rng } from './rng.ts';
 
 export const startingSkills = (c: ClassId): OwnedSkill[] => CLASSES[c].start.map((id) => ({ id, tier: 1, cd: 0 }));
@@ -85,6 +87,7 @@ function candidates(p: PlayerEntity, pool: 'class' | 'common'): Weighted[] {
     const def = SKILLS[id];
     if (!COUNTED_KINDS.includes(def.kind)) continue;
     if (pool === 'class' ? def.pool !== p.classId : def.pool !== 'common') continue;
+    if (def.sub && def.sub !== p.subclass) continue; // another subclass's skill (or no subclass yet)
     const owned = p.skills.some((s) => s.id === id);
     if (!owned) {
       out.push({ card: { kind: 'learn', skill: id }, key: id, w: 1 });
@@ -152,11 +155,17 @@ export function makeEliteOffer(p: PlayerEntity, r: Rng, act: number): OfferCard[
   return cards;
 }
 
-/** Deals the next pick: elite spoils first, then level-ups. */
+/** The level-up pick that chooses a subclass: one card for each of the class's two. */
+export const subclassOffer = (p: PlayerEntity): OfferCard[] => subclassesOf(p.classId).map((sub) => ({ kind: 'subclass', sub }));
+
+/** Deals the next pick: elite spoils first, then level-ups (the first one from SUBCLASS_LEVEL on picks the subclass). */
 export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
   if (p.elitePicks > 0) {
     p.offer = makeEliteOffer(p, r, act);
     p.offerKind = 'elite';
+  } else if (p.levelUps > 0 && p.level >= SUBCLASS_LEVEL && !p.subclass) {
+    p.offer = subclassOffer(p);
+    p.offerKind = 'level';
   } else if (p.levelUps > 0) {
     p.offer = makeOffer(p, r);
     p.offerKind = 'level';
@@ -167,7 +176,8 @@ export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
 }
 
 /** Cards that still make sense after a save is loaded (skills and items can be renamed or removed between versions). */
-export const validCard = (c: OfferCard) => (c.kind === 'boon' ? true : c.kind === 'gear' ? isItemId(c.item) && !!gearDef(c.item) : Object.hasOwn(SKILLS, c.skill));
+export const validCard = (c: OfferCard) =>
+  c.kind === 'boon' ? true : c.kind === 'gear' ? isItemId(c.item) && !!gearDef(c.item) : c.kind === 'subclass' ? isSubclassId(c.sub) : Object.hasOwn(SKILLS, c.skill);
 
 /** Adds a new skill after the last one of its kind, so the hotbar stays grouped. */
 function insertSkill(p: PlayerEntity, id: SkillId) {
@@ -190,7 +200,7 @@ function learn(p: PlayerEntity, id: SkillId, forget: unknown): PickResult {
   let forgot = '';
   if (countKind(p, kind) >= limitFor(p, kind)) {
     const old = p.skills.find((s) => s.id === forget);
-    if (!old || SKILLS[old.id].kind !== kind) return { ok: false, error: `Your ${kind} slots are full: pick one to forget.` };
+    if (!old || SKILLS[old.id].kind !== kind || isSignature(p, old.id)) return { ok: false, error: `Your ${kind} slots are full: pick one to forget.` };
     p.skills = p.skills.filter((s) => s !== old);
     forgot = ` (forgot ${skillTitle(old)})`;
   }
@@ -230,6 +240,15 @@ function boon(p: PlayerEntity, id: BoonId): PickResult {
   }
 }
 
+/** Picks the subclass and learns its signature skill (it takes no slot). */
+function chooseSubclass(p: PlayerEntity, sub: SubclassId): PickResult {
+  const def = SUBCLASSES[sub];
+  if (!def || def.classId !== p.classId || p.subclass) return { ok: false, error: "That subclass isn't open to you." };
+  p.subclass = sub;
+  if (!p.skills.some((s) => s.id === def.signature)) insertSkill(p, def.signature);
+  return { ok: true, text: `becomes ${/^[AEIOU]/.test(def.name) ? 'an' : 'a'} ${def.name} ${CLASSES[p.classId].name} and learns ${SKILLS[def.signature].base.name}` };
+}
+
 function takeGear(p: PlayerEntity, id: ItemId): PickResult {
   if (bagRoom(p) <= 0) return { ok: false, error: 'Your bag is full: drop or equip something first (I opens the bag).' };
   p.bag.push(id);
@@ -248,7 +267,9 @@ export function applyPick(p: PlayerEntity, req: PickRequest, r: Rng, act = 1): P
         ? upgrade(p, card.skill, card.tier, req.branch)
         : card.kind === 'gear'
           ? takeGear(p, card.item)
-          : boon(p, card.boon);
+          : card.kind === 'subclass'
+            ? chooseSubclass(p, card.sub)
+            : boon(p, card.boon);
   if (!res.ok) return res;
   if (elite) p.elitePicks--;
   else p.levelUps--;

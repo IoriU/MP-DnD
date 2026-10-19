@@ -112,6 +112,7 @@ button.lu-card:focus-visible,
 .lu-card.k-spell { --k: #b58cff; }
 .lu-card.k-passive { --k: #7ddc6f; }
 .lu-card.k-boon { --k: var(--accent); }
+.lu-card.k-subclass { --k: #ff9a5a; }
 .lu-card.k-gear { --k: #58a6ff; } /* the card itself sets --k to its rarity color */
 .lu-card.forget { --k: var(--bad); }
 /* A card that can't be taken right now (a full bag): dimmed, with the reason on it. */
@@ -119,6 +120,7 @@ button.lu-card:focus-visible,
 .lu-card.off:hover { border-color: var(--line); background: var(--panel-2); }
 .lu-why { font-size: 11px; font-weight: 700; color: #ffb3a6; }
 .lu-note { font-size: 11px; color: var(--muted); }
+.lu-sig { font-size: 13px; }
 
 .lu-head2 { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .lu-icon { flex: none; font-size: 20px; }

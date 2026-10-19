@@ -4,9 +4,10 @@ import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
 import { BAG_SIZE, type ItemId } from '../shared/items.ts';
 import { AP_GAIN, AP_MAX, CLASSES, DIFFICULTIES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
-  blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
+  blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, isSignature, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
 } from '../shared/skills.ts';
+import { SUBCLASSES } from '../shared/subclasses.ts';
 import { COMBOS, PROPS } from '../shared/surfaces.ts';
 import type { GameState, LogLine, PlayerEntity, StatusInst, TurnState } from '../shared/types.ts';
 import { alliesHtml, blessingsHtml, gearIconsHtml, itemIcon, relicsHtml, toggleInventory } from './inventory.ts';
@@ -14,7 +15,7 @@ import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { classIcon, onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
 import { aimAt, blockReason, currentEntity, huntedIds, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
-import { $, esc, monsterAiTag, toast } from './util.ts';
+import { $, classLabel, esc, monsterAiTag, toast } from './util.ts';
 
 let lastLogId = -1;
 let lastTurnKey = '';
@@ -296,12 +297,16 @@ function apPips(ap: number): string {
   return `<span class="pill ap" title="Action points: attacks cost 2, quick skills 1, the biggest spells 3. AP you don't spend carries over (a turn starts with at most ${AP_MAX}).">⚡ ${ap} AP ${pips}</span>`;
 }
 
+/** A subclass's signature skill takes no slot and can't be forgotten: say so in its tooltip. */
+const signatureNote = (m: PlayerEntity, id: SkillId) =>
+  isSignature(m, id) ? `\n\n${SUBCLASSES[m.subclass!].icon} ${SUBCLASSES[m.subclass!].name} signature: takes no slot, can't be forgotten` : '';
+
 function skillButton(m: PlayerEntity, id: SkillId, n: number): string {
   const own = ownedSkill(m, id)!;
   const st = statsOf(own);
   const def = SKILLS[id];
   const reason = blockReason(id);
-  const tip = `${skillTitle(own)}\n${describeSkill(id, own.tier, own.branch, m)}${reason ? `\n\n⛔ ${reason}` : ''}`;
+  const tip = `${skillTitle(own)}\n${describeSkill(id, own.tier, own.branch, m)}${signatureNote(m, id)}${reason ? `\n\n⛔ ${reason}` : ''}`;
   const cd = own.cd > 0 ? `<span class="cd-ov">⏱${own.cd}</span>` : '';
   const icon = id === 'potion' || def.kind === 'item' ? itemIcon(id as ItemId | 'potion', st.icon) : st.icon; // potions and consumables have item art
   const meta = [
@@ -329,7 +334,7 @@ function hotbarHtml(m: PlayerEntity): string {
   const passives = skillsOfKind(m, 'passive')
     .map((o) => {
       const st = statsOf(o);
-      const tip = `${skillTitle(o)}\n${describeSkill(o.id, o.tier, o.branch, m)}`;
+      const tip = `${skillTitle(o)}\n${describeSkill(o.id, o.tier, o.branch, m)}${signatureNote(m, o.id)}`;
       return `<span class="passive" title="${esc(tip)}">${st.icon}<i>${TIER_LABEL(o.tier, o.branch)}</i></span>`;
     })
     .join('');
@@ -380,7 +385,7 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
   return `<div class="${cls}" data-entity="${p.id}">
     <div class="pc-glyph" style="border-color:${p.color}">${p.dead ? '🪦' : classIcon(p.classId, 32)}</div>
     <div class="pc-main">
-      <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${c.name} Lv ${p.level}</span>${autoTag(info)}${status}${focus ? '<span class="tag bad" title="Hunted: the monsters are ganging up on this hero">🎯 hunted</span>' : ''}${ups}</div>
+      <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${classLabel(p)} Lv ${p.level}</span>${autoTag(info)}${status}${focus ? '<span class="tag bad" title="Hunted: the monsters are ganging up on this hero">🎯 hunted</span>' : ''}${ups}</div>
       <div class="hpbar"><div style="width:${hpPct}%;background:${hpColor}"></div>${p.tempHp > 0 ? `<i class="tmp" style="width:${tempPct}%"></i>` : ''}<span>${p.hp} / ${p.maxHp}${p.tempHp > 0 ? ` <em>+${p.tempHp} 🛡</em>` : ''}${blockOf(p) > 0 ? ` <em title="Block: soaks damage first, until the start of the turn of whoever gave it">+${blockOf(p)} 🧱</em>` : ''}</span></div>
       <div class="xpbar${max ? ' max' : ''}" title="${max ? 'Max level' : `${p.xp} of ${need} XP to level ${p.level + 1}`}"><div style="width:${xpPct}%"></div><span>${max ? 'MAX' : `XP ${p.xp} / ${need}`}</span></div>
       <div class="pc-stats">${gearIconsHtml(p) ? `<span class="pc-gear">${gearIconsHtml(p)}</span>` : ''}<span title="Armor class">🛡️ ${p.ac}</span><span title="Potions">🧪 ${p.potions}</span><span title="Kills">💀 ${p.kills}</span><span title="Kill steals: killing blows on monsters someone else did most of the damage to">🗡️ ${p.steals}</span>${
@@ -427,7 +432,7 @@ function renderEnd(s: GameState, party: PlayerEntity[]) {
       const slayer = topKills > 0 && p.kills === topKills ? ' <span class="tag">💀 top slayer</span>' : '';
       const crown = topSteals > 0 && p.steals === topSteals ? ' <span class="tag">🗡️ kill-steal champion</span>' : '';
       return `<li><span class="dot" style="background:${p.color}"></span>${classIcon(p.classId, 32)} <b>${esc(p.name)}</b>
-        <span class="muted">${CLASSES[p.classId].name} Lv ${p.level}</span>${slayer}${crown}
+        <span class="muted">${classLabel(p)} Lv ${p.level}</span>${slayer}${crown}
         <span class="end-kills" title="Kills and kill steals">💀 ${p.kills} · 🗡️ ${p.steals}</span></li>`;
     })
     .join('');

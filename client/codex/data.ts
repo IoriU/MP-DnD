@@ -6,6 +6,7 @@ import { ALLIES, type AllyDef } from '../../shared/elites.ts';
 import { ITEMS, type ItemDef } from '../../shared/items.ts';
 import { ACTS, CLASSES, HELP, MONSTERS, ORDER_STATUS, type ActDef, type ClassDef, type MonsterDef } from '../../shared/rules.ts';
 import { SKILLS, STATUSES, type SkillDef, type StatusDef } from '../../shared/skills.ts';
+import { SUBCLASSES, type SubclassDef } from '../../shared/subclasses.ts';
 import { CLASS_SPRITES, MONSTER_SPRITES } from '../sprites.ts';
 
 /** The monsters an event's fights can use, scanned from the event's source (see sources.ts eventFights). */
@@ -18,6 +19,7 @@ export interface CodexData {
   monsters: Record<string, MonsterDef>;
   acts: ActDef[];
   classes: Record<string, ClassDef>;
+  subclasses: Record<string, SubclassDef>;
   skills: Record<string, SkillDef>;
   items: Record<string, ItemDef>;
   allies: Record<string, AllyDef>;
@@ -32,6 +34,7 @@ export const liveData = (eventFights: Record<string, EventFight> = {}): CodexDat
   monsters: MONSTERS,
   acts: ACTS,
   classes: CLASSES,
+  subclasses: SUBCLASSES,
   skills: SKILLS,
   items: ITEMS,
   allies: ALLIES,
@@ -101,6 +104,7 @@ const ENGINE_STATUSES: Record<string, string> = {
   frozen: 'cold on a Wet or Chilled creature',
   shocked: 'lightning',
   surprised: 'ambushes (game rules)',
+  emboldened: 'Voice of Authority and Rousing Inspiration (subclass passives)',
 };
 
 /**

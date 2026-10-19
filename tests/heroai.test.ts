@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { canStep, dist, reachable } from '../shared/grid.ts';
 import { CLASSES, CLASS_IDS, MONSTERS, TIER3_LEVEL, maxHpFor, maxSlotsFor } from '../shared/rules.ts';
-import { SKILLS, SKILL_IDS, canUpgrade, countKind, limitFor, ownedSkill, resolveAim, skillBlockReason, slotCost, statsOf, type SkillId, type StatusId } from '../shared/skills.ts';
+import { SKILLS, SKILL_IDS, canUpgrade, countKind, hpCostOf, limitFor, ownedSkill, resolveAim, skillBlockReason, slotCost, statsOf, type SkillId, type StatusId } from '../shared/skills.ts';
+import { SUBCLASS_LEVEL, subclassesOf } from '../shared/subclasses.ts';
 import { aimFieldOps, applyField, hazardAt, planWalk, type CloudId, type FieldLike, type GroundId, type PropId } from '../shared/surfaces.ts';
 import { attackAdvantage, dirTo, isBehind, isFlanking, netAdvantage } from '../shared/tactics.ts';
 import type { ClassId, MonsterEntity, PlayerEntity, Pos, TurnState } from '../shared/types.ts';
@@ -102,6 +103,7 @@ function applyAct(v: HeroView, intent: Extract<HeroIntent, { kind: 'act' }>, r?:
   const s = statsOf(own);
   turn.ap -= s.ap;
   if (s.oncePerTurn) me.used.push(`turn:${intent.skill}`);
+  me.hp -= hpCostOf(me, s);
   if (SKILLS[intent.skill].kind === 'spell') me.slots -= slotCost(s);
   if (SKILLS[intent.skill].kind === 'cantrip') own.cd = s.cooldown ?? 0;
   if (intent.skill === 'potion') me.potions--;
@@ -699,9 +701,10 @@ function randomMap(r: Rng): FieldLike {
 function randomHero(r: Rng, pos: Pos, classId: ClassId = r.pick(CLASS_IDS)): PlayerEntity {
   const level = r.int(1, 12);
   const p = hero(classId, pos.x, pos.y, { level, maxHp: 1, hp: 1, maxSlots: 0, slots: 0 });
+  if (level >= SUBCLASS_LEVEL) p.subclass = r.pick(subclassesOf(classId)); // and its skills can come up below
   for (const id of r.shuffle([...ACTIVE])) {
     const def = SKILLS[id];
-    if ((def.pool !== classId && def.pool !== 'common') || p.skills.some((s) => s.id === id)) continue;
+    if ((def.pool !== classId && def.pool !== 'common') || (def.sub && def.sub !== p.subclass) || p.skills.some((s) => s.id === id)) continue;
     if (countKind(p, def.kind) < limitFor(p, def.kind) && r.chance(0.5)) p.skills.push({ id, tier: 1, cd: 0 });
   }
   for (const s of p.skills) {
