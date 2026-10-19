@@ -115,7 +115,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 6 | Items, relics, shop & treasure | 🟢 |
 | 7 | Elites, blessings & NPC allies | 🟢 |
 | 8 | Real art *(independent; can be done anytime)* | 🟢 |
-| 9 | Smarter enemy AI + difficulty | ⚪ |
+| 9 | Smarter enemy AI + difficulty | 🟢 |
 | 10 | AI Dungeon Master (local LLM) | ⚪ |
 | 11 | Experiments: RL enemies/companions, talking NPCs | 🧪 |
 | 12 | Content backlog | ⚪ |
@@ -510,22 +510,79 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 
 ---
 
-## Phase 9: Smarter enemy AI + difficulty ⚪
+## Phase 9: Smarter enemy AI + difficulty 🟢
 
 **Goal:** monsters fight as a squad, but stay readable and beatable. Scripted "utility AI", no machine learning.
 
-- [ ] Squad director per fight: a shared focus target and role assignment
-- [ ] Roles:
-  - [ ] brute: pushes to the front
-  - [ ] archer: keeps distance
-  - [ ] support: heals or buffs (e.g. Goblin Shaman)
-  - [ ] coward: flees at low HP
-- [ ] Utility scoring for each move/action: damage, danger, **flanking and back attacks** (from Phase 4), avoiding corridor queues
-- [ ] Surface awareness (from Phase 5): avoid hazards, shove heroes into them, ignite oil under the party, use resistances
-- [ ] Monster barks in the log (handwritten)
-- [ ] Difficulty setting in the lobby: Story / Normal / Hard
-- [ ] The balance harness reports results per difficulty (used in the Balance pass)
-- [ ] The same AI drives NPC allies (Phase 7)
+- [x] Squad director (`squadPlan` in `server/monsterai.ts`): the monsters pick their targets together and keep them while they're still a good pick. The client marks each hunted hero with a red 🎯 reticle, and the turn order and party cards name them.
+  - **Scales with the party:** fights grow with party size (`partyFactor`, the same factor as the encounter budget), so the monsters split into packs (`packsFor`: 1 pack for 1–2 heroes, 2 for 3–4, 3 for 5–6), each hunting its own hero. A 6-hero party doesn't get a whole 6-hero fight dropped on one hero.
+  - Each monster joins the nearest pack that still has room, so the packs come out about the same size.
+- [x] Roles (`role` on each stat block, shown on the monster tooltip):
+  - [x] brute: pushes to the front and holds it (Hobgoblin, Orc, Ogre, Wight, the bosses...)
+  - [x] skirmisher (added): circles for flanks and back attacks (Goblin, Wolf, Giant Spider, War Hound)
+  - [x] archer: keeps its distance (steps back from melee before it shoots)
+  - [x] support: heals or buffs. 3 new monsters with sprites:
+    - Goblin Shaman (act 1): heals, Blesses.
+    - Necromancer (act 2): heals, Shields.
+    - Dragon Priest (act 3): heals, Blesses.
+    - Where they show up: the new templates Shaman's Circle and Necromancer's Vigil, the Cult Ritual, the big templates, and some elite escorts. The Acolyte ally uses the same support code.
+  - [x] coward (Giant Rat, Kobold): runs below 40% HP for up to 2 turns, then fights cornered. The last monster standing never runs.
+- [x] Utility scoring for every reachable tile:
+  - Expected damage with advantage (flanking, from behind, and the target turning to face whoever steps next to it).
+  - The chance to take the target down, with its pack's target first.
+  - Danger by role, hazards on the way, and Sentinel heroes it would walk away from.
+  - **Corridor queues:** a friend in the way counts as 3 extra steps, so monsters go round another way when there is one instead of queueing.
+- [x] Surface awareness:
+  - Walks take the least harm, and a monster won't end in a hazard if a safe tile is as good.
+  - **Brutes with `shove` push heroes into fire, lava or poison** (a STR contest, like the heroes' Shove).
+  - Fire, cold and lightning attackers go for the hero standing in the oil or water: the hit sets off the whole pool. They **shoot the ground** to blow up gas or light a pool when no hero in it can be hit.
+  - Resistances count: fire-immune monsters walk through fire, a Magma Imp likes standing in it, and hits on a resistant hero are worth less.
+- [x] Monster barks, handwritten (`server/barks.ts`):
+  - Voices: goblins, beasts, the mindless dead, the dread undead, orcs, the ogre, cultists, imps, dragons, and the NPC allies.
+  - Triggers: calling a target, running, being cornered, shoving, setting the ground off, healing, buffing.
+  - They're shown in italics in the log.
+- [x] Difficulty in the lobby: Story / Normal / Hard.
+  - The host picks it; it's saved with the run and shown next to the act name.
+  - Knobs in `DIFFICULTIES` (shared/rules.ts), for Story / Normal / Hard:
+    - Monster HP ×0.75 / 1 / 1.2.
+    - Attack −1 / 0 / +1; damage 0 / 0 / +1.
+    - Encounter budget ×0.8 / 1 / 1.2.
+    - Tactics: Story fights on instinct (the closest hero, no squad); Normal slips back to instinct on 15% of monster turns; Hard never does.
+  - **Placeholder numbers until Phase 13.**
+- [x] The balance harness reports per difficulty and per party size:
+  - `DIFF=all node scripts/balance.ts 12 1,2,4,6 6` gives a wins table by difficulty × party size.
+  - It also counts target calls, flees, shoves, ground shots, monster heals and buffs.
+- [x] The same AI drives NPC allies:
+  - They pick one target of their own (faint green brackets on it).
+  - Roles: the Sellsword is a brute that shoves, the Acolyte a support (heals, Blesses heroes), the Ranger an archer, and the War Hound a skirmisher that hunts shooters.
+- [x] The hero bots predict who the monsters will go for from the hunted list (server/heroai.ts)
+
+**Result (2026-10-19):** ✅ Monsters fight as packs with roles, and the party can see who they're after.
+- **Bot runs** (0 anomalies, 0 rejected actions and 0 server errors in all of them):
+  - 18 four-hero runs across the 3 difficulties (12 of them full length).
+  - 6 two-hero and 3 solo runs.
+  - 36 runs over 1–6 heroes × 3 difficulties after the last fixes. Parties of 3–6 won all of them; solo lost every run; 2 heroes won on Story and Normal but lost on Hard.
+  - Seen in play: target calls, flees, shoves (in and held), monster heals and buffs, Acolyte heals.
+- **Hand-made boards:**
+  - An orc shoves a hero into fire (but takes the back attack when it has one).
+  - A cultist goes for the hero in the oil, and blows up a gas cloud it can't otherwise reach.
+  - An archer steps back before shooting; a hurt rat runs.
+  - The Shaman heals a hurt goblin and Blesses its captain.
+  - The squad hunts the hurt wizard; packs split 2/2/2 against 6 heroes.
+- **Client:**
+  - The lobby picker (host and read-only), the difficulty pill, the 🎯 reticles (3 at once in a 6-hero fight), the role and spell tooltips, and the new sprites.
+  - Checked by the client agent in the browser, partly with injected entities.
+- **Tests:** 330, all passing (58 new in tests/monsterai.test.ts: hit odds, the squad director and packs, difficulty and slips, taunts, shoves, kiting, cowards, supports, ground shots, hazards, hunting, walking, corridors, barks, the rules data).
+
+**Notes**
+- Shots at the ground are rare in real fights: when the party stands in oil, shooting a hero sets it off anyway (as it should). They show up with gas clouds, or when no hero in the pool can be hit.
+- Shoves are rare too: they need a hazard right behind a hero, and a back attack often scores better.
+- Solo heroes die in act 1 on every difficulty: two rats flanking a level-1 hero is enough, and nobody can revive them. Solo was already the weakest size before this phase; the smarter monsters make it worse. Phase 13.
+- Parties of 3–6 won every run on every difficulty, so Hard needs to bite harder for them. Phase 13; the harness now gives the table to tune against.
+- Two bugs the tests caught and that are fixed:
+  - A far-off target used to lose out to a nearer one, because its higher weight also multiplied the walking penalty. Now a target that matters more pulls harder; a taunter pulls hardest.
+  - A pack could end up empty. Now every pack gets its fair share first.
+- Story fights on pure instinct: the shortest way to the closest hero, with no hunting for flanks or backs.
 
 ---
 
@@ -573,10 +630,10 @@ Phase 1 replaces the free-roaming dungeon and fog of war. The procedural rooms, 
 **When:** after the classes, items and skills are in (Phases 2–7 and enough of Phase 12). Before that, balance is deliberately ignored.
 
 - [ ] Use `npm run balance` (many full bot runs) to measure win rate, where parties die, and kills/XP/levels per class, for party sizes 1–6
-- [ ] Tune the difficulty curve. Known so far: act 1 elites are deadly while acts 2–3 are too easy; small parties without a healer struggle.
+- [ ] Tune the difficulty curve. Known so far: act 1 elites are deadly while acts 2–3 are too easy; small parties without a healer struggle; solo heroes die in act 1 even on Story.
 - [ ] Tune XP (kill bonus vs shared base), slots per level, rest healing, gold and item prices
 - [ ] Check the design goals: supports keep up with killers, Long Rest vs Train is a real choice, every class gets picked
-- [ ] Difficulty settings (Phase 9) feel distinct: Story / Normal / Hard
+- [ ] Difficulty settings (Phase 9) feel distinct: Story / Normal / Hard, for every party size 1–6. `DIFF=all node scripts/balance.ts N 1,2,3,4,5,6` gives the table; the knobs are `DIFFICULTIES`, `partyFactor` and `packsFor` in shared/rules.ts
 - [ ] Playtest with real people, then adjust
 
 ---

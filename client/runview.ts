@@ -2,7 +2,7 @@
 // and the 🤫 Sneak-or-Charge card that sits over the room before a fight.
 
 import './runview.css';
-import { CLASSES, NODE_INFO, REST_HEAL, stealthBonus } from '../shared/rules.ts';
+import { CLASSES, DIFFICULTIES, NODE_INFO, REST_HEAL, stealthBonus } from '../shared/rules.ts';
 import { SKILLS, TIER_LABEL, describeSkill, ownedSkill, skillTitle, statsAt, trainOptions, type SkillId } from '../shared/skills.ts';
 import type { ActMap, EventView, GameState, MapNode, Notice, PlayerEntity, RestPick, RestState, RunInfo, VoteState } from '../shared/types.ts';
 import { blessingsHtml, relicsHtml } from './inventory.ts';
@@ -326,12 +326,13 @@ function mapHtml(s: GameState, run: RunInfo, vote: VoteState | null, notice: Not
     .map((t) => `<span class="rv-leg t-${t}"><span class="rv-leg-ic">${iconHtml(NODE_SPRITES[t], NODE_INFO[t].icon, SPRITE_PX)}</span>${NODE_INFO[t].name}</span>`)
     .join('');
 
+  const diff = DIFFICULTIES[run.difficulty];
   return `<div class="rv-top">
       <header class="rv-head">
         <div class="rv-title">Act ${run.act} of ${run.maxAct} · ${esc(run.actName)}</div>
         <div class="rv-sub">
           ${statusHtml(vote, 'Vote for the next room')}${progressHtml(s, vote)}
-          <span class="rv-stats">${timerHtml(vote)}<span class="rv-pill gold" title="Party gold">💰 ${run.gold}</span></span>
+          <span class="rv-stats">${timerHtml(vote)}<span class="rv-pill" title="${esc(`${diff.name}: ${diff.desc}`)}">${diff.icon} ${diff.name}</span><span class="rv-pill gold" title="Party gold">💰 ${run.gold}</span></span>
         </div>
         ${run.relics.length || run.blessings.length ? `<div class="rv-relics" title="The party's relics and blessings">${relicsHtml(run.relics)}${blessingsHtml(run.blessings)}</div>` : ''}
       </header>

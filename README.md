@@ -96,6 +96,14 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - **Companions** (NPC allies) fight on your side for the next 3 fights: a 💂 Sellsword, a 😇 Acolyte who heals whoever is hurt most, a 🧝 Ranger or a 🐕 War Hound. They grow stronger each act. Careful with your Fireballs: friendly fire hits them too, and a companion who falls is gone for good.
 - **🛒 Shops:** everyone browses at once and spends the shared gold. Buy gear, consumables, potions or a relic, sell what you don't need, pay for a lesson (upgrade a cantrip or spell) or forget a skill to make room. The party moves on when everyone clicks Done.
 - **Sneak or Charge:** before most fights the party sees the room and votes. Sneaking is a group Stealth check: if at least half of you pass, the monsters lose their first turn; if not, you lose yours. Some fights are ambushes. The Rogue's **Hide** makes monsters ignore them and gives their next attack advantage.
+- **Difficulty:** the host picks **📖 Story**, **⚔️ Normal** or **💀 Hard** in the tavern, and the whole run keeps it (saved runs too). On Story the monsters are weaker and fight on instinct: each one goes for whoever is closest. On Normal and Hard they fight as a squad (below), and Hard also hits harder and brings more of them.
+- **🎯 Monster squads:** on Normal and Hard the monsters call a target and gang up on it. A red 🎯 reticle marks each hunted hero and the turn order names them (in a bigger party the monsters split into packs, each hunting its own hero), so heal them, block for them or draw the monsters off. Every monster has a role, shown on its tooltip:
+  - 🛡️ **Brutes** push to the front and hold it, and some **shove** you into fire and other hazards.
+  - 🗡️ **Skirmishers** circle around for flanks and back attacks.
+  - 🏹 **Archers** keep their distance and shoot.
+  - ✨ **Supports** (the Goblin Shaman, Necromancer and Dragon Priest) heal and buff their side from the back. Kill them first.
+  - 💨 **Cowards** (rats and kobolds) run away when they get hurt.
+  - They talk, too: the monsters' shouts show up in italics in the log.
 - **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Each level-up offers 3 cards (new skills, upgrades, passives, boons); pick one whenever you like, nobody has to wait.
 - **At 0 HP** you fall unconscious and roll death saves on your turn. Healing (a potion, Healing Word or Second Wind) gets you back up. If the party wins the fight, everyone gets back up, even the dead.
 - **Between rooms:** HP carries over. Drink potions, or heal a friend by picking a heal and clicking their party card.
@@ -146,6 +154,8 @@ server/actmap.ts   Slay-the-Spire-style act map generator
 server/room.ts     battle room generator
 server/events.ts   ❓ event scenes and their choices
 server/heroai.ts   auto-play brain for heroes (AFK players, bots, tests)
+server/monsterai.ts  the monsters' brain: squad target, roles, flanking, support spells, shoving
+server/barks.ts    the monsters' one-liners (the italic 💬 lines in the log)
 server/progression.ts  XP shares, level-ups, level-up cards, elite spoils, training
 server/saves.ts    saved runs on disk (saves/<CODE>.json) and the archive
 server/rng.ts      seeded random numbers

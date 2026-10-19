@@ -118,7 +118,7 @@ body.resuming .resume-note { display: block; }
   border-radius: 10px;
 }
 .resume-banner .muted { margin-top: 4px; font-size: 12px; }
-#room-class-hint { margin: 0 0 10px; font-size: 13px; }
+#room-class-hint, #room-difficulty-hint { margin: 0 0 10px; font-size: 13px; }
 
 .class-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 .class-card {
@@ -133,8 +133,10 @@ body.resuming .resume-note { display: block; }
   cursor: pointer;
   font: inherit;
 }
-.class-card:hover { border-color: #6b5434; }
+.class-card:hover:not(:disabled) { border-color: #6b5434; }
 .class-card.selected { border-color: var(--accent); background: #2a1f12; }
+.class-card:disabled { cursor: default; } /* the difficulty cards for everyone but the host: read-only */
+.class-card:disabled:not(.selected) { opacity: 0.55; }
 .cc-glyph { font-size: 28px; }
 .cc-name { font: 600 17px var(--serif); }
 .cc-stats { font-size: 12px; color: var(--accent-2); }
@@ -230,6 +232,7 @@ button.tag.lvl:hover { background: var(--accent-2); }
 #gfx-btn[aria-pressed='true'] { border-color: var(--accent); color: var(--accent-2); }
 #hud-title { font: 600 20px var(--serif); color: var(--accent-2); }
 #hud-sub { font-size: 12px; }
+.diff-tag { cursor: help; color: var(--accent-2); white-space: nowrap; }
 .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; }
 .section-label i { font-style: normal; text-transform: none; letter-spacing: 0; opacity: 0.75; } /* a small hint after the label */
 
@@ -245,6 +248,8 @@ button.tag.lvl:hover { background: var(--accent-2); }
 .chip.ally { border-color: #2f6b3b; background: #14261a; } /* .chip.current below still wins */
 .chip.mine { border-color: var(--accent); }
 .chip.current { background: var(--accent); color: #1a1208; font-weight: 700; }
+.focus-note { margin-top: 6px; font-size: 12px; color: #ff9b8c; cursor: help; }
+.focus-note.ally { color: #a9e8a2; }
 
 #party { display: grid; gap: 6px; }
 .pc {
@@ -257,6 +262,7 @@ button.tag.lvl:hover { background: var(--accent-2); }
 }
 .pc.mine { border-color: #5a4630; }
 .pc.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.pc.focus:not(.current):not(.targetable) { border-color: #a8342a; } /* the monsters are ganging up on this hero */
 .pc.down { opacity: 0.7; }
 .pc.targetable { cursor: pointer; border-color: var(--good); box-shadow: 0 0 0 1px var(--good) inset; opacity: 1; }
 .pc-glyph {
@@ -405,6 +411,7 @@ button.tag.lvl:hover { background: var(--accent-2); }
 .k-system { color: #9fc8ff; }
 .k-loot { color: #ffe27a; }
 .k-chat { color: #ffffff; }
+.k-say { color: #d9b48a; font-style: italic; } /* a monster's bark: muted warm, like muttering in the dark */
 #chat-form input { width: 100%; font-size: 13px; }
 
 .help { font-size: 12px; color: var(--muted); }
@@ -459,6 +466,8 @@ button.tag.lvl:hover { background: var(--accent-2); }
 .tip-death { color: #d6b8ff; }
 .tip-trait { display: inline-block; max-width: 260px; white-space: normal; color: #ffd9a0; }
 .tip-trait b { color: var(--accent-2); }
+.tip-role { display: inline-block; max-width: 260px; white-space: normal; color: var(--muted); }
+.tip-role b { color: var(--text); }
 
 /* A DawnLike sprite tile (see sprites.ts): its sheet is the background, scaled up without smoothing. */
 .sprite {

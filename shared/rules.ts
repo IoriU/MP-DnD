@@ -2,7 +2,7 @@
 // Tweak numbers here to rebalance the game; both server and client read from this file.
 
 import { gearBonus } from './items.ts';
-import type { Element, SkillId } from './skills.ts';
+import type { Element, SkillId, StatusApply } from './skills.ts';
 import type { CloudId, GroundId } from './surfaces.ts';
 import type { BoonId, ClassId, NodeType } from './types.ts';
 
@@ -151,6 +151,23 @@ export const MAX_BONUS_AC = 2;
 
 // ---------------------------------------------------------------- monsters
 
+/**
+ * How a monster fights (server/monsterai.ts): brutes push to the front, skirmishers circle for flanks and back attacks,
+ * archers keep their distance, supports heal and buff their side, cowards run when they're hurt.
+ */
+export type Role = 'brute' | 'skirmisher' | 'archer' | 'support' | 'coward';
+
+export const ROLES: Record<Role, { name: string; icon: string; desc: string }> = {
+  brute: { name: 'Brute', icon: '🛡️', desc: 'Pushes to the front and holds it.' },
+  skirmisher: { name: 'Skirmisher', icon: '🗡️', desc: 'Circles around for flanks and back attacks.' },
+  archer: { name: 'Archer', icon: '🏹', desc: 'Keeps its distance and shoots.' },
+  support: { name: 'Support', icon: '✨', desc: 'Heals and buffs its side from the back.' },
+  coward: { name: 'Coward', icon: '💨', desc: 'Runs away when it gets hurt.' },
+};
+
+export const COWARD_HP = 0.4; // a coward runs below this share of its HP...
+export const COWARD_TURNS = 2; // ...for this many turns, then fights cornered
+
 /** How a creature takes an element: no damage, half, double, or it heals from it. */
 export type Resist = 'immune' | 'resist' | 'weak' | 'absorb';
 
@@ -176,7 +193,12 @@ export interface MonsterDef {
   resist?: Partial<Record<Element, Resist>>;
   death?: { ground?: GroundId; cloud?: CloudId; radius: number; text: string }; // what it leaves behind when it dies
   breath?: boolean; // fire breath every 3rd round
+  role?: Role; // how it fights (default: archer if it shoots, else brute)
+  shove?: boolean; // shoves heroes into fire, poison and other hazards when it can (STR contest, like the heroes' Shove)
+  support?: { heal: Dice; buff: StatusApply }; // a support's spells, at its attack range: mend a hurt friend, or buff one
 }
+
+export const roleOf = (def: MonsterDef): Role => def.role ?? (def.range > 1 ? 'archer' : 'brute');
 
 const m = (
   name: string, glyph: string, hp: number, ac: number, atk: number, dmg: Dice, threat: number,
@@ -189,13 +211,17 @@ export const monsterSave = (def: MonsterDef, save: 'dex' | 'str' | 'wis') => def
 
 export const MONSTERS: Record<string, MonsterDef> = {
   // Act 1: Goblin Warrens
-  rat: m('Giant Rat', '🐀', 7, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, verb: 'bites' }),
-  kobold: m('Kobold', '🦎', 5, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, verb: 'stabs' }),
-  goblin: m('Goblin', '👺', 7, 15, 4, { n: 1, d: 6, bonus: 2 }, 2, { dex: 2, verb: 'slashes' }),
+  rat: m('Giant Rat', '🐀', 7, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, role: 'coward', verb: 'bites' }),
+  kobold: m('Kobold', '🦎', 5, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, role: 'coward', verb: 'stabs' }),
+  goblin: m('Goblin', '👺', 7, 15, 4, { n: 1, d: 6, bonus: 2 }, 2, { dex: 2, role: 'skirmisher', verb: 'slashes' }),
   archer: m('Goblin Archer', '🏹', 7, 13, 4, { n: 1, d: 6, bonus: 2 }, 2, { dex: 2, range: 8, verb: 'shoots' }),
   firebomber: m('Goblin Firebomber', '💣', 7, 12, 4, { n: 1, d: 6, bonus: 1 }, 3, { dex: 2, range: 6, element: 'fire', verb: 'lobs a firebomb at' }),
-  hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, verb: 'cuts' }),
-  goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, verb: 'slashes' }),
+  shaman: m('Goblin Shaman', '🔮', 9, 12, 3, { n: 1, d: 4, bonus: 1 }, 3, {
+    range: 6, wis: 2, element: 'lightning', role: 'support', verb: 'zaps',
+    support: { heal: { n: 1, d: 8, bonus: 2 }, buff: { id: 'blessed', turns: 2 } },
+  }),
+  hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, shove: true, verb: 'cuts' }),
+  goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, shove: true, verb: 'slashes' }),
   mimic: m('Mimic', '📦', 30, 12, 4, { n: 1, d: 8, bonus: 2 }, 10, { attacks: 2, speed: 4, dex: 0, str: 3, verb: 'chomps' }),
   // Act 2: Forgotten Crypt
   skeleton: m('Skeleton', '💀', 13, 13, 4, { n: 1, d: 6, bonus: 2 }, 3, { dex: 2, wis: -1, resist: { poison: 'immune' }, verb: 'hacks' }),
@@ -204,27 +230,38 @@ export const MONSTERS: Record<string, MonsterDef> = {
     speed: 4, dex: -2, str: 2, wis: -2, resist: { poison: 'immune' }, verb: 'slaps',
     death: { ground: 'poison', radius: 1, text: 'bursts in a spray of poison' },
   }),
-  wolf: m('Wolf', '🐺', 11, 13, 4, { n: 2, d: 4, bonus: 2 }, 3, { speed: 8, dex: 2, verb: 'bites' }),
-  spider: m('Giant Spider', '🕷️', 22, 14, 5, { n: 1, d: 8, bonus: 3 }, 5, { dex: 3, resist: { poison: 'resist' }, verb: 'bites' }),
+  wolf: m('Wolf', '🐺', 11, 13, 4, { n: 2, d: 4, bonus: 2 }, 3, { speed: 8, dex: 2, role: 'skirmisher', verb: 'bites' }),
+  spider: m('Giant Spider', '🕷️', 22, 14, 5, { n: 1, d: 8, bonus: 3 }, 5, { dex: 3, role: 'skirmisher', resist: { poison: 'resist' }, verb: 'bites' }),
+  necromancer: m('Necromancer', '🧛', 16, 12, 4, { n: 1, d: 8 }, 5, {
+    range: 6, wis: 2, element: 'cold', role: 'support', resist: { cold: 'resist' }, verb: 'sends a chill at',
+    support: { heal: { n: 2, d: 6, bonus: 2 }, buff: { id: 'shielded', turns: 2, power: 2 } },
+  }),
   wight: m('Wight', '👻', 45, 14, 5, { n: 1, d: 8, bonus: 3 }, 12, { attacks: 2, dex: 2, str: 2, wis: 2, element: 'cold', resist: { poison: 'immune', cold: 'resist' }, verb: 'drains' }),
   broodmother: m('Spider Broodmother', '🕸️', 50, 14, 6, { n: 1, d: 10, bonus: 3 }, 12, { dex: 3, str: 3, attacks: 2, resist: { poison: 'resist' }, verb: 'bites' }),
-  bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, { attacks: 2, str: 4, wis: 2, xp: 350, resist: { poison: 'immune' }, verb: 'cleaves' }),
+  bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, { attacks: 2, str: 4, wis: 2, xp: 350, shove: true, resist: { poison: 'immune' }, verb: 'cleaves' }),
   // Act 3: Dragon's Lair
-  orc: m('Orc', '👹', 15, 13, 5, { n: 1, d: 12, bonus: 3 }, 4, { str: 3, verb: 'cleaves' }),
+  orc: m('Orc', '👹', 15, 13, 5, { n: 1, d: 12, bonus: 3 }, 4, { str: 3, shove: true, verb: 'cleaves' }),
   cultist: m('Dragon Cultist', '🦹', 18, 12, 5, { n: 2, d: 6 }, 4, { range: 6, wis: 1, element: 'fire', resist: { fire: 'resist' }, verb: 'hurls fire at' }),
   imp: m('Magma Imp', '😈', 16, 13, 5, { n: 1, d: 6, bonus: 2 }, 4, {
     range: 4, dex: 3, element: 'fire', resist: { fire: 'absorb', cold: 'weak' }, verb: 'spits magma at',
     death: { ground: 'fire', radius: 1, text: 'collapses into a pool of fire' },
   }),
-  ogre: m('Ogre', '🧌', 45, 11, 6, { n: 2, d: 8, bonus: 4 }, 8, { dex: -1, str: 4, wis: -2, verb: 'smashes' }),
-  warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, verb: 'cleaves' }),
+  ogre: m('Ogre', '🧌', 45, 11, 6, { n: 2, d: 8, bonus: 4 }, 8, { dex: -1, str: 4, wis: -2, shove: true, verb: 'smashes' }),
+  priest: m('Dragon Priest', '🕯️', 20, 13, 5, { n: 1, d: 8, bonus: 1 }, 5, {
+    range: 6, wis: 2, element: 'fire', role: 'support', resist: { fire: 'resist' }, verb: 'scorches',
+    support: { heal: { n: 2, d: 8, bonus: 2 }, buff: { id: 'blessed', turns: 2 } },
+  }),
+  warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, shove: true, verb: 'cleaves' }),
   drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, resist: { fire: 'immune' }, verb: 'rends' }),
-  wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, { attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, resist: { fire: 'resist' }, verb: 'rends' }),
+  wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, { attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, shove: true, resist: { fire: 'resist' }, verb: 'rends' }),
   // NPC allies (shared/elites.ts): they fight for the party; act 1 numbers, they grow with the act
-  sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, verb: 'cuts' }),
-  acolyte: m('Acolyte', '😇', 16, 13, 4, { n: 1, d: 8 }, 0, { range: 6, wis: 3, xp: 0, element: 'radiant', verb: 'smites' }),
+  sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, shove: true, verb: 'cuts' }),
+  acolyte: m('Acolyte', '😇', 16, 13, 4, { n: 1, d: 8 }, 0, {
+    range: 6, wis: 3, xp: 0, element: 'radiant', role: 'support', verb: 'smites',
+    support: { heal: { n: 1, d: 8, bonus: 3 }, buff: { id: 'blessed', turns: 2 } },
+  }),
   ranger: m('Ranger', '🧝', 16, 14, 5, { n: 1, d: 8, bonus: 2 }, 0, { range: 8, dex: 3, xp: 0, verb: 'shoots' }),
-  war_hound: m('War Hound', '🐕', 18, 13, 5, { n: 2, d: 4, bonus: 2 }, 0, { speed: 8, dex: 2, xp: 0, verb: 'bites' }),
+  war_hound: m('War Hound', '🐕', 18, 13, 5, { n: 2, d: 4, bonus: 2 }, 0, { speed: 8, dex: 2, xp: 0, role: 'skirmisher', verb: 'bites' }),
 };
 
 /**
@@ -251,54 +288,104 @@ export interface ActDef {
 export const ACTS: ActDef[] = [
   {
     name: 'Goblin Warrens', glyph: '👺',
-    pool: ['rat', 'kobold', 'goblin', 'archer', 'firebomber'],
+    pool: ['rat', 'kobold', 'goblin', 'archer', 'firebomber', 'shaman'],
     encounters: [
       { name: 'Rat Nest', monsters: ['rat', 'rat', 'rat', 'kobold'] },
       { name: 'Goblin Patrol', monsters: ['goblin', 'goblin', 'archer'] },
       { name: 'Kobold Tunnel Crew', monsters: ['kobold', 'kobold', 'goblin'] },
       { name: 'Firebomb Squad', monsters: ['firebomber', 'goblin', 'kobold'], minRow: 2 },
       { name: 'Archer Nest', monsters: ['archer', 'archer', 'goblin'], minRow: 3 },
-      { name: 'Goblin Warband', monsters: ['goblin', 'goblin', 'archer', 'firebomber', 'kobold', 'rat'], minRow: 6 },
+      { name: "Shaman's Circle", monsters: ['shaman', 'goblin', 'goblin', 'kobold'], minRow: 2 },
+      { name: 'Goblin Warband', monsters: ['goblin', 'goblin', 'archer', 'firebomber', 'kobold', 'rat', 'shaman'], minRow: 6 },
     ],
     elites: ['hobgoblin', 'mimic'],
-    escorts: { hobgoblin: ['goblin', 'archer', 'firebomber'], mimic: ['rat'] },
+    escorts: { hobgoblin: ['goblin', 'archer', 'firebomber', 'shaman'], mimic: ['rat'] },
     boss: 'goblin_king', minions: ['goblin', 'archer'],
   },
   {
     name: 'Forgotten Crypt', glyph: '💀',
-    pool: ['skeleton', 'zombie', 'bloated', 'wolf', 'spider'],
+    pool: ['skeleton', 'zombie', 'bloated', 'wolf', 'spider', 'necromancer'],
     encounters: [
       { name: 'Restless Dead', monsters: ['skeleton', 'zombie', 'zombie', 'bloated'] },
       { name: 'Plague Pit', monsters: ['bloated', 'bloated', 'zombie'], minRow: 2 },
       { name: 'Wolf Pack', monsters: ['wolf', 'wolf', 'wolf'] },
       { name: 'Bone Sentries', monsters: ['skeleton', 'skeleton'] },
       { name: 'Spider Lair', monsters: ['spider', 'spider', 'wolf'], minRow: 3 },
-      { name: 'Bone Legion', monsters: ['skeleton', 'skeleton', 'zombie', 'bloated', 'spider'], minRow: 6 },
+      { name: "Necromancer's Vigil", monsters: ['necromancer', 'skeleton', 'zombie', 'zombie'], minRow: 2 },
+      { name: 'Bone Legion', monsters: ['skeleton', 'skeleton', 'zombie', 'bloated', 'spider', 'necromancer'], minRow: 6 },
     ],
     elites: ['wight', 'broodmother'],
-    escorts: { wight: ['skeleton', 'zombie', 'bloated'], broodmother: ['spider', 'wolf'] },
+    escorts: { wight: ['skeleton', 'zombie', 'bloated', 'necromancer'], broodmother: ['spider', 'wolf'] },
     boss: 'bone_knight', minions: ['skeleton', 'zombie'],
   },
   {
     name: "Dragon's Lair", glyph: '🐉',
-    pool: ['orc', 'cultist', 'imp', 'kobold', 'ogre'],
+    pool: ['orc', 'cultist', 'imp', 'kobold', 'ogre', 'priest'],
     encounters: [
       { name: 'Orc Raiders', monsters: ['orc', 'orc', 'kobold'] },
-      { name: 'Cult Ritual', monsters: ['cultist', 'cultist', 'imp', 'kobold'] },
+      { name: 'Cult Ritual', monsters: ['cultist', 'cultist', 'priest', 'imp', 'kobold'] },
       { name: 'Imp Swarm', monsters: ['imp', 'imp', 'kobold'], minRow: 2 },
       { name: 'Kobold Swarm', monsters: ['kobold', 'kobold', 'kobold', 'cultist'] },
       { name: 'Ogre Brutes', monsters: ['ogre', 'kobold', 'kobold'], minRow: 4 },
-      { name: "Dragon's Guard", monsters: ['orc', 'cultist', 'imp', 'ogre', 'kobold'], minRow: 6 },
+      { name: "Dragon's Guard", monsters: ['orc', 'cultist', 'imp', 'ogre', 'kobold', 'priest'], minRow: 6 },
     ],
     elites: ['warchief', 'drake'],
-    escorts: { warchief: ['orc', 'kobold'], drake: ['cultist', 'imp', 'kobold'] },
+    escorts: { warchief: ['orc', 'kobold', 'priest'], drake: ['cultist', 'imp', 'kobold', 'priest'] },
     boss: 'wyrm', minions: ['kobold', 'cultist', 'imp'],
   },
 ];
 
+// ---------------------------------------------------------------- difficulty
+
+export type Difficulty = 'story' | 'normal' | 'hard';
+
+/**
+ * Picked in the lobby by the host, kept for the whole run. The numbers are placeholders until the balance pass (Phase 13).
+ * `squad`: monsters fight as a squad (server/monsterai.ts); without it each one goes for whoever is closest.
+ * `slip`: the chance a monster forgets the plan for a turn and just goes for the closest hero (readable, beatable).
+ */
+export interface DifficultyDef {
+  name: string;
+  icon: string;
+  desc: string;
+  hp: number; // monster HP multiplier
+  atk: number; // added to monster attack rolls
+  dmg: number; // added to monster damage
+  budget: number; // encounter threat budget multiplier
+  squad: boolean;
+  slip: number;
+}
+
+export const DIFFICULTIES: Record<Difficulty, DifficultyDef> = {
+  story: {
+    name: 'Story', icon: '📖', hp: 0.75, atk: -1, dmg: 0, budget: 0.8, squad: false, slip: 1,
+    desc: 'Weaker monsters that fight on instinct: each one goes for whoever is closest.',
+  },
+  normal: {
+    name: 'Normal', icon: '⚔️', hp: 1, atk: 0, dmg: 0, budget: 1, squad: true, slip: 0.15,
+    desc: 'Monsters fight as a squad: they gang up on one hero, flank, and use the battlefield.',
+  },
+  hard: {
+    name: 'Hard', icon: '💀', hp: 1.2, atk: 1, dmg: 1, budget: 1.2, squad: true, slip: 0,
+    desc: 'More monsters, tougher ones, and they never miss a trick.',
+  },
+};
+
+export const DIFFICULTY_IDS = Object.keys(DIFFICULTIES) as Difficulty[];
+export const isDifficulty = (x: unknown): x is Difficulty => typeof x === 'string' && Object.hasOwn(DIFFICULTIES, x);
+
+/** How much bigger fights get with more heroes: a solo hero is 1, a party of 6 faces 3 times as much. */
+export const partyFactor = (partySize: number) => 0.6 + 0.4 * partySize;
+
 /** Threat budget for a regular fight. Grows with the act, the map row and the party size. */
 export const encounterBudget = (act: number, row: number, partySize: number) =>
-  (3 + 2 * (act - 1) + Math.floor(row / 3)) * (0.6 + 0.4 * partySize);
+  (3 + 2 * (act - 1) + Math.floor(row / 3)) * partyFactor(partySize);
+
+/**
+ * The monsters split into this many packs against a party (server/monsterai.ts squadPlan), each hunting its own hero:
+ * one pack per "solo hero's worth" of monsters (partyFactor), so no one hero takes the whole fight. 3 at most.
+ */
+export const packsFor = (partySize: number) => Math.min(3, Math.max(1, Math.round(partyFactor(partySize))));
 
 /** Elites and bosses get extra HP for every hero beyond the first. */
 export const scaledHp = (hp: number, partySize: number, boss: boolean) =>

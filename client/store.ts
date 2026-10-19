@@ -62,6 +62,11 @@ export function isMyTurn(): boolean {
   return !!m && store.state?.phase === 'combat' && currentEntity()?.id === m.id;
 }
 
+/** The heroes the monsters are hunting (turn.focus: one per pack of monsters), as entity ids. None outside a fight. */
+export function huntedIds(s: GameState | null = store.state): string[] {
+  return s?.phase === 'combat' ? (s.turn?.focus ?? []) : [];
+}
+
 /** Is the Sneak-or-Charge vote open? The room is on screen with the monsters placed, but no turn order yet. */
 export function inApproach(s: GameState | null = store.state): boolean {
   return !!s && s.phase === 'combat' && s.vote?.kind === 'approach';

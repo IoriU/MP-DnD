@@ -4,6 +4,7 @@ import type { SkillId, StatusId } from './skills.ts';
 import type { BlessingId, ItemId, RelicId, Slot } from './items.ts';
 import type { AllyId, TraitId } from './elites.ts';
 import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
+import type { Difficulty } from './rules.ts';
 
 export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric';
 export type Phase = 'lobby' | 'map' | 'combat' | 'event' | 'rest' | 'shop' | 'victory' | 'defeat';
@@ -99,6 +100,7 @@ export interface MonsterEntity extends EntityBase {
   atkBonus?: number; // on top of its stat block (NPC allies grow with the act)
   dmgBonus?: number;
   summons?: number; // Summoner: minions called so far
+  fled?: number; // a coward's turns spent running away (server/monsterai.ts)
 }
 
 export type Entity = PlayerEntity | MonsterEntity;
@@ -121,9 +123,11 @@ export interface TurnState {
   movesLeft: number;
   actionUsed: boolean;
   bonusUsed: boolean;
+  focus?: string[]; // the heroes the monsters hunt (entity ids): one per pack, more in bigger parties (server/monsterai.ts)
+  allyFocus?: string | null; // the NPC allies' target
 }
 
-export type LogKind = 'info' | 'hit' | 'miss' | 'crit' | 'heal' | 'death' | 'chat' | 'system' | 'loot' | 'level';
+export type LogKind = 'info' | 'hit' | 'miss' | 'crit' | 'heal' | 'death' | 'chat' | 'system' | 'loot' | 'level' | 'say'; // say: a monster bark
 
 export interface LogLine {
   id: number;
@@ -161,6 +165,7 @@ export interface RunInfo {
   blessings: BlessingId[]; // party-wide perks until the end of the act
   allies: AllyState[]; // NPC allies travelling with the party
   seed: number;
+  difficulty: Difficulty; // picked in the lobby, kept for the whole run
 }
 
 /** An NPC ally travelling with the party (shared/elites.ts). It fights at full HP in each fight until its fights run out or it falls. */
@@ -252,6 +257,7 @@ export interface GameState {
   phase: Phase;
   hostId: string | null;
   resume: ResumeView | null; // set while a loaded save waits in the tavern
+  difficulty: Difficulty; // the lobby's pick (the host sets it); the run's own once it has started
   run: RunInfo | null;
   vote: VoteState | null;
   event: EventView | null;

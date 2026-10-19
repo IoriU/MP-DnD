@@ -5,8 +5,8 @@
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
 import { dist, hasLOS, reachable } from '../shared/grid.ts';
-import { diceText, MONSTERS, RESIST_WORD, type Resist } from '../shared/rules.ts';
-import { STATUSES, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats } from '../shared/skills.ts';
+import { diceText, MONSTERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
+import { STATUSES, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
   CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planWalk, previewField, reactionSummary,
   resistance, tilePos, tilesAround, type CloudId, type FieldLike, type FieldPreview, type GroundId,
@@ -19,8 +19,8 @@ import {
   floorFrame, markMissing, onGraphicsMode, platinoFor, sheetFiles, sheetKeys, spritesOn, wallFrame, type SheetId,
 } from './sprites.ts';
 import {
-  aimAt, attackProblem, bestAttack, bestPropAttack, currentEntity, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, refresh, select, store, subscribe,
-  validTarget,
+  aimAt, attackProblem, bestAttack, bestPropAttack, currentEntity, huntedIds, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, refresh, select, store,
+  subscribe, validTarget,
 } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
@@ -78,6 +78,7 @@ const SHOCK = hexColor(ELECTRIFIED.color);
 const WARN = 0xff3b3b; // friendly fire and walking into harm
 const BLAST = 0xff8a1f;
 const ALLY = 0x6fe07a; // NPC allies: a green ring, so they don't read as enemies (red) or heroes (their own color)
+const FOCUS = 0xff3b3b; // the reticle on the hero the monsters are ganging up on
 const ELEMENTS: Element[] = ['physical', 'fire', 'cold', 'lightning', 'poison', 'radiant', 'force'];
 const RESIST_ORDER: Resist[] = ['immune', 'absorb', 'resist', 'weak'];
 
@@ -144,6 +145,21 @@ function advantageLine(a: AdvantageInfo): string {
 }
 
 const desc = (text: string) => `<span class="tip-desc">${esc(text)}</span>`;
+
+const BUFF_VERB: Partial<Record<StatusId, string>> = { blessed: 'Blesses', shielded: 'Shields' }; // a support's buff, in words
+
+/** A monster's role and tricks: "🛡️ Brute: pushes to the front", "✋ Shoves heroes into hazards", "✨ Heals 1d8+2 · 🙏 Blesses allies". */
+function roleLines(def: MonsterDef): string[] {
+  const role = ROLES[roleOf(def)];
+  const lines = [`<span class="tip-role"><b>${role.icon} ${esc(role.name)}:</b> ${esc(role.desc)}</span>`];
+  if (def.shove) lines.push('<span class="tip-role">✋ Shoves heroes into hazards</span>');
+  if (def.support) {
+    const { heal, buff } = def.support;
+    const st = STATUSES[buff.id];
+    lines.push(`<span class="tip-role">✨ Heals ${diceText(heal)} · ${st.icon} ${BUFF_VERB[buff.id] ?? esc(st.name)} allies (${buff.turns} rounds)</span>`);
+  }
+  return lines;
+}
 const roundsLeft = (turns: number | null) => (turns === null ? 'permanent' : `${turns} round${turns === 1 ? '' : 's'} left`);
 
 /** Names for a preview line; heroes and NPC allies in red (it's your side getting hurt), you as "you". */
@@ -199,6 +215,7 @@ class DungeonScene extends Phaser.Scene {
   private overlayG!: Phaser.GameObjects.Graphics;
   private turnG!: Phaser.GameObjects.Graphics;
   private cursorG!: Phaser.GameObjects.Graphics;
+  private focusG!: Phaser.GameObjects.Graphics; // the reticle on the monsters' squad target, redrawn every frame
   private sprites = new Map<string, Token>();
   private ghosts = new Set<Phaser.GameObjects.Container>(); // defeated monsters on their way out
   private ready = new Set<SheetId>(); // the sheets that loaded; anything on a missing one falls back to emoji
@@ -251,6 +268,7 @@ class DungeonScene extends Phaser.Scene {
     this.overlayG = this.add.graphics().setDepth(5);
     this.turnG = this.add.graphics().setDepth(9);
     this.cloudG = this.add.graphics().setDepth(12); // creatures are 10 and 11
+    this.focusG = this.add.graphics().setDepth(13);
     this.cursorG = this.add.graphics().setDepth(25);
 
     this.input.mouse?.disableContextMenu();
@@ -305,6 +323,45 @@ class DungeonScene extends Phaser.Scene {
     }
     for (const t of this.sprites.values()) this.animate(t, time);
     this.drawField(time);
+    this.drawFocus(time);
+  }
+
+  /**
+   * A red reticle around each hero the monsters are hunting (turn.focus: one per pack), turning slowly, and four faint green
+   * corner brackets on the monster the NPC allies have picked (turn.allyFocus). Both follow their creature as it walks and go
+   * away when the server clears them. Drawn as shapes, so they look the same with the pixel art on or off.
+   */
+  private drawFocus(time: number) {
+    const g = this.focusG.clear();
+    const s = store.state;
+    const t = s?.turn;
+    if (!s || !t || s.phase !== 'combat') return;
+    for (const id of huntedIds(s)) {
+      const hero = s.entities.find((e) => e.id === id);
+      const at = hero && !(hero.kind === 'player' && hero.dead) ? this.sprites.get(id) : undefined;
+      if (!at) continue;
+      const r = 23 + Math.sin(time / 220); // a slow throb
+      const spin = time / 1400;
+      for (const [width, color, alpha] of [[5, 0x000000, 0.55], [2.5, FOCUS, 1]] as const) {
+        g.lineStyle(width, color, alpha).strokeCircle(at.c.x, at.c.y, r);
+        for (let k = 0; k < 4; k++) {
+          const a = spin + (k * Math.PI) / 2;
+          g.lineBetween(at.c.x + Math.cos(a) * (r - 6), at.c.y + Math.sin(a) * (r - 6), at.c.x + Math.cos(a) * (r + 5), at.c.y + Math.sin(a) * (r + 5));
+        }
+      }
+    }
+    const foe = t.allyFocus ? s.entities.find((e) => e.id === t.allyFocus) : undefined;
+    const mark = foe?.kind === 'monster' ? this.sprites.get(foe.id) : undefined;
+    if (foe?.kind === 'monster' && mark) {
+      const h = (foe.boss || foe.elite ? 21 : 16) + Math.sin(time / 260); // half the box, on the tile corners
+      const arm = 6;
+      g.lineStyle(2, ALLY, 0.8);
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+        const cx = mark.c.x + sx * h;
+        const cy = mark.c.y + sy * h;
+        g.lineBetween(cx, cy, cx - sx * arm, cy).lineBetween(cx, cy, cx, cy - sy * arm);
+      }
+    }
   }
 
   /** The art was switched on or off: draw the room and every creature again. */
@@ -1079,6 +1136,12 @@ class DungeonScene extends Phaser.Scene {
     if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name} ${x.turns}`).join(' · '));
     const resist = this.resistLine(e);
     if (resist) lines.push(resist);
+    // Who the monsters (or the NPC allies) have picked: the red reticle on the map.
+    if (e.kind === 'player' && huntedIds(s).includes(e.id)) lines.push(`<span class="tip-adv down">🎯 Hunted: the monsters are ganging up on ${esc(e.name)}</span>`);
+    if (s.phase === 'combat' && s.turn?.allyFocus === e.id && mon) lines.push('<span class="tip-adv up">🎯 Your allies are going for it</span>');
+    // What it is in the squad, and its tricks.
+    const mdef = mon ? MONSTERS[mon.type] : undefined;
+    if (mdef) lines.push(...roleLines(mdef));
     // An elite's traits, one short block each.
     for (const t of mon?.traits ?? []) {
       const tr = TRAITS[t];

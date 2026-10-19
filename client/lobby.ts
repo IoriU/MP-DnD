@@ -1,6 +1,6 @@
 // Home screen (name, class, create/join) and the tavern lobby before a run starts.
 
-import { CLASSES, CLASS_IDS, MAX_PLAYERS } from '../shared/rules.ts';
+import { CLASSES, CLASS_IDS, DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, type Difficulty } from '../shared/rules.ts';
 import type { ClassId, GameState, PlayerInfo, ResumeView } from '../shared/types.ts';
 import { join, leave, send } from './net.ts';
 import { ago, initSaves } from './saves.ts';
@@ -17,6 +17,18 @@ function classCards(selected: ClassId): string {
       <span class="cc-name">${c.name}</span>
       <span class="cc-stats">❤️ ${c.hp} HP · 🛡️ AC ${c.ac}</span>
       <span class="cc-blurb">${c.blurb}</span>
+    </button>`;
+  }).join('');
+}
+
+/** The three difficulties as cards. Only the host can pick (`pickable`); everyone else sees the current pick, read-only. */
+function difficultyCards(selected: Difficulty, pickable: boolean): string {
+  return DIFFICULTY_IDS.map((id) => {
+    const d = DIFFICULTIES[id];
+    return `<button type="button" class="class-card diff-card${id === selected ? ' selected' : ''}" data-difficulty="${id}"${pickable ? '' : ' disabled'}>
+      <span class="cc-glyph">${d.icon}</span>
+      <span class="cc-name">${d.name}</span>
+      <span class="cc-blurb">${d.desc}</span>
     </button>`;
   }).join('');
 }
@@ -71,6 +83,10 @@ export function initLobby() {
   onClassClick($('#room-classes'), (id) => {
     savePref('class', id);
     send('setClass', id);
+  });
+  $('#room-difficulty').addEventListener('click', (e) => {
+    const card = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-difficulty]');
+    if (card && !card.disabled) send('setDifficulty', card.dataset.difficulty);
   });
   $('#start-btn').addEventListener('click', () => send('start'));
   $('#add-bot').addEventListener('click', () => send('addBot'));
@@ -162,6 +178,12 @@ export function renderRoom(s: GameState) {
   $('#room-class-hint').hidden = !unassigned;
   const mine = s.players.find((p) => p.id === store.playerId);
   $('#room-classes').innerHTML = classCards(mine?.classId ?? chosen);
+  // Only the host picks the difficulty, and only for a new run: a saved run keeps the one it was started with.
+  const pickDifficulty = isHost && !r;
+  $('#room-difficulty').innerHTML = difficultyCards(s.difficulty, pickDifficulty);
+  $('#room-difficulty-hint').textContent = r
+    ? `This saved run keeps its difficulty (${DIFFICULTIES[s.difficulty].name}).`
+    : isHost ? 'You are the host: pick how hard the dungeon fights back.' : 'The host picks the difficulty.';
   $('#start-btn').textContent = r ? 'Continue the adventure' : 'Start the adventure';
   $('#start-btn').hidden = !isHost;
   $('#add-bot').hidden = !isHost || s.players.length >= MAX_PLAYERS;

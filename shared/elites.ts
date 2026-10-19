@@ -87,7 +87,6 @@ export const isAllyId = (id: unknown): id is AllyId => typeof id === 'string' &&
 
 export const ALLY_FIGHTS = 3; // an NPC ally fights for the party this many fights
 export const MAX_ALLIES = 2;
-export const ALLY_HEAL = { n: 1, d: 8 }; // + 2 + act
 
 /** Allies grow with the act: more HP, better aim, harder hits. */
 export const allyScaling = (act: number) => ({ hp: 1 + 0.5 * (act - 1), atk: act - 1, dmg: 2 * (act - 1) });

@@ -14,6 +14,8 @@ import {
   BREATH_DC,
   CLASSES,
   CLASS_IDS,
+  COWARD_TURNS,
+  DIFFICULTIES,
   LEVEL_CAP,
   MAX_ACT,
   MAX_PLAYERS,
@@ -29,6 +31,7 @@ import {
   XP_REVIVE,
   encounterBudget,
   fmtMod,
+  isDifficulty,
   rollDice,
   rollDie,
   roomGold,
@@ -38,6 +41,7 @@ import {
   stealthBonus,
   stealthDc,
   type Dice,
+  type Difficulty,
 } from '../shared/rules.ts';
 import {
   SKILLS,
@@ -100,7 +104,6 @@ import {
 import {
   ALLIES,
   ALLY_FIGHTS,
-  ALLY_HEAL,
   ALLY_IDS,
   AURA_DICE,
   ENRAGED_DMG,
@@ -117,7 +120,6 @@ import {
   isAllyId,
   isAllyNpc,
   isFoe,
-  sameSide,
   traitCount,
   type AllyId,
   type TraitId,
@@ -163,7 +165,6 @@ import {
   hazardAt,
   immuneToStatus,
   planWalk,
-  safePath,
   selfFieldOps,
   tickField,
   tilePos,
@@ -175,7 +176,9 @@ import {
 } from '../shared/surfaces.ts';
 import { generateActMap } from './actmap.ts';
 import { getEvent, pickEvent, type CheckResult, type EventChoiceDef, type EventDef, type EventEffect, type EventStat } from './events.ts';
+import { BARK_ODDS, barkLine, type BarkEvent } from './barks.ts';
 import { autoApproachChoice, autoEquip, autoEventChoice, autoGive, autoLevelPick, autoPathChoice, autoRestPick, autoShopPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
+import { canHitFrom, elementOf, planMonster, shoveResist, squadFocus, squadPlan, type MonsterPlan } from './monsterai.ts';
 import { applyLevelUps, applyPick, dealOffer, killShares, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
 import { pick, randInt, rng, shuffle } from './rng.ts';
 import { generateRoom } from './room.ts';
@@ -201,9 +204,6 @@ const SHOP_GEAR: Record<number, Rarity[]> = { 1: ['common', 'common', 'uncommon'
 const ELEMENT_COLOR: Record<Element, string> = {
   physical: '#ffe9a8', fire: '#ff8a3d', cold: '#8fd8ff', lightning: '#fff36b', poison: '#8fdc5a', radiant: '#ffe27a', force: '#c58bff',
 };
-
-/** NPC ally kinds by their stat block (MONSTERS key). */
-const ALLIES_BY_MONSTER = Object.fromEntries(Object.values(ALLIES).map((a) => [a.monster, a]));
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms / SPEED));
 
@@ -282,6 +282,7 @@ export class Game {
   private shopReceipts: string[] = []; // what was bought, for the notice when the party moves on
   private eliteKiller: string | null = null; // the hero who landed the killing blow on this fight's elite (they take its gear)
   private phoenixUsed = false; // Phoenix Feather: once per fight
+  private difficulty: Difficulty = 'normal'; // the lobby's pick; a run keeps its own (run.difficulty)
 
   constructor(io: Server, code: string) {
     this.io = io;
@@ -295,6 +296,7 @@ export class Game {
     g.createdAt = save.createdAt;
     // Bots come back on their own; everyone else is away until they rejoin.
     g.players = save.players.map((p) => ({ ...p, connected: p.bot, auto: p.bot }));
+    g.difficulty = isDifficulty(save.run.difficulty) ? save.run.difficulty : 'normal'; // saves from before Phase 9 play on Normal
     g.log = save.log.slice(-30);
     g.logId = Math.max(0, ...g.log.map((l) => l.id));
     g.addLog('system', `📜 Saved run loaded: Act ${save.run.act}, ${save.run.actName}. Rejoin your hero, then the host continues.`);
@@ -452,6 +454,21 @@ export class Game {
     this.broadcast();
   }
 
+  /** The host picks Story, Normal or Hard in the tavern. A loaded save keeps its own. */
+  setDifficulty(playerId: string, d: unknown) {
+    if (this.phase !== 'lobby' || playerId !== this.hostId || !isDifficulty(d) || d === this.difficulty) return;
+    if (this.resumeFrom) return this.whisper(playerId, 'A saved run keeps its difficulty.');
+    this.difficulty = d;
+    const def = DIFFICULTIES[d];
+    this.addLog('system', `${def.icon} Difficulty: ${def.name}. ${def.desc}`);
+    this.broadcast();
+  }
+
+  /** The run's difficulty (the lobby's pick before a run starts). */
+  private get diff(): Difficulty {
+    return this.run?.difficulty ?? this.difficulty;
+  }
+
   start(playerId: string) {
     if (this.phase !== 'lobby' || playerId !== this.hostId) return;
     if (this.resumeFrom) return this.resumeRun(this.resumeFrom);
@@ -461,7 +478,7 @@ export class Game {
     this.notice = null;
     this.entities = this.players.map((p) => this.makePlayer(p, 1));
     const seed = randInt(1, 2 ** 31 - 2);
-    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed };
+    this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed, difficulty: this.difficulty };
     this.addLog('system', '🍺 The party finishes their drinks and leaves the tavern...');
     this.addLog('system', `🗺️ Act 1: ${ACTS[0].name}. Vote on your path. The ${MONSTERS[ACTS[0].boss].name} waits at the top of the map.`);
     this.notice = {
@@ -578,6 +595,7 @@ export class Game {
       relics: (save.run.relics ?? []).filter(isRelicId),
       blessings: (save.run.blessings ?? []).filter(isBlessingId),
       allies: (save.run.allies ?? []).filter((a) => isAllyId(a?.id) && a.fights > 0),
+      difficulty: this.difficulty,
     };
     this.entities = this.players.map((info) => {
       const saved = save.heroes.find((h) => h.playerId === info.id);
@@ -804,7 +822,7 @@ export class Game {
     if (node.type === 'boss') {
       return { name: MONSTERS[act.boss].name, monsters: [act.boss, ...Array.from({ length: Math.floor(size / 2) }, () => pick(act.minions))] };
     }
-    let budget = encounterBudget(run.act, node.row, size);
+    let budget = encounterBudget(run.act, node.row, size) * DIFFICULTIES[this.diff].budget;
     let name: string;
     let draw: string[];
     const monsters: string[] = [];
@@ -1329,10 +1347,12 @@ export class Game {
     const def = MONSTERS[type];
     const boss = ACTS.some((a) => a.boss === type);
     const elite = !boss && (ACTS.some((a) => a.elites.includes(type)) || type === 'mimic');
-    const hp = boss || elite ? scaledHp(def.hp, partySize, boss) : def.hp;
+    const d = DIFFICULTIES[this.diff];
+    const hp = Math.max(1, Math.round((boss || elite ? scaledHp(def.hp, partySize, boss) : def.hp) * d.hp));
     const m: MonsterEntity = {
       id: this.newId(), kind: 'monster', type, name: def.name, glyph: def.glyph, x: pos.x, y: pos.y,
       hp, maxHp: hp, ac: def.ac, speed: def.speed, boss, elite, statuses: [], dmgBy: {}, facing: { x: -1, y: 0 },
+      ...(d.atk ? { atkBonus: d.atk } : {}), ...(d.dmg ? { dmgBonus: d.dmg } : {}),
     };
     this.entities.push(m);
     if (elite) this.giveTraits(m);
@@ -1822,15 +1842,17 @@ export class Game {
     }
 
     if (hasTrait(m, 'summoner')) this.summon(m);
-    // A healing ally patches up whoever needs it most instead of attacking.
-    if (ally && ALLIES_BY_MONSTER[m.type]?.heals && this.allyHeal(m)) {
-      this.broadcast();
-      await sleep(450);
-      if (ok()) this.advanceTurn();
-      return;
-    }
 
-    const canHit = (from: Pos, t: Pos) => dist(from, t) <= def.range && (def.range === 1 || hasLOS(this, from, t));
+    // The plan (server/monsterai.ts): where to walk, then attack, shove, hit the ground, heal, buff or run.
+    const plan = this.monsterPlan(m);
+    if (plan.kind === 'flee') {
+      m.fled = (m.fled ?? 0) + 1;
+      if (m.fled === 1) this.bark(m, 'flee');
+    } else if (plan.cornered) {
+      m.fled = COWARD_TURNS; // it stops trying to run
+      this.bark(m, 'cornered');
+    }
+    const canHit = (from: Pos, t: Pos) => canHitFrom(this, m, from, t);
     // Its enemies: the party (heroes and NPC allies) for a monster, the monsters for an ally.
     const enemies: Entity[] = ally ? this.monsters() : this.entities.filter((e) => !isFoe(e) && this.up(e));
     // Taunted monsters go for whoever taunted them.
@@ -1838,22 +1860,9 @@ export class Game {
     const taunter = enemies.find((e) => e.id === taunt?.by);
     // Hidden heroes are ignored while anyone else is in the open.
     const visible = enemies.filter((e) => !hasStatus(e, 'hidden'));
-    const pool = visible.length ? visible : enemies;
-    // A hunting ally (the War Hound) goes for the archers and casters first.
-    const shooters = ally && ALLIES_BY_MONSTER[m.type]?.hunts ? pool.filter((e) => e.kind === 'monster' && MONSTERS[e.type].range > 1) : [];
-    const target = taunter ?? (shooters.length ? shooters : pool).sort((a, b) => dist(a, m) - dist(b, m) || a.hp - b.hp)[0];
-    if (!target) return this.advanceTurn();
 
-    if (!canHit(m, target)) {
-      const goal = (x: number, y: number) => canHit({ x, y }, target);
-      const blocked = (x: number, y: number) => this.occupied(x, y, m.id);
-      // Around hazards unless that's a long detour. If other monsters block the way, path through them and shuffle as close as possible.
-      const direct = findPath(this, m, blocked, goal);
-      const safe = safePath(this, m, blocked, goal, m);
-      const path =
-        (safe && (!direct || safe.length <= direct.length + 3) ? safe : direct) ??
-        findPath(this, m, (x, y) => this.entities.some((e) => !sameSide(e, m) && e.x === x && e.y === y && !(e.kind === 'player' && e.dead)), goal) ??
-        [];
+    {
+      const path = plan.path;
       for (const step of path.slice(0, this.turn?.movesLeft ?? m.speed)) {
         if (this.occupied(step.x, step.y, m.id)) break;
         const stopped = !ally && this.provokeSentinels(m, step);
@@ -1874,12 +1883,31 @@ export class Game {
       if (SKIP_TURN.some((id) => hasStatus(m, id))) return this.advanceTurn(); // stunned or frozen on the way
     }
 
+    // Spells, shoves and shots at the ground replace the attacks (if they're still possible from where it ended up).
+    const aimed = plan.target ? this.entity(plan.target) : undefined;
+    if (plan.kind === 'flee') return this.advanceTurn();
+    if ((plan.kind === 'heal' || plan.kind === 'buff') && aimed && this.entities.includes(aimed) && dist(m, aimed) <= def.range) {
+      this.supportCast(m, aimed, plan.kind);
+      return this.afterMonsterAct(m, token, ok, diedMidTurn);
+    }
+    if (plan.kind === 'shove' && aimed && this.up(aimed) && dist(m, aimed) === 1 && !(taunter && aimed !== taunter)) {
+      this.monsterShove(m, aimed);
+      return this.afterMonsterAct(m, token, ok, diedMidTurn);
+    }
+    if (plan.kind === 'ignite' && plan.tile && canHit(m, plan.tile) && !taunter) {
+      this.groundShot(m, plan.tile);
+      return this.afterMonsterAct(m, token, ok, diedMidTurn);
+    }
+
+    const target = aimed && enemies.includes(aimed) ? aimed : undefined;
     const attacks = def.attacks + (hasTrait(m, 'enraged') && m.hp < m.maxHp / 2 ? 1 : 0);
     for (let i = 0; i < attacks; i++) {
       const victim =
-        this.up(target) && canHit(m, target) && !(taunter && target !== taunter)
+        target && this.up(target) && canHit(m, target) && !(taunter && target !== taunter)
           ? target
-          : (visible.find((e) => this.up(e) && canHit(m, e)) ?? enemies.find((e) => this.up(e) && canHit(m, e)));
+          : ((taunter && this.up(taunter) && canHit(m, taunter) ? taunter : undefined) ??
+            visible.find((e) => this.up(e) && canHit(m, e)) ??
+            enemies.find((e) => this.up(e) && canHit(m, e)));
       if (!victim) break;
       this.monsterAttack(m, victim);
       this.broadcast();
@@ -1993,17 +2021,100 @@ export class Game {
     this.standIn(minion, 'appear');
   }
 
-  /** A healing ally (the Acolyte) patches up the most hurt hero in range, a downed one first. Returns true if it did. */
-  private allyHeal(m: MonsterEntity): boolean {
-    const range = MONSTERS[m.type].range;
-    const hurt = this.heroes()
-      .filter((h) => !h.dead && dist(h, m) <= range && (h.downed || h.hp < h.maxHp * 0.75))
-      .sort((a, b) => Number(b.downed) - Number(a.downed) || a.hp / a.maxHp - b.hp / b.maxHp)[0];
-    if (!hurt) return false;
-    this.shot(m, hurt, '#7ddc6f');
-    const healed = this.healBy(null, hurt, rollDice(ALLY_HEAL) + 2 + (this.run?.act ?? 1));
-    this.addLog('heal', `${m.glyph} ${m.name} heals ${hurt.name}: +${healed} HP.`);
-    return true;
+  /**
+   * The squad director (server/monsterai.ts) picks or keeps the packs' targets, one per pack (more packs against bigger
+   * parties), and a new target gets called out with a bark; then the monster plans its turn around its pack's target.
+   * The NPC allies pick one target of their own. On Story there's no squad: every monster goes for whoever is closest.
+   */
+  private monsterPlan(m: MonsterEntity): MonsterPlan {
+    const t = this.turn!;
+    let focus: string | null = null;
+    if (DIFFICULTIES[this.diff].squad && m.ally) {
+      const before = t.allyFocus ?? null;
+      focus = t.allyFocus = squadFocus(this.entities, 'allies', before);
+      if (focus && focus !== before) this.bark(m, 'focus', this.entity(focus));
+    } else if (DIFFICULTIES[this.diff].squad) {
+      const before = t.focus ?? [];
+      const squad = squadPlan(this.entities, before);
+      t.focus = squad.targets;
+      focus = squad.assign[m.id] ?? squad.targets[0] ?? null;
+      const fresh = squad.targets.find((id) => !before.includes(id));
+      if (fresh) this.bark(m, 'focus', this.entity(fresh));
+    }
+    return planMonster({ me: m, map: this, entities: this.entities, moves: t.movesLeft, difficulty: this.diff, focus, rand: () => rng.next() });
+  }
+
+  /** After a spell, shove or shot at the ground: the fight may be over, or the monster gone. */
+  private async afterMonsterAct(m: MonsterEntity, token: number, ok: () => boolean, diedMidTurn: () => void) {
+    this.broadcast();
+    if (this.checkEnd()) return;
+    if (!this.entities.includes(m)) return diedMidTurn();
+    await sleep(450);
+    if (ok()) this.advanceTurn();
+  }
+
+  /** A monster's bark in the log (server/barks.ts). */
+  private bark(m: MonsterEntity, ev: BarkEvent, target?: Entity) {
+    if (rng.next() >= BARK_ODDS[ev]) return;
+    const line = barkLine(m, ev, target, rng.next());
+    if (line) this.addLog('say', line);
+  }
+
+  /** A support's spell (shared/rules.ts `support`): mend a friend (a downed hero, for the Acolyte) or buff one. */
+  private supportCast(m: MonsterEntity, f: Entity, kind: 'heal' | 'buff') {
+    const sup = MONSTERS[m.type].support;
+    if (!sup) return;
+    this.face(m, f);
+    this.bark(m, kind, f);
+    if (kind === 'heal') {
+      this.shot(m, f, '#7ddc6f');
+      const amount = rollDice(sup.heal) + (m.ally ? (this.run?.act ?? 1) - 1 : 0); // NPC allies grow with the act
+      const healed = f.kind === 'player' ? this.healBy(null, f, amount) : this.healMonster(f, amount);
+      this.addLog('heal', `${m.glyph} ${m.name} heals ${f.name}: +${healed} HP.`);
+    } else {
+      this.shot(m, f, '#ffd84d');
+      this.applyStatus(f, sup.buff, m);
+      this.addLog('info', `${m.glyph} ${m.name} ${sup.buff.id === 'shielded' ? 'wards' : 'blesses'} ${f.name} (${STATUSES[sup.buff.id].name}).`);
+    }
+  }
+
+  /** Heals a monster or NPC ally, up to its max. Returns how much. */
+  private healMonster(f: MonsterEntity, amount: number): number {
+    const healed = Math.max(0, Math.min(amount, f.maxHp - f.hp));
+    f.hp += healed;
+    if (healed > 0) this.float(f, `+${healed}`, '#7ddc6f');
+    return healed;
+  }
+
+  /** A brute shoves someone, into a hazard if it can: a STR contest like the heroes' Shove (win by 5: two tiles). */
+  private monsterShove(m: MonsterEntity, t: Entity) {
+    const str = MONSTERS[m.type].str;
+    this.bark(m, 'shove', t);
+    this.face(m, t);
+    const mine = rollDie(20);
+    const theirs = rollDie(20);
+    const resist = shoveResist(t);
+    const margin = mine + str - (theirs + resist);
+    const roll = `🎲${mine}${fmtMod(str)}=${mine + str} vs 🎲${theirs}${fmtMod(resist)}=${theirs + resist}`;
+    if (margin < 0) {
+      this.addLog('miss', `${m.name} tries to shove ${t.name} (${roll}) but they hold their ground.`);
+      this.float(t, 'holds', '#9aa0a6');
+      return;
+    }
+    this.addLog('hit', `✋ ${m.name} shoves ${t.name} (${roll})!`);
+    this.push(t, m, margin >= 5 ? 2 : 1);
+  }
+
+  /** A monster aims its element at the ground: fire on the oil around the party, cold or lightning on their water. */
+  private groundShot(m: MonsterEntity, tile: Pos) {
+    const element = elementOf(m);
+    const el = fieldElement(element);
+    if (!el) return;
+    this.bark(m, 'ignite');
+    this.face(m, tile);
+    this.shot(m, tile, ELEMENT_COLOR[element]);
+    this.addLog('info', `${m.glyph} ${m.name} ${MONSTERS[m.type].verb} the ground!`);
+    this.runField([{ kind: 'touch', tiles: [tile.y * this.width + tile.x], element: el }], m);
   }
 
   private breathWeapon(m: MonsterEntity, victims: Entity[]) {
@@ -3152,6 +3263,7 @@ export class Game {
           bot: !!this.players.find((p) => p.id === h.playerId)?.bot,
         })),
       },
+      difficulty: this.diff,
       run: this.run,
       vote: v && { kind: v.kind, options: v.options, votes: v.votes, endsInMs: v.deadline === null ? null : Math.max(0, v.deadline - Date.now()) },
       event: e && {

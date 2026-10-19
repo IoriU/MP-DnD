@@ -9,7 +9,8 @@
 // Exit code: 0 even when runs are lost (it is a measurement tool), 1 on anomalies or connection failures.
 
 import { io } from 'socket.io-client';
-import { MAX_PLAYERS } from '../shared/rules.ts';
+import { DIFFICULTIES, DIFFICULTY_IDS, MAX_PLAYERS, isDifficulty, type Difficulty } from '../shared/rules.ts';
+import { LINES, type BarkEvent } from '../server/barks.ts';
 import { RELICS } from '../shared/items.ts';
 import { itemInfo, skillTitle } from '../shared/skills.ts';
 import type { GameState, JoinResult, NodeType, PlayerEntity } from '../shared/types.ts';
@@ -52,6 +53,17 @@ const ELITE_RES: [string, RegExp][] = [
   ['allies joined', /joins the party for the next/], ['ally hits', / the (Sellsword|Acolyte|Ranger|War Hound) (cuts|smites|shoots|bites) .+(hit|CRITICAL HIT) for/],
   ['acolytes', /the Acolyte joins the party/], ['ally heals', /^😇 .+ heals /], ['ally kills', /is slain by .+ the /], ['ally falls', /^💔 /], ['ally leaves', /heads home/],
 ];
+// The monster AI (Phase 9): barks by event (built from the handwritten lines), shoves, shots at the ground, support spells.
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const barkRe = (ev: BarkEvent) => {
+  const lines = Object.values(LINES).flatMap((v) => v[ev] ?? []);
+  return new RegExp(`^💬 (?:.+: ")?(?:${lines.map((l) => escapeRe(l.replace(/^\*/, '')).replace(/\\\{(me|target|class)\\\}/g, '.*')).join('|')})"?$`);
+};
+const AI_RES: [string, RegExp][] = [
+  ['target calls', barkRe('focus')], ['flees', barkRe('flee')], ['cornered', barkRe('cornered')],
+  ['shoves', /^✋ .* shoves /], ['shoves held', /tries to shove .* hold their ground/], ['ground shots', / the ground!$/],
+  ['monster heals', /^(🔮|🧛|🕯️) .+ heals /], ['buffs', / (blesses|wards) .+ \((Blessed|Shielded)\)\.$/], ['barks', /^💬 /],
+];
 const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")
 
@@ -88,6 +100,9 @@ export interface RunResult {
   combosByAct: Record<number, number>; // field reactions set off by a hero's skill, per act
   items: Record<string, number>; // ITEM_RES counts
   elites: Record<string, number>; // ELITE_RES counts
+  ai: Record<string, number>; // AI_RES counts
+  difficulty: Difficulty;
+  party: number; // heroes in the run
   goldAtEnd: number;
   relicsAtEnd: string[];
   gearAtEnd: string[]; // "Pip: Flametongue, Chain Shirt"
@@ -105,6 +120,7 @@ export const whereLabel = (at: RunResult['at']) => (at ? `A${at.act} ${at.boss ?
 export interface RunOptions {
   url: string;
   heroes: number;
+  difficulty?: Difficulty; // Normal if unset
   timeoutS: number;
   onStart?: (code: string) => void;
 }
@@ -122,6 +138,9 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     combosByAct: {},
     items: {},
     elites: {},
+    ai: {},
+    difficulty: opts.difficulty ?? 'normal',
+    party: opts.heroes,
     goldAtEnd: 0,
     relicsAtEnd: [],
     gearAtEnd: [],
@@ -188,6 +207,7 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       for (const [name, re] of FIELD_RES) if (re.test(l.text)) r.field[name] = (r.field[name] ?? 0) + 1;
       for (const [name, re] of ITEM_RES) if (re.test(l.text)) r.items[name] = (r.items[name] ?? 0) + 1;
       for (const [name, re] of ELITE_RES) if (re.test(l.text)) r.elites[name] = (r.elites[name] ?? 0) + 1;
+      for (const [name, re] of AI_RES) if (re.test(l.text)) r.ai[name] = (r.ai[name] ?? 0) + 1;
       if (/^🛒 A merchant spreads/.test(l.text)) r.shops++;
       // A reaction right after a hero's skill line is a combo the heroes set off (not a monster's firebomb).
       if (REACTION_RE.test(l.text) && heroActed && s.run) r.combosByAct[s.run.act] = (r.combosByAct[s.run.act] ?? 0) + 1;
@@ -281,6 +301,8 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
       const s = box.s;
       return !!s && s.players.length >= opts.heroes && !!s.players.find((p) => p.id === res.playerId)?.auto;
     });
+    socket.emit('setDifficulty', r.difficulty);
+    await waitFor('the difficulty', () => box.s?.difficulty === r.difficulty);
     opts.onStart?.(res.code);
     socket.emit('start');
     await waitFor('the run to start', () => !!box.s && box.s.phase !== 'lobby');
@@ -326,7 +348,7 @@ function printTable(rows: string[][]) {
   for (const row of rows) console.log('  ' + row.map((cell, c) => (c === 0 ? cell.padEnd(widths[c]) : cell.padStart(widths[c]))).join('  '));
 }
 
-function report(results: RunResult[], heroes: number, elapsed: number) {
+function report(results: RunResult[], heroes: string, elapsed: number) {
   const n = results.length;
   const wins = results.filter((r) => r.outcome === 'victory').length;
   const losses = results.filter((r) => r.outcome === 'defeat').length;
@@ -388,6 +410,41 @@ skills used (${uses.size} different):`);
   const elites = new Map<string, number>();
   for (const r of results) for (const [k, v] of Object.entries(r.elites)) elites.set(k, (elites.get(k) ?? 0) + v);
   console.log(`elites: ${ELITE_RES.map(([k]) => `${k} ${elites.get(k) ?? 0}`).join(' · ')}`);
+  const ai = new Map<string, number>();
+  for (const r of results) for (const [k, v] of Object.entries(r.ai)) ai.set(k, (ai.get(k) ?? 0) + v);
+  console.log(`monster AI: ${AI_RES.map(([k]) => `${k} ${ai.get(k) ?? 0}`).join(' · ')}`);
+  // Results per difficulty, and per difficulty and party size (the balance pass in Phase 13 tunes the numbers against these).
+  const diffs = DIFFICULTY_IDS.filter((d) => results.some((r) => r.difficulty === d));
+  const sizes = [...new Set(results.map((r) => r.party))].sort((a, b) => a - b);
+  const label = (d: Difficulty) => `${DIFFICULTIES[d].icon} ${DIFFICULTIES[d].name}`;
+  if (diffs.length) {
+    console.log('\nper difficulty:');
+    const rows = [['', 'runs', 'won', 'lost', 'fights won', 'acts cleared', 'downs/run', 'deaths/run']];
+    for (const d of diffs) {
+      const rs = results.filter((r) => r.difficulty === d);
+      const won = rs.filter((r) => r.outcome === 'victory').length;
+      rows.push([
+        label(d), String(rs.length), `${won} (${pct(won, rs.length)})`, String(rs.filter((r) => r.outcome === 'defeat').length),
+        avg(rs.map((r) => r.fights.filter((f) => f.won).length)).toFixed(1), avg(rs.map((r) => r.actsCleared)).toFixed(1),
+        avg(rs.map((r) => r.downs.length)).toFixed(1), avg(rs.map((r) => r.deaths.length)).toFixed(1),
+      ]);
+    }
+    printTable(rows);
+  }
+  if (sizes.length > 1) {
+    console.log('\nwins / runs (acts cleared on average) per difficulty and party size:');
+    const rows = [['', ...sizes.map((n) => `${n} hero${n > 1 ? 'es' : ''}`)]];
+    for (const d of diffs) {
+      rows.push([
+        label(d),
+        ...sizes.map((n) => {
+          const rs = results.filter((r) => r.difficulty === d && r.party === n);
+          return rs.length ? `${rs.filter((r) => r.outcome === 'victory').length}/${rs.length} (${avg(rs.map((r) => r.actsCleared)).toFixed(1)})` : '-';
+        }),
+      ]);
+    }
+    printTable(rows);
+  }
   const last = results.filter((r) => r.heroes.length).at(-1);
   if (last) {
     console.log(`builds at the end of run ${last.code}:`);
@@ -414,28 +471,33 @@ skills used (${uses.size} different):`);
 async function main(): Promise<number> {
   const int = (v: string | undefined, def: number) => (Number(v) > 0 ? Math.floor(Number(v)) : def);
   const RUNS = int(process.argv[2], 8);
-  const HEROES = Math.min(MAX_PLAYERS, int(process.argv[3], 4));
+  // Party size, or a list like 1,2,4,6 to spread the runs over several sizes (each size gets every difficulty in DIFF).
+  const SIZES = (process.argv[3] ?? '4').split(',').map((v) => Math.min(MAX_PLAYERS, int(v, 4)));
   const CONCURRENCY = Math.min(RUNS, int(process.argv[4], 4));
   const TIMEOUT_S = int(process.env.RUN_TIMEOUT_S, 900);
   const url = process.env.URL ?? 'http://localhost:3000';
-  console.log(`${RUNS} runs x ${HEROES} heroes on ${url}, ${CONCURRENCY} at a time, ${TIMEOUT_S}s limit per run`);
+  // DIFF=story|normal|hard, or DIFF=all to spread the runs over all three.
+  const DIFFS: Difficulty[] = process.env.DIFF === 'all' ? DIFFICULTY_IDS : [isDifficulty(process.env.DIFF) ? process.env.DIFF : 'normal'];
+  console.log(`${RUNS} runs x ${SIZES.join('/')} heroes on ${url}, ${CONCURRENCY} at a time, ${TIMEOUT_S}s limit per run, difficulty ${DIFFS.join('/')}`);
 
   const results: RunResult[] = [];
   let next = 0;
   const startedAt = Date.now();
   const worker = async () => {
     while (next < RUNS) {
+      const difficulty = DIFFS[next % DIFFS.length];
+      const heroes = SIZES[Math.floor(next / DIFFS.length) % SIZES.length];
       next++;
-      const r = await playRun({ url, heroes: HEROES, timeoutS: TIMEOUT_S });
+      const r = await playRun({ url, heroes, timeoutS: TIMEOUT_S, difficulty });
       results.push(r);
       const levels = r.heroes.map((h) => h.level).join('/') || '-';
       const verdict = r.outcome === 'victory' ? 'WIN' : r.outcome === 'defeat' ? `lost at ${whereLabel(r.at)} to ${r.killer ?? '?'}` : `${r.outcome.toUpperCase()} at ${whereLabel(r.at)}`;
-      console.log(`[${results.length}/${RUNS}] ${r.code || '----'} ${verdict}; ${r.seconds.toFixed(1)}s; fights won ${r.fights.filter((f) => f.won).length}; levels ${levels}${r.anomalies.length ? `; ${r.anomalies.length} ANOMALIES` : ''}`);
+      console.log(`[${results.length}/${RUNS}] ${r.code || '----'} ${DIFFICULTIES[r.difficulty].icon} ${r.party}p ${verdict}; ${r.seconds.toFixed(1)}s; fights won ${r.fights.filter((f) => f.won).length}; levels ${levels}${r.anomalies.length ? `; ${r.anomalies.length} ANOMALIES` : ''}`);
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-  report(results, HEROES, (Date.now() - startedAt) / 1000);
+  report(results, SIZES.join('/'), (Date.now() - startedAt) / 1000);
   const anomalies = results.flatMap((r, i) => r.anomalies.map((a) => `run ${r.code || `#${i + 1}`}: ${a}`));
   const toasts = new Set(results.flatMap((r) => r.toasts));
   console.log(`\nrejected-action toasts seen by the host: ${results.reduce((a, r) => a + r.toastCount, 0)} (${toasts.size} unique)`);

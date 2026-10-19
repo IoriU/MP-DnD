@@ -640,14 +640,16 @@ function foeValue(
 const unseen = (sim: Sim, h: PlayerEntity) => hasStatus(h, 'hidden') && !(h.id === sim.me.id && sim.actionLater);
 
 /**
- * Who a monster will go for, like game.ts: whoever taunted it, else the nearest standing hero (the most hurt on a tie),
- * skipping hidden heroes when someone else is standing.
+ * Who a monster will go for (server/monsterai.ts): whoever taunted it; else the closest hero its squad hunts, if it can get to them;
+ * else the nearest standing hero (the most hurt on a tie), skipping hidden heroes when someone else is standing.
  */
 function targetOf(sim: Sim, m: MonsterEntity): PlayerEntity | undefined {
   const taunter = sim.heroes.find((h) => h.id === tauntedBy(m) && standing(h));
   if (taunter) return taunter;
   const up = sim.heroes.filter(standing);
   const seen = up.filter((h) => !unseen(sim, h));
+  const hunted = seen.filter((h) => sim.turn.focus?.includes(h.id) && dist(h, m) <= reachOf(m)).sort((a, b) => dist(a, m) - dist(b, m))[0];
+  if (hunted) return hunted;
   let top: PlayerEntity | undefined;
   for (const h of seen.length ? seen : up) {
     if (!top || dist(h, m) < dist(top, m) || (dist(h, m) === dist(top, m) && h.hp < top.hp)) top = h;

@@ -2,18 +2,18 @@
 
 import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
 import { BAG_SIZE, type ItemId } from '../shared/items.ts';
-import { CLASSES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
+import { CLASSES, DIFFICULTIES, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import {
   canHitProps, describeSkill, hasStatus, hitsArea, hotbar, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
 } from '../shared/skills.ts';
 import { COMBOS, PROPS } from '../shared/surfaces.ts';
-import type { GameState, LogLine, PlayerEntity, StatusInst } from '../shared/types.ts';
+import type { GameState, LogLine, PlayerEntity, StatusInst, TurnState } from '../shared/types.ts';
 import { alliesHtml, blessingsHtml, gearIconsHtml, itemIcon, relicsHtml, toggleInventory } from './inventory.ts';
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
-import { aimAt, blockReason, currentEntity, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
+import { aimAt, blockReason, currentEntity, huntedIds, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
 import { $, esc, toast } from './util.ts';
 
 let lastLogId = -1;
@@ -133,6 +133,16 @@ export function initHud() {
   });
 }
 
+/** The squads' call, in words (the red reticles on the map): who the monsters are hunting, and who the allies are after. */
+function focusNote(s: GameState, t: TurnState): string {
+  const hunted = huntedIds(s).flatMap((id) => s.entities.filter((e) => e.id === id && !(e.kind === 'player' && e.dead)));
+  const foe = s.entities.find((e) => e.id === t.allyFocus);
+  const names = hunted.map((h) => `<b>${h.kind === 'player' && h.playerId === store.playerId ? 'you' : esc(h.name)}</b>`).join(', ');
+  return (hunted.length
+    ? `<div class="focus-note" title="The monsters called their targets and go for them. Keep them alive, or draw the monsters off.">🎯 Hunted: the monsters are ganging up on ${names}</div>`
+    : '') + (foe ? `<div class="focus-note ally" title="Your NPC allies have picked a target.">🎯 Your allies are going for <b>${esc(foe.name)}</b></div>` : '');
+}
+
 function title(s: GameState): string {
   switch (s.phase) {
     case 'map':
@@ -164,9 +174,13 @@ export function renderHud(s: GameState) {
   const run = s.run;
 
   $('#hud-title').textContent = title(s);
-  $('#hud-sub').textContent = run
-    ? `Act ${run.act} of ${run.maxAct} · ${run.actName} · 💰 ${run.gold} · Room ${s.code}`
-    : `Room ${s.code}`;
+  const diff = DIFFICULTIES[run?.difficulty ?? s.difficulty];
+  setHtml(
+    $('#hud-sub'),
+    run
+      ? `Act ${run.act} of ${run.maxAct} · ${esc(run.actName)} · <span class="diff-tag" title="${esc(`${diff.name}: ${diff.desc}`)}">${diff.icon} ${diff.name}</span> · 💰 ${run.gold} · Room ${s.code}`
+      : `Room ${s.code}`,
+  );
 
   // The party's relics, blessings and NPC allies, always in view during a run (blessings and allies only when there are some)
   const relics = $('#relics');
@@ -199,7 +213,7 @@ export function renderHud(s: GameState) {
         const tip = `${ally ? 'NPC ally: fights for the party · ' : ''}Initiative ${t.init[id] ?? '?'}${surprised ? ' · Surprised: loses its first turn' : ''}`;
         return `<span class="chip ${cls}" title="${tip}">${e.glyph} ${esc(e.name)}${traits ? ` ${traits}` : ''}${auto}${surprised}</span>`;
       })
-      .join('')}</div>`;
+      .join('')}</div>${focusNote(s, t)}`;
   }
 
   // Your turn banner
@@ -355,11 +369,12 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
   const need = xpToNext(p.level);
   const xpPct = max ? 100 : Math.max(0, Math.min(100, Math.round((p.xp / need) * 100)));
   const pips = Array.from({ length: p.maxSlots }, (_, i) => `<span class="pip${i < p.slots ? ' on' : ''}"></span>`).join('');
-  const cls = ['pc', isCurrent ? 'current' : '', mine ? 'mine' : '', p.dead || p.downed ? 'down' : '', targetable ? 'targetable' : ''].join(' ');
+  const focus = !p.dead && huntedIds(s).includes(p.id); // the monsters are ganging up on this hero
+  const cls = ['pc', isCurrent ? 'current' : '', mine ? 'mine' : '', p.dead || p.downed ? 'down' : '', targetable ? 'targetable' : '', focus ? 'focus' : ''].join(' ');
   return `<div class="${cls}" data-entity="${p.id}">
     <div class="pc-glyph" style="border-color:${p.color}">${p.dead ? '🪦' : c.glyph}</div>
     <div class="pc-main">
-      <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${c.name} Lv ${p.level}</span>${autoTag(info)}${status}${ups}</div>
+      <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${c.name} Lv ${p.level}</span>${autoTag(info)}${status}${focus ? '<span class="tag bad" title="Hunted: the monsters are ganging up on this hero">🎯 hunted</span>' : ''}${ups}</div>
       <div class="hpbar"><div style="width:${hpPct}%;background:${hpColor}"></div>${p.tempHp > 0 ? `<i class="tmp" style="width:${tempPct}%"></i>` : ''}<span>${p.hp} / ${p.maxHp}${p.tempHp > 0 ? ` <em>+${p.tempHp} 🛡</em>` : ''}</span></div>
       <div class="xpbar${max ? ' max' : ''}" title="${max ? 'Max level' : `${p.xp} of ${need} XP to level ${p.level + 1}`}"><div style="width:${xpPct}%"></div><span>${max ? 'MAX' : `XP ${p.xp} / ${need}`}</span></div>
       <div class="pc-stats">${gearIconsHtml(p) ? `<span class="pc-gear">${gearIconsHtml(p)}</span>` : ''}<span title="Armor class">🛡️ ${p.ac}</span><span title="Potions">🧪 ${p.potions}</span><span title="Kills">💀 ${p.kills}</span><span title="Kill steals: killing blows on monsters someone else did most of the damage to">🗡️ ${p.steals}</span>${
