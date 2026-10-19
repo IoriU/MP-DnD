@@ -6,7 +6,7 @@
 
 import { isAllyNpc, isFoe } from './elites.ts';
 import { dist, hasLOS, type MapLike } from './grid.ts';
-import { CLASSES, MAX_CANTRIPS, MAX_SPELLS, TIER3_LEVEL, passiveSlots, profBonus, saveDc, sneakDice, statMod, type Dice, type Stat } from './rules.ts';
+import { CLASSES, HELP_UP_HP, MAX_CANTRIPS, MAX_SPELLS, TIER3_LEVEL, passiveSlots, profBonus, saveDc, sneakDice, statMod, type Dice, type Stat } from './rules.ts';
 import { ITEMS, describeStats, gearBonus, gearDef, isItemId, type GearStats, type ItemId, type Rarity, type Slot } from './items.ts';
 import type { CloudId, GroundId, PropMap } from './surfaces.ts';
 import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, Pos, TurnState } from './types.ts';
@@ -43,7 +43,8 @@ export type StatusId =
   | 'honed'
   | 'envenomed'
   | 'emboldened'
-  | 'frightened';
+  | 'frightened'
+  | 'groggy';
 
 export interface StatusDef {
   name: string;
@@ -93,10 +94,11 @@ export const STATUSES: Record<StatusId, StatusDef> = {
   envenomed: { name: 'Envenomed', icon: '☣️', good: true, desc: 'Weapon hits Poison the target (at its power).' },
   emboldened: { name: 'Emboldened', icon: '⚡', good: true, desc: '+AP (its power) at the start of the next turn.' },
   frightened: { name: 'Frightened', icon: '😨', good: false, desc: "Spends its turn running from whoever frightened it, and can't attack." },
+  groggy: { name: 'Groggy', icon: '🥴', good: false, desc: 'Just got back up from 0 HP: loses its next turn.' },
 };
 
 /** Statuses that make a creature lose its turn. */
-export const SKIP_TURN: StatusId[] = ['stunned', 'frozen', 'surprised'];
+export const SKIP_TURN: StatusId[] = ['stunned', 'frozen', 'surprised', 'groggy'];
 /** Statuses that halve movement. */
 export const SLOWED: StatusId[] = ['dazed', 'chilled'];
 /** Statuses that keep a creature from moving. Cut Free (1 AP) removes them; fire burns a web away. */
@@ -154,6 +156,7 @@ export interface SkillStats {
   roll?: 'attack' | 'save' | 'auto' | 'contest'; // contest: your stat + proficiency vs its best of STR/DEX, no damage
   save?: 'dex' | 'str' | 'wis';
   half?: boolean; // a successful save still takes half damage
+  falloff?: boolean; // the outer ring of a radius 2+ area takes half damage (Fireball II, Meteor)
   dmg?: Dice;
   mod?: boolean; // add the stat modifier to damage
   hits?: number; // attack rolls (or darts) per target, default 1
@@ -179,6 +182,8 @@ export interface SkillStats {
   overheal?: boolean; // healing past max HP becomes temporary HP
   cleanse?: boolean; // removes the statuses in CLEANSED
   frees?: boolean; // cuts a Netted or Webbed hero free
+  helpUp?: boolean; // gets a downed friend back up at HELP_UP_HP of their max HP, Groggy (Help Up)
+  noRevive?: boolean; // can't get a downed friend up (set by statsAt for a cantrip's heal)
   tempHp?: Dice;
   block?: Dice; // 🧱 Block on each friend affected (you, for a self skill), until the start of your next turn
   selfBlock?: Dice; // 🧱 Block on you after the rest (Bulwark Bash), until the start of your next turn
@@ -241,6 +246,7 @@ const SKILL_DEFS = {
   mace: { kind: 'basic', pool: 'cleric', base: { name: 'Mace', icon: '🔨', ap: 2, target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 6), mod: true } },
   potion: { kind: 'item', pool: 'common', base: { name: 'Potion', icon: '🧪', ap: 1, target: 'ally', range: 1, heal: d(2, 4, 2), note: 'Drink it, or feed it to an ally next to you.' } },
   cut_free: { kind: 'action', pool: 'common', base: { name: 'Cut Free', icon: '✂️', ap: 1, target: 'ally', range: 1, frees: true } },
+  help_up: { kind: 'action', pool: 'common', base: { name: 'Help Up', icon: '🤝', ap: 2, target: 'ally', range: 1, helpUp: true } },
   dash: { kind: 'action', pool: 'common', base: { name: 'Dash', icon: '👟', ap: 1, target: 'self', range: 0, dash: DASH_TILES } },
   brace: { kind: 'action', pool: 'common', base: { name: 'Brace', icon: '🧱', ap: 1, target: 'self', range: 0, block: d(1, 6), oncePerTurn: true } }, // class skills are the big Block
 
@@ -403,7 +409,7 @@ const SKILL_DEFS = {
   },
   fireball: {
     kind: 'spell', pool: 'wizard',
-    base: { name: 'Fireball', icon: '☄️', ap: 3, target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'dex', half: true, dmg: d(3, 6), element: 'fire' },
+    base: { name: 'Fireball', icon: '☄️', ap: 3, target: 'area', range: 8, radius: 1, slots: 1, roll: 'save', save: 'dex', half: true, falloff: true, dmg: d(3, 6), element: 'fire' },
     t2: { dmg: d(4, 6), radius: 2 },
     a: { name: 'Meteor', dmg: d(6, 6), slots: 2, surface: { ground: 'fire' } },
     b: { name: 'Concussive Blast', push: 1, onHit: [st('dazed', 1)] },
@@ -920,7 +926,7 @@ const SKILL_DEFS = {
     { name: 'Careful Weave', value: 2, note: 'Your area attacks never hit friends or NPC allies, and deal +2 damage.' }, 'evoker'),
   meteor: {
     kind: 'spell', pool: 'wizard', sub: 'evoker',
-    base: { name: 'Meteor', icon: '🌠', ap: 3, target: 'area', range: 10, radius: 2, slots: 2, roll: 'save', save: 'dex', half: true, dmg: d(6, 6), element: 'fire' },
+    base: { name: 'Meteor', icon: '🌠', ap: 3, target: 'area', range: 10, radius: 2, slots: 2, roll: 'save', save: 'dex', half: true, falloff: true, dmg: d(6, 6), element: 'fire' },
     t2: { dmg: d(8, 6) },
     a: { name: 'Meteor Swarm', radius: 3 },
     b: { name: 'Comet', element: 'cold' },
@@ -1162,6 +1168,7 @@ export function statsAt(id: SkillId, tier: 1 | 2 | 3 = 1, branch?: 'A' | 'B'): S
     const br = branch === 'B' ? def.b : def.a;
     if (br) s = { ...s, ...br };
   }
+  if (def.kind === 'cantrip' && s.heal) s = { ...s, noRevive: true }; // cantrips can't get the downed up (2026-10-19)
   return s;
 }
 
@@ -1178,7 +1185,7 @@ export function skillTitle(o: Pick<OwnedSkill, 'id' | 'tier' | 'branch'>): strin
 }
 
 /** Things every hero can do without learning them. */
-export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion', 'cut_free', 'dash', 'brace'];
+export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion', 'help_up', 'cut_free', 'dash', 'brace'];
 
 /** Consumables in the bag, one hotbar entry per kind. */
 export const bagConsumables = (p: Pick<PlayerEntity, 'bag'>): SkillId[] =>
@@ -1215,6 +1222,8 @@ export const slotCost = (s: SkillStats) => s.slots ?? 1;
 export const hasStatus = (e: Entity, id: StatusId) => e.statuses.some((x) => x.id === id);
 /** 🧱 Block on a creature, from everyone who gave it some. */
 export const blockOf = (e: Pick<Entity, 'block'>): number => Object.values(e.block ?? {}).reduce((s, n) => s + n, 0);
+/** Fireball's falloff: a creature on the outer ring of a big blast (radius 2 or more: Fireball II, Meteor) takes half. */
+export const atEdge = (s: SkillStats, center: Pos, e: Pos) => !!s.falloff && s.target === 'area' && (s.radius ?? 0) >= 2 && dist(center, e) >= (s.radius ?? 0);
 
 // ---------------------------------------------------------------- numbers for a hero
 
@@ -1312,6 +1321,7 @@ export function describe(s: SkillStats, hero?: Hero): string {
     if (s.chain) parts.push(`Also hits ${s.chain === 1 ? 'another enemy' : `${s.chain} more enemies`} within 2 tiles of the target`);
     if (s.execute) parts.push(`+${diceStr(s.execute)} against targets below half HP`);
     if (s.critFull) parts.push('Always crits a target at full HP');
+    if (s.falloff && (s.radius ?? 0) >= 2) parts.push('The outer ring of the blast takes half');
   } else if (s.target === 'enemy' || s.target === 'area' || s.target === 'around') {
     parts.push(who);
   }
@@ -1332,8 +1342,10 @@ export function describe(s: SkillStats, hero?: Hero): string {
   if (s.heal) {
     const bonus = hero ? healBonus(hero, s) - (s.heal.bonus ?? 0) : 0;
     const extra = !hero ? `${s.healMod ? ' + WIS/STAT' : ''}${s.healLevel ? ' + level' : ''}` : '';
-    parts.push(`${s.target === 'self' ? 'Heal' : `${who}: heal`} ${diceStr(s.heal, bonus)}${extra}. Gets the downed back up`);
+    const up = s.target === 'self' ? '' : s.noRevive ? ". Can't get the downed back up" : '. Gets the downed back up (Groggy: they lose their next turn)';
+    parts.push(`${s.target === 'self' ? 'Heal' : `${who}: heal`} ${diceStr(s.heal, bonus)}${extra}${up}`);
   }
+  if (s.helpUp) parts.push(`A downed ally next to you gets back up with ${Math.round(HELP_UP_HP * 100)}% of their max HP, Groggy: they lose their next turn`);
   const lvl = s.blockLevel ? (hero ? hero.level : 0) : 0;
   const lvlText = s.blockLevel && !hero ? ' + level' : '';
   if (s.block) parts.push(`${s.target === 'self' ? 'You get' : `${who}: get`} ${diceStr(s.block, lvl)}${lvlText} 🧱 Block until your next turn`);
@@ -1476,7 +1488,9 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
     case 'ally': {
       if (!byId) return 'Pick an ally (or yourself).';
       if (byId.kind !== 'player' || byId.dead) return 'Pick an ally (or yourself).';
+      if (s.helpUp && (byId.id === caster.id || !byId.downed)) return byId.id === caster.id ? 'Pick a downed ally next to you.' : `${byId.name} isn't down.`;
       if (ctx.inCombat && !inRange(byId)) return outOfRange();
+      if (s.noRevive && byId.downed) return `A cantrip can't get ${byId.name} back up: Help Up (2 AP) or a healing spell can.`;
       if (s.frees && !ROOTED.some((id) => hasStatus(byId, id))) return `${byId.id === caster.id ? "You aren't" : `${byId.name} isn't`} stuck.`;
       return { center: byId, main: byId, foes: [], friends: [byId] };
     }

@@ -96,6 +96,7 @@ export const usedAsFoe = (u: Usage): boolean => usageActs(u).length > 0 || u.eve
 
 /** Statuses the engine applies without a skill saying so: the battlefield, the elements and the ambush rules. */
 const ENGINE_STATUSES: Record<string, string> = {
+  groggy: 'getting back up from 0 HP (Help Up, a heal)',
   burning: 'fire and burning ground',
   poisoned: 'poison ground and gas',
   stunned: 'lightning on a Wet creature',

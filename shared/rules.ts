@@ -141,6 +141,14 @@ export const PLAYER_COLORS = ['#f2a03d', '#4fb3ff', '#7ddc6f', '#e86df0', '#ffd8
 export const POTION_ODDS = 40;
 export const POTION_ODDS_STEP = 10;
 
+// Getting back up (decided 2026-10-19, after a playtest found dying painless): anyone can Help Up a downed friend next to
+// them (2 AP) at a quarter of their max HP. Healing spells, potions and scrolls still revive, cantrips don't, and every
+// revive but your own death saves leaves you Groggy (you lose your next turn). A hero who dies (3 failed death saves) is
+// back after the fight with an Injury: -20% max HP for each death (up to 3), until the next rest site or act.
+export const HELP_UP_HP = 0.25;
+export const INJURY_PCT = 0.2;
+export const MAX_INJURIES = 3;
+
 // Action points (decided 2026-10-19, DOS2 / Slay the Spire style). Heroes only: monsters keep their move + attack turn.
 export const AP_GAIN = 3; // AP a hero gets at the start of each turn
 export const AP_MAX = 5; // AP left over carries into the next turn, but a turn starts with at most this many

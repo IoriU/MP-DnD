@@ -8,7 +8,9 @@ import { SKILLS, statsOf, type Element, type StatusApply } from './skills.ts';
 import type { PlayerEntity } from './types.ts';
 
 export type Slot = 'weapon' | 'armor' | 'trinket';
-export type Rarity = 'common' | 'uncommon' | 'rare' | 'legendary';
+export type Rarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+/** Worst to best. */
+export const RARITIES: Rarity[] = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
 
 export const SLOTS: Slot[] = ['weapon', 'armor', 'trinket'];
 export const SLOT_NAME: Record<Slot, string> = { weapon: 'Weapon', armor: 'Armor', trinket: 'Trinket' };
@@ -75,7 +77,7 @@ const ITEM_DEFS = {
   splint_mail: gear('armor', 'Splint Mail', '🪖', 'uncommon', { ac: 1, block: 2 }),
   elven_cloak: gear('armor', 'Elven Cloak', '🧝', 'uncommon', { ac: 1, stealth: 3 }),
   dragonscale: gear('armor', 'Dragonscale Mail', '🐉', 'rare', { ac: 2, resist: { fire: 'resist' } }),
-  archmage_robe: gear('armor', 'Archmage Robe', '🥋', 'rare', { ac: 1, slots: 1, power: 1 }),
+  archmage_robe: gear('armor', 'Archmage Robe', '🥋', 'epic', { ac: 1, slots: 1, power: 1 }),
   // ---------------------------------------------- trinkets
   protection_ring: gear('trinket', 'Ring of Protection', '💍', 'uncommon', { ac: 1, saves: 1 }),
   health_amulet: gear('trinket', 'Amulet of Health', '❤️', 'uncommon', { hp: 8 }),
@@ -86,7 +88,7 @@ const ITEM_DEFS = {
   antidote_charm: gear('trinket', 'Periapt of Purity', '💚', 'common', { resist: { poison: 'immune' } }),
   ember_ring: gear('trinket', 'Ring of Warmth', '🔆', 'common', { resist: { fire: 'resist', cold: 'resist' } }),
   buckler: gear('trinket', 'Buckler', '🥏', 'common', { block: 2 }),
-  tower_shield: gear('trinket', 'Tower Shield', '🧱', 'rare', { block: 5, speed: -1 }),
+  tower_shield: gear('trinket', 'Tower Shield', '🧱', 'epic', { block: 5, speed: -1 }),
   // ---------------------------------------------- consumables (their skills are in shared/skills.ts)
   greater_potion: use('uncommon'),
   ether: use('uncommon'),
@@ -119,22 +121,22 @@ export const gearDef = (id: ItemId): GearDef | null => {
 export interface RelicDef {
   name: string;
   icon: string;
-  rarity: 'common' | 'rare' | 'boss';
+  rarity: 'common' | 'uncommon' | 'rare' | 'boss'; // treasure and shops roll RELIC_ODDS; act bosses drop the boss ones
   desc: string;
 }
 
 const RELIC_DEFS = {
-  eagle_eye: { name: 'Eagle Eye', icon: '🦅', rarity: 'common', desc: "Every hero's first attack in each fight has advantage." },
+  eagle_eye: { name: 'Eagle Eye', icon: '🦅', rarity: 'uncommon', desc: "Every hero's first attack in each fight has advantage." },
   whetstone: { name: 'Whetstone', icon: '🪨', rarity: 'common', desc: '+1 damage on basic weapon attacks.' },
   golden_idol: { name: 'Golden Idol', icon: '🗿', rarity: 'common', desc: '+25% gold from fights and treasure.' },
-  alchemist_kit: { name: "Alchemist's Kit", icon: '⚗️', rarity: 'common', desc: 'Potions and scrolls heal 50% more.' },
+  alchemist_kit: { name: "Alchemist's Kit", icon: '⚗️', rarity: 'uncommon', desc: 'Potions and scrolls heal 50% more.' },
   ember_stone: { name: 'Ember Stone', icon: '🔥', rarity: 'common', desc: '+2 damage on fire hits.' },
   frost_shard: { name: 'Frost Shard', icon: '🧊', rarity: 'common', desc: '+2 damage on cold hits.' },
   storm_rod: { name: 'Storm Rod', icon: '🌩️', rarity: 'common', desc: '+2 damage on lightning hits.' },
   war_banner: { name: 'War Banner', icon: '🚩', rarity: 'rare', desc: '+1 AC for every hero.' },
-  wind_charm: { name: 'Wind Charm', icon: '🍃', rarity: 'common', desc: '+1 movement for every hero.' },
-  rations: { name: 'Hearty Rations', icon: '🍖', rarity: 'common', desc: 'The party heals 10% more after every fight.' },
-  battle_plans: { name: 'Battle Plans', icon: '🗺️', rarity: 'common', desc: '+3 initiative for every hero.' },
+  wind_charm: { name: 'Wind Charm', icon: '🍃', rarity: 'uncommon', desc: '+1 movement for every hero.' },
+  rations: { name: 'Hearty Rations', icon: '🍖', rarity: 'uncommon', desc: 'The party heals 10% more after every fight.' },
+  battle_plans: { name: 'Battle Plans', icon: '🗺️', rarity: 'uncommon', desc: '+3 initiative for every hero.' },
   mana_crystal: { name: 'Mana Crystal', icon: '💠', rarity: 'rare', desc: '+1 max slot for every hero.' },
   owl_totem: { name: 'Owl Totem', icon: '🦉', rarity: 'common', desc: '+3 to sneaking.' },
   lodestone: { name: 'Lodestone', icon: '🧲', rarity: 'common', desc: 'Shoves push 1 tile further.' },
@@ -201,15 +203,65 @@ export const BLESSING_STATS: Partial<Record<BlessingId, GearStats>> = {
 
 // ---------------------------------------------------------------- prices
 
-export const GEAR_PRICE: Record<Rarity, number> = { common: 45, uncommon: 75, rare: 120, legendary: 180 };
-export const CONSUMABLE_PRICE: Record<Rarity, number> = { common: 20, uncommon: 35, rare: 50, legendary: 80 };
+export const GEAR_PRICE: Record<Rarity, number> = { common: 45, uncommon: 75, rare: 120, epic: 150, legendary: 180 };
+export const CONSUMABLE_PRICE: Record<Rarity, number> = { common: 20, uncommon: 35, rare: 50, epic: 65, legendary: 80 };
 export const RELIC_PRICE = 140;
 export const POTION_PRICE = 25;
 export const FORGET_PRICE = 30; // shop service: forget a skill to make room
 export const trainPrice = (act: number) => 50 + 25 * act; // shop service: upgrade a cantrip or spell
 export const SELL_SHARE = 0.5;
-/** Gear an elite leaves behind (for whoever lands the killing blow) and offers as elite spoils, by act. */
-export const ELITE_GEAR: Record<number, Rarity[]> = { 1: ['uncommon'], 2: ['uncommon', 'rare'], 3: ['rare'] };
+
+// ---------------------------------------------------------------- rarity rolls (decided 2026-10-19: rare things stay rare)
+
+/**
+ * Rarity odds in percent, by act: victory item cards, shops, event and elite gear all roll on this. Elites roll on the
+ * next act's odds and never drop commons. Act 1 almost never shows an epic.
+ */
+export const RARITY_ODDS: Record<number, Record<Rarity, number>> = {
+  1: { common: 65, uncommon: 28, rare: 6, epic: 1, legendary: 0 },
+  2: { common: 45, uncommon: 36, rare: 14, epic: 4, legendary: 1 },
+  3: { common: 28, uncommon: 38, rare: 23, epic: 8, legendary: 3 },
+};
+/** Pity (Slay the Spire's rare-card offset): each item card below rare moves this many points from common to rare. */
+export const RARITY_PITY = 2;
+/** Relic odds in percent for treasure and shops (Slay the Spire's chests): boss relics only come from act bosses. */
+export const RELIC_ODDS: Record<'common' | 'uncommon' | 'rare', number> = { common: 50, uncommon: 33, rare: 17 };
+
+const clampAct = (act: number) => Math.min(3, Math.max(1, act));
+
+/** The odds a roll uses: the act's, the next act's for an elite (no commons), with `pity` points moved to rare. */
+export function rarityOdds(act: number, opts: { pity?: number; elite?: boolean } = {}): Record<Rarity, number> {
+  const odds = { ...RARITY_ODDS[clampAct(act + (opts.elite ? 1 : 0))] };
+  if (opts.elite) [odds.uncommon, odds.common] = [odds.uncommon + odds.common, 0];
+  const shift = Math.min(opts.pity ?? 0, odds.common);
+  odds.common -= shift;
+  odds.rare += shift;
+  return odds;
+}
+
+/** A rarity from a 0..1 roll on `odds`. */
+export function pickRarity<R extends string>(roll: number, odds: Record<R, number>): R {
+  const keys = Object.keys(odds) as R[];
+  let x = roll * keys.reduce((s, k) => s + odds[k], 0);
+  for (const k of keys) if ((x -= odds[k]) < 0) return k;
+  return keys.filter((k) => odds[k] > 0).pop() ?? keys[0];
+}
+
+export const rollRarity = (roll: number, act: number, opts: { pity?: number; elite?: boolean } = {}): Rarity => pickRarity(roll, rarityOdds(act, opts));
+
+/** The ids of the rarity wanted, or else of the nearest rarity there is (worse first, then better). */
+export function rarityPool<T>(ids: T[], rarityOf: (id: T) => Rarity, want: Rarity): T[] {
+  const i = RARITIES.indexOf(want);
+  const order = [...RARITIES.slice(0, i + 1).reverse(), ...RARITIES.slice(i + 1)];
+  for (const r of order) {
+    const pool = ids.filter((id) => rarityOf(id) === r);
+    if (pool.length) return pool;
+  }
+  return [];
+}
+
+/** A hero's pity after an item card of this rarity: a rare or better resets it, anything else adds RARITY_PITY. */
+export const nextPity = (pity: number | undefined, r: Rarity) => (RARITIES.indexOf(r) >= RARITIES.indexOf('rare') ? 0 : (pity ?? 0) + RARITY_PITY);
 
 export const itemPrice = (id: ItemId): number => {
   const def = ITEMS[id];
@@ -304,4 +356,5 @@ export function describeStats(st: GearStats): string {
   return text ? text[0].toUpperCase() + text.slice(1) + '.' : '';
 }
 
-export const RARITY_COLOR: Record<Rarity, string> = { common: '#c9d1d9', uncommon: '#6fdc8c', rare: '#58a6ff', legendary: '#f2a03d' };
+/** The usual game colors: grey, green, blue, purple, orange. */
+export const RARITY_COLOR: Record<Rarity, string> = { common: '#c9d1d9', uncommon: '#6fdc8c', rare: '#58a6ff', epic: '#b57bff', legendary: '#f2a03d' };

@@ -8,7 +8,7 @@ import { generateActMap } from '../server/actmap.ts';
 import { Game } from '../server/game.ts';
 import { applyPick, dealOffer, makeEliteOffer, recalcHero, startingSkills, validCard } from '../server/progression.ts';
 import { makeRng } from '../server/rng.ts';
-import { ELITE_GEAR, ITEMS, gearBonus, gearResist, statBlocks, type ItemId } from '../shared/items.ts';
+import { ITEMS, gearBonus, gearResist, statBlocks, type ItemId } from '../shared/items.ts';
 import { ALLY_FIGHTS, MAX_ALLIES, TRAITS, auraOf, hasTrait, isAllyNpc, isFoe, sameSide, traitCount, traitResist, type TraitId } from '../shared/elites.ts';
 import { dist } from '../shared/grid.ts';
 import { LEVEL_CAP, MONSTERS } from '../shared/rules.ts';
@@ -322,7 +322,7 @@ test('an elite offer has three cards: an upgrade or a learn, one act gear piece 
     assert.ok(['learn', 'upgrade'].includes(offer[0].kind), `seed ${seed}: first card is a skill`);
     const gear = offer.flatMap((c) => (c.kind === 'gear' ? [c.item] : []));
     assert.equal(gear.length, 1, `seed ${seed}: one gear card`);
-    assert.ok(ELITE_GEAR[1].includes(ITEMS[gear[0]].rarity), `seed ${seed}: ${gear[0]} is act 1 elite gear`);
+    assert.notEqual(ITEMS[gear[0]].rarity, 'common', `seed ${seed}: ${gear[0]}: elites never drop commons`);
     assert.notEqual(gear[0], 'venom_edge', `seed ${seed}: not the gear already worn`);
   }
 });
@@ -526,7 +526,7 @@ test('winning an elite fight gives every hero an elite pick, and the party votes
   assert.equal(ids.filter((id) => id.startsWith('ally:')).length, 1);
   assert.equal(new Set(ids).size, 3);
   assert.equal(c.heroes[0].bag.length, 1, 'the elite gear goes to the hero who landed the killing blow');
-  assert.ok(ELITE_GEAR[1].includes(ITEMS[c.heroes[0].bag[0]].rarity));
+  assert.notEqual(ITEMS[c.heroes[0].bag[0]].rarity, 'common', 'elites never drop commons');
 });
 
 test('the spoils vote never offers a blessing the party already holds', () => {

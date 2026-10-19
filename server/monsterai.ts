@@ -17,7 +17,7 @@ import {
   CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
   type Difficulty, type OrderId, type Role,
 } from '../shared/rules.ts';
-import { ROOTED, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, type Element, type StatusApply } from '../shared/skills.ts';
+import { ROOTED, SKILLS, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, statsOf, type Element, type StatusApply } from '../shared/skills.ts';
 import { EXPLOSION, damageFactor, fieldElement, hazardAt, previewField, type FieldLike } from '../shared/surfaces.ts';
 import { attackAdvantage, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import type { Entity, MonsterEntity, Pos } from '../shared/types.ts';
@@ -66,6 +66,8 @@ const SUPPORT_BIAS = 1; // a support would rather cast its spells than fight
 const TRICK_BIAS = 1.5; // a monster with a trick would rather play it (that's what it's known for), when it sets something up
 const OTHER_PACK = 0.5; // a friend hunting someone else might still take a swing at a set-up target
 const ORDER_MIN = 1; // an order has to be worth at least this to be shouted
+const CLUSTER = 0.5; // per friend next to it when a hero can blast an area (Fireball): don't bunch up
+const CLUSTER_NEAR = 0.15; // per friend two tiles away (one blast can still catch both)
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
@@ -100,6 +102,15 @@ const movesOf = (m: MonsterEntity) =>
 /** Could it get to `t` and hit it on its next turn (walls aside)? */
 const reaches = (m: MonsterEntity, t: Pos) => dist(m, t) <= movesOf(m) + rangeOf(m);
 /** Roughly what an enemy deals in a round: a hero by level, an NPC ally by its stat block. */
+/** A hero who can blast an area (Fireball, Shatter, a bomb's worth of spell): monsters spread out against them. */
+const blasts = (e: Entity) =>
+  e.kind === 'player' &&
+  e.skills.some((o) => {
+    if (SKILLS[o.id].kind === 'passive') return false;
+    const s = statsOf(o);
+    return s.target === 'area' && !!s.dmg && (s.radius ?? 0) >= 1;
+  });
+
 const threatOf = (e: Entity) => (e.kind === 'player' ? 3 + 1.2 * e.level : attacksOf(e) * dmgOf(e) * 0.6);
 
 /** Chance a creature fails a save against this DC (d20 + its bonus, like game.ts creatureSave). */
@@ -486,6 +497,7 @@ function candidates(v: MonsterView): Candidates {
     };
 
     const sentinels = enemies.filter((e) => e.kind === 'player' && passiveOf(e, 'sentinel') && dist(e, me) <= 1 && !hasStatus(e, 'surprised'));
+    const spread = smart && enemies.some(blasts);
     const support = def.support;
     const list: Candidate[] = [];
 
@@ -500,6 +512,8 @@ function candidates(v: MonsterView): Candidates {
         base -= DANGER[role] * adjacent.length + (role === 'archer' || role === 'support' ? 0.4 * enemies.filter((e) => dist(e, at) === 2).length : 0);
         base -= SENTINEL_RISK * sentinels.filter((s) => dist(s, at) > 1).length;
         if (role === 'brute' && adjacent.length) base += FRONT;
+        // Bunched up, one Fireball takes the whole pack.
+        if (spread) base -= CLUSTER * friends.filter((f) => dist(f, at) <= 1).length + CLUSTER_NEAR * friends.filter((f) => dist(f, at) === 2).length;
         // A fire imp in the flames: the heroes have to step in to reach it.
         if (role !== 'brute' && hazardAt(map, i) > 0 && hazardAt(map, i, me) === 0) base += 0.4;
       }

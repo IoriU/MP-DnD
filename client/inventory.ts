@@ -30,8 +30,8 @@ export const rarityColor = (r: Rarity) => RARITY_COLOR[r];
 /** An item's icon: its pixel-art sprite while the art is on, else its emoji. `px` is the drawn size (a multiple of 16 stays crisp). */
 export const itemIcon = (id: ItemId | 'potion', emoji: string, px = 32) => iconHtml(ITEM_SPRITES[id], emoji, px);
 
-/** A relic is rare-ish or a boss reward: map it onto the item rarity colors. */
-export const relicColor = (id: RelicId) => RARITY_COLOR[RELICS[id].rarity === 'boss' ? 'legendary' : RELICS[id].rarity === 'rare' ? 'rare' : 'common'];
+/** A relic in the item rarity colors (a boss relic is legendary orange). */
+export const relicColor = (id: RelicId) => RARITY_COLOR[RELICS[id].rarity === 'boss' ? 'legendary' : RELICS[id].rarity];
 
 /** Tooltip text for an item: name, rarity and slot, then what it does (and what it sells for, in a shop). */
 export function itemTip(id: ItemId, extra = ''): string {

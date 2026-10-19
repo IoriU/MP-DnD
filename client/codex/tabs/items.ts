@@ -1,8 +1,8 @@
 // Items: gear, consumables, relics and blessings, with prices.
 
 import {
-  BLESSINGS, BLESSING_IDS, BLESSING_STATS, CONSUMABLE_IDS, CONSUMABLE_PRICE, ELITE_GEAR, FORGET_PRICE, GEAR_IDS, GEAR_PRICE, ITEMS, POTION_PRICE,
-  RARITY_COLOR, RELICS, RELIC_IDS, RELIC_PRICE, RELIC_STATS, SELL_SHARE, SLOTS, SLOT_NAME, describeStats, gearDef, itemPrice, sellPrice, trainPrice,
+  BLESSINGS, BLESSING_IDS, BLESSING_STATS, CONSUMABLE_IDS, CONSUMABLE_PRICE, FORGET_PRICE, GEAR_IDS, GEAR_PRICE, ITEMS, POTION_PRICE,
+  RARITIES, RARITY_COLOR, RARITY_ODDS, RARITY_PITY, RELIC_ODDS, RELICS, RELIC_IDS, RELIC_PRICE, RELIC_STATS, SELL_SHARE, SLOTS, SLOT_NAME, describeStats, gearDef, itemPrice, sellPrice, trainPrice,
   type GearStats, type Rarity,
 } from '../../../shared/items.ts';
 import { ACTS } from '../../../shared/rules.ts';
@@ -61,7 +61,14 @@ function prices(): string {
     ['Forget a skill', `${FORGET_PRICE}g`, srcConst('FORGET_PRICE', 'items')],
     ['Train (upgrade a cantrip or spell)', ACTS.map((_, i) => `act ${i + 1}: ${trainPrice(i + 1)}g`).join(' · '), srcConst('trainPrice', 'items')],
     ['Sell back', `${SELL_SHARE * 100}% of the price`, srcConst('SELL_SHARE', 'items')],
-    ['Elite spoils (gear rarity)', Object.entries(ELITE_GEAR).map(([a, r]) => `act ${a}: ${r.join(', ')}`).join(' · '), srcConst('ELITE_GEAR', 'items')],
+    ...Object.entries(RARITY_ODDS).map(([a, odds]): [string, string, string] => [
+      `Rarity odds, act ${a}`,
+      RARITIES.filter((r) => odds[r]).map((r) => `${rarity(r)} ${odds[r]}%`).join(' · '),
+      srcConst('RARITY_ODDS', 'items'),
+    ]),
+    ['Elites', "the next act's odds, and no commons", srcConst('rarityOdds', 'items')],
+    ['Pity', `+${RARITY_PITY} points from common to rare on each item card below rare, until a rare comes up`, srcConst('RARITY_PITY', 'items')],
+    ['Relic odds (treasure, shops)', (Object.keys(RELIC_ODDS) as (keyof typeof RELIC_ODDS)[]).map((r) => `${rarity(r)} ${RELIC_ODDS[r]}%`).join(' · '), srcConst('RELIC_ODDS', 'items')],
   ]);
 }
 
@@ -71,7 +78,7 @@ export const items: TabDef = {
   filters: [
     { key: 'sec', label: 'Kind', options: [['gear', 'Gear'], ['consumable', 'Consumables'], ['relic', 'Relics'], ['blessing', 'Blessings']] },
     { key: 'slot', label: 'Slot', options: SLOTS.map((s): [string, string] => [s, SLOT_NAME[s]]) },
-    { key: 'rarity', label: 'Rarity', options: [['common', 'common'], ['uncommon', 'uncommon'], ['rare', 'rare'], ['legendary', 'legendary'], ['boss', 'boss']] },
+    { key: 'rarity', label: 'Rarity', options: [...RARITIES.map((r): [string, string] => [r, r]), ['boss', 'boss']] },
   ],
   render: () =>
     group('Gear', gear(), `${chip('1 weapon, 1 armor, 1 trinket per hero', 'dim')} Weapons change basic attacks whatever the class; stats are summed by gearBonus.`) +

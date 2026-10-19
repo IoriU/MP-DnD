@@ -261,7 +261,7 @@ test('a bot who gets someone back up says so, and the one who was down says than
   const { p, brakka, pip } = battle();
   pip.hp = 0;
   pip.downed = true;
-  lucky(() => p.healBy(brakka, pip, 8));
+  lucky(() => p.healBy(brakka, pip, 8, false, true)); // a healing spell (cantrips can't revive)
   assert.ok(!pip.downed);
   assert.deepEqual(chat(p), [first('Brakka', 'revive', { ally: 'Pip' }), first('Pip', 'healed', { ally: 'Brakka' })]);
 });

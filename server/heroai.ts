@@ -9,7 +9,7 @@
 // friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
 import { DIRS, canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
-import { AP_GAIN, AP_MAX, ATTACK_AP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
+import { AP_GAIN, AP_MAX, ATTACK_AP, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
 import { attackAdvantage, canReact, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
   CLEANSED,
@@ -17,6 +17,7 @@ import {
   SKIP_TURN,
   SLOWED,
   STATUSES,
+  atEdge,
   attackBonus,
   avgDice,
   blockOf,
@@ -288,7 +289,10 @@ function rootSim(v: HeroView): Sim {
     spots: areaSpots(v),
     price: slotPrice(v),
     ranged: new Set(v.heroes.filter(fightsFromRange).map((p) => p.id)),
-    healer: usable(v.hero, v.turn).some((id) => !!statsOf(ownedSkill(v.hero, id)!).heal),
+    healer: usable(v.hero, v.turn).some((id) => {
+      const s = statsOf(ownedSkill(v.hero, id)!);
+      return (!!s.heal && !s.noRevive) || !!s.helpUp; // Help Up: everyone with 2 AP
+    }),
     root: true,
     actionLater: v.turn.ap >= ATTACK_AP,
     memo: new Map(),
@@ -416,7 +420,8 @@ const factorOf = (e: Entity, el: Element | undefined) => (el && el !== 'physical
  * Expected damage, kill chance and landing chance of a damaging skill against one monster. Resistances scale the damage:
  * nothing against an immune monster, negative (it heals) against one that drinks the element in.
  */
-function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: boolean): Strike {
+/** `scale`: the share of the damage it takes (half on the outer ring of a Fireball). */
+function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: boolean, scale = 1): Strike {
   const me = sim.me;
   if (!s.roll) return { dmg: 0, kill: 0, land: 1 }; // no roll: its effects always apply
   if (s.roll === 'contest') return { dmg: 0, kill: 0, land: shoveOdds(me, s, m).win };
@@ -472,7 +477,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
   const half = s.roll === 'save' && !!s.half;
   let dmg = sneak * 3.5 * pSneak + (ambush * 3.5 + honed) * (ps[0] ?? 0);
   for (let i = 0; i < hits; i++) dmg += ps[i] * per + crits[i] * roll + (half ? ((1 - ps[i]) * per) / 2 : 0);
-  const factor = factorOf(m, s.element);
+  const factor = factorOf(m, s.element) * scale;
   if (factor <= 0) return { dmg: factor * dmg, kill: 0, land }; // immune, or it heals
   // Kill chance: over how many hits land (they can have different odds), with the bonus dice if any did.
   const extraDice = land > 0 ? (sneak * pSneak + ambush * (ps[0] ?? 0)) / land : 0; // given at least one hit
@@ -675,7 +680,7 @@ function foeValue(
   sim: Sim, id: SkillId, s: SkillStats, res: AimResult, m: MonsterEntity, main: boolean, from: Pos, own: Preview | null, stunned: Set<string>,
 ): number {
   if (s.roll === 'contest') return shoveValue(sim, s, m);
-  const hit = strike(sim, id, s, m, main);
+  const hit = strike(sim, id, s, m, main, atEdge(s, res.center, m) ? 0.5 : 1);
   // Damage up to its HP; healing (a Magma Imp drinking fire) up to what it's missing.
   // Damage into Block or a ward is worth a little (it's gone for the next hit), the rest counts up to its HP.
   const soak = soakOf(m);
@@ -831,10 +836,11 @@ const healWeight = (f: PlayerEntity) => (hpPct(f) < 0.35 ? 1.6 : hpPct(f) < 0.6 
 /** Heals and buffs on one friend (you included). */
 function friendValue(sim: Sim, s: SkillStats, f: PlayerEntity): number {
   let v = 0;
+  if (s.helpUp) return f.downed ? REVIVE + Math.ceil(f.maxHp * HELP_UP_HP) : 0;
   if (s.heal) {
     const amt = avgDice(s.heal) + healBonus(sim.me, s);
     const missing = f.maxHp - f.hp;
-    if (f.downed) v += REVIVE + amt;
+    if (f.downed) v += s.noRevive ? 0 : REVIVE + amt;
     else v += Math.min(amt, missing) * healWeight(f) + (s.overheal ? Math.max(0, amt - missing) * 0.3 : 0);
   } else if (!standing(f)) {
     return 0; // buffs don't help someone lying on the floor
@@ -1255,7 +1261,7 @@ function heroDebuffCost(h: PlayerEntity, st: StatusApply): number {
  * Friendly fire on one friend in the blast (you included): the same attack roll or save the monsters get. Expected
  * damage is priced like your own HP, and the chance of dropping them like a revive.
  */
-function friendlyHit(sim: Sim, id: SkillId, s: SkillStats, h: PlayerEntity): number {
+function friendlyHit(sim: Sim, id: SkillId, s: SkillStats, h: PlayerEntity, scale = 1): number {
   const me = sim.me;
   if (s.roll === 'contest') return 0;
   const hits = s.roll ? hitsOf(me, s) : 1;
@@ -1264,7 +1270,7 @@ function friendlyHit(sim: Sim, id: SkillId, s: SkillStats, h: PlayerEntity): num
   else if (s.roll === 'save') p = clamp((saveDc(me.classId, me.level) - 1 - heroSaveMod(h, s.save ?? 'dex')) / 20, 0, 1);
   let cost = 0;
   if (s.dmg) {
-    const k = Math.max(0, factorOf(h, s.element));
+    const k = Math.max(0, factorOf(h, s.element)) * scale;
     const per = (avgDice(s.dmg) + damageMod(me, s) + passiveDamage(me, id, s, h)) * k;
     const rollVar = ((s.dmg.n * (s.dmg.d ** 2 - 1)) / 12) * k * k;
     const evasion = s.roll === 'save' && hasBranch(h, 'opportunist', 'B'); // half on a failed save, nothing on a good one
@@ -1321,7 +1327,7 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
     score += later;
   }
   // Friends in the blast take it too.
-  for (const h of res.caught ?? []) score -= h.kind === 'player' ? friendlyHit(sim, id, s, h) : allyNpcHit(s, h);
+  for (const h of res.caught ?? []) score -= h.kind === 'player' ? friendlyHit(sim, id, s, h, atEdge(s, res.center, h) ? 0.5 : 1) : allyNpcHit(s, h);
   // A Shove or Feint gives a hidden hero away for nothing (an attack roll spends it on advantage, already scored), and
   // so does smashing a barrel (no roll at all).
   if (offensive && (res.prop !== undefined || (s.roll !== 'attack' && s.ap < ATTACK_AP))) score -= hiddenWorth(sim);
@@ -1355,6 +1361,7 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
   }
   if (s.heal && res.friends.some((f) => f.downed || hpPct(f) < 0.35)) early = true; // patch people up first
   if (s.frees) early = true; // cut free before walking or attacking
+  if (s.helpUp) early = true; // get them up first
   // Rage before the swing, so the swing gets it.
   if (attackAfter(sim, s) && s.selfStatus?.some((x) => x.id === 'raging') && score > MIN_QUICK) early = true;
   return { score: score - costOf(sim, id, s), early };

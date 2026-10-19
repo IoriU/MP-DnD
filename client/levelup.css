@@ -57,14 +57,14 @@
 .lu-top .muted { font: 12px var(--sans); }
 .lu-explain { padding: 0 10px 6px; font-size: 12px; color: var(--muted); }
 
-/* Elite spoils: the same panel in purple, so it doesn't read as a level-up. */
-.lu-panel.elite { border-color: #b58cff; }
-.lu-panel.elite .lu-top { color: #d6b8ff; }
-.lu-tab.elite { background: #b58cff; border-color: #d6b8ff; animation-name: lu-pulse-elite; }
-.lu-tab.elite:hover { background: #d6b8ff; }
+/* Elite spoils: the same panel in crimson (💀), so it doesn't read as a level-up, and purple only ever means epic. */
+.lu-panel.elite { border-color: #e0605a; }
+.lu-panel.elite .lu-top { color: #ffa29c; }
+.lu-tab.elite { background: #e0605a; border-color: #ffa29c; animation-name: lu-pulse-elite; }
+.lu-tab.elite:hover { background: #ffa29c; }
 @keyframes lu-pulse-elite {
-  0%, 100% { box-shadow: 0 6px 20px #000a, 0 0 0 0 #b58cff88; }
-  50% { box-shadow: 0 6px 20px #000a, 0 0 0 7px #b58cff00; }
+  0%, 100% { box-shadow: 0 6px 20px #000a, 0 0 0 0 #e0605a88; }
+  50% { box-shadow: 0 6px 20px #000a, 0 0 0 7px #e0605a00; }
 }
 .lu-min {
   flex: none;

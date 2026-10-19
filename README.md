@@ -107,7 +107,8 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - 💨 **Cowards** (rats and kobolds) run away when they get hurt.
   - They talk, too: the monsters' shouts show up in italics in the log.
 - **XP & levels:** every kill shares XP with the party, but the hero who lands the killing blow gets a big bonus. Finishing off someone else's target is a **💀 kill steal**. Healing and buffing allies earn XP too. Levels give HP and power, and the subclass at level 3. Skills come from the **🏆 spoils** after every won fight: each hero picks 1 of 3 cards (two skills, new or upgrades, and an item: gear or a consumable, now and then a boon); pick whenever you like, nobody has to wait. A 🧪 potion can drop after a fight too: 40% at first, and the odds climb after every fight without one.
-- **At 0 HP** you fall unconscious and roll death saves on your turn. Healing (a potion, Healing Word or Second Wind) gets you back up. If the party wins the fight, everyone gets back up, even the dead.
+- **At 0 HP** you fall unconscious and roll death saves on your turn. A friend next to you can 🤝 Help Up (2 AP, back at 25% max HP); healing spells, potions and scrolls work too, cantrips don't. Either way you're 🥴 Groggy and lose your next turn. If the party wins the fight, everyone gets back up, even the dead, but the dead come back 🩹 Injured (−20% max HP per death) until the next rest site.
+- **Rarity** uses the usual colors (grey, green, blue, purple epic, orange legendary) and weighted odds by act, with a pity counter on item cards.
 - **Between rooms:** HP carries over. Drink potions, or heal a friend by picking a heal and clicking their party card.
 - **Camera:** the mouse wheel zooms and right-drag pans.
 - **Graphics:** pixel art by default; press **G** to switch to the classic emoji look (it's remembered).

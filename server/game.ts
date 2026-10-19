@@ -16,6 +16,9 @@ import {
   CLASS_IDS,
   AP_GAIN,
   AP_MAX,
+  HELP_UP_HP,
+  INJURY_PCT,
+  MAX_INJURIES,
   POTION_ODDS,
   POTION_ODDS_STEP,
   CHARGE_MOVES,
@@ -66,6 +69,7 @@ import {
   SLOWED,
   CLEANSED,
   STATUSES,
+  atEdge,
   attackBonus,
   avgDice,
   damageMod,
@@ -98,13 +102,13 @@ import {
   BLESSINGS,
   BLESSING_IDS,
   CONSUMABLE_IDS,
-  ELITE_GEAR,
   FORGET_PRICE,
   ITEMS,
   GEAR_IDS,
   POTION_PRICE,
   RELICS,
   RELIC_IDS,
+  RELIC_ODDS,
   RELIC_PRICE,
   RENEWAL_HP,
   bagRoom,
@@ -115,6 +119,9 @@ import {
   isItemId,
   isRelicId,
   itemPrice,
+  pickRarity,
+  rarityPool,
+  rollRarity,
   sellPrice,
   trainPrice,
   weaponExtras,
@@ -233,7 +240,6 @@ const SHOP_MS = 90_000; // the shop closes this long after the first person is d
 const AWAY_MS = 20_000; // ...or this long after everyone left is someone who dropped out (a reload shouldn't close it)
 /** The icon a pick's log line starts with, by kind. */
 const PICK_ICON = { level: '⬆️', elite: '💀', reward: '🏆' } as const;
-const SHOP_GEAR: Record<number, Rarity[]> = { 1: ['common', 'common', 'uncommon'], 2: ['common', 'uncommon', 'uncommon', 'rare'], 3: ['uncommon', 'rare', 'rare'] };
 
 const ELEMENT_COLOR: Record<Element, string> = {
   physical: '#ffe9a8', fire: '#ff8a3d', cold: '#8fd8ff', lightning: '#fff36b', poison: '#8fdc5a', radiant: '#ffe27a', force: '#c58bff',
@@ -927,7 +933,7 @@ export class Game {
   private treasure() {
     const run = this.run!;
     const gold = this.goldFound(randInt(25, 40) * run.act);
-    const choices = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity !== 'boss' && !run.relics.includes(id))).slice(0, 3);
+    const choices = this.rollRelics(3);
     const take = (id: RelicId | null): EventChoiceDef => ({
       id: id ?? 'gold',
       label: id ? `${RELICS[id].icon} ${RELICS[id].name}` : 'Just the gold',
@@ -1031,12 +1037,21 @@ export class Game {
     }
   }
 
-  /** A random item of one of these rarities (gear or consumable). */
-  private randomItem(kind: 'gear' | 'consumable', rarities: Rarity[]): ItemId {
-    const ids = kind === 'gear' ? GEAR_IDS : CONSUMABLE_IDS;
-    const want = pick(rarities);
-    const pool = ids.filter((id) => ITEMS[id].rarity === want);
-    return pick(pool.length ? pool : ids);
+  /** A random item of this rarity, or the nearest rarity there is (gear or consumable). */
+  private randomItem(kind: 'gear' | 'consumable', rarity: Rarity): ItemId {
+    return pick(rarityPool(kind === 'gear' ? GEAR_IDS : CONSUMABLE_IDS, (id) => ITEMS[id].rarity, rarity));
+  }
+
+  /** Up to `n` different relics the party doesn't have yet, each rolled on RELIC_ODDS (boss relics only from bosses). */
+  private rollRelics(n: number): RelicId[] {
+    const run = this.run!;
+    const out: RelicId[] = [];
+    for (let i = 0; out.length < n && i < 4 * n; i++) {
+      const left = RELIC_IDS.filter((id) => RELICS[id].rarity !== 'boss' && !run.relics.includes(id) && !out.includes(id));
+      if (!left.length) break;
+      out.push(pick(rarityPool(left, (id) => RELICS[id].rarity as Rarity, pickRarity(rng.next(), RELIC_ODDS))));
+    }
+    return out;
   }
 
   /** Hands out potions one at a time to whoever has the fewest. Returns who got them. */
@@ -1067,6 +1082,7 @@ export class Game {
     run.blessings = [];
     this.syncPerks();
     for (const p of this.heroes()) {
+      this.healInjuries(p, 'on the way up');
       p.hp = p.maxHp;
       p.slots = p.maxSlots;
     }
@@ -1126,6 +1142,7 @@ export class Game {
     const picks = this.restPicks;
     if (this.phase !== 'rest' || !picks) return;
     const lines: string[] = [];
+    for (const p of this.heroes()) this.healInjuries(p, 'by the fire');
     for (const p of this.heroes()) {
       const choice = picks[p.playerId] ?? { kind: 'long' };
       if (choice.kind === 'train') {
@@ -1144,6 +1161,14 @@ export class Game {
     }
     this.notice = { glyph: '🔥', title: 'Rest site', text: `${lines.join('. ')}.` };
     this.toMap();
+  }
+
+  /** 🩹 Rest sites and new acts heal Injuries: the max HP comes back (and the HP with it). */
+  private healInjuries(p: PlayerEntity, where: string) {
+    if (!p.injuries) return;
+    p.injuries = 0;
+    recalcHero(p);
+    this.addLog('heal', `🩹 ${p.name}'s injuries heal ${where}.`);
   }
 
   // ------------------------------------------------------------ XP & level-ups
@@ -1287,7 +1312,7 @@ export class Game {
         if (isRelicId(effect.id)) this.grantRelic(effect.id);
         break;
       case 'item': {
-        const id = effect.id && isItemId(effect.id) ? effect.id : this.randomItem(effect.gear ? 'gear' : 'consumable', [effect.rarity ?? 'common']);
+        const id = effect.id && isItemId(effect.id) ? effect.id : this.randomItem(effect.gear ? 'gear' : 'consumable', effect.rarity ?? 'common');
         const got = this.giveItem(this.heroes().find((h) => h.id === this.lastChecker), id);
         if (got) this.addLog('loot', `${itemInfo(id).icon} ${got.name} takes the ${itemInfo(id).name}.`);
         break;
@@ -1675,6 +1700,10 @@ export class Game {
       this.addLog('info', `🧊 ${e.name} is frozen solid and loses the turn.`);
       this.float(e, 'frozen', '#cdefff');
       this.later(token, 900, () => this.advanceTurn());
+    } else if (hasStatus(e, 'groggy')) {
+      this.addLog('info', `🥴 ${e.name} is still groggy from going down and loses the turn.`);
+      this.float(e, 'groggy', '#ffd84d');
+      this.later(token, 900, () => this.advanceTurn());
     } else if (e.kind === 'monster') {
       this.runMonster(e, token).catch((err) => console.error('monster AI error', err));
     } else {
@@ -1964,6 +1993,7 @@ export class Game {
     run.allies = run.allies.filter((a) => a.fights > 0);
     // Everyone gets back up, then the party catches its breath (a short rest).
     for (const p of this.heroes()) {
+      const died = p.dead;
       if (p.dead || p.downed) {
         p.dead = false;
         p.downed = false;
@@ -1971,11 +2001,14 @@ export class Game {
       }
       const drained = hasStatus(p, 'drained');
       p.statuses = [];
-      if (drained) {
+      // 🩹 Death leaves an Injury (less max HP) until the next rest site.
+      if (died) p.injuries = Math.min(MAX_INJURIES, (p.injuries ?? 0) + 1);
+      if (drained || died) {
         const hp = p.hp;
-        recalcHero(p); // max HP comes back, the HP doesn't
+        recalcHero(p); // max HP comes back (or shrinks with an Injury), the HP doesn't
         p.hp = Math.min(hp, p.maxHp);
       }
+      if (died) this.addLog('death', `🩹 ${p.name} is back, but injured: -${Math.round(INJURY_PCT * 100 * (p.injuries ?? 1))}% max HP until the next rest site.`);
       p.tempHp = 0;
       delete p.block;
       p.used = [];
@@ -2073,7 +2106,7 @@ export class Game {
   private fightLoot(kind: NodeType): string | null {
     const act = this.run?.act ?? 1;
     if (kind === 'elite') {
-      const id = this.randomItem('gear', ELITE_GEAR[act] ?? ['rare']);
+      const id = this.randomItem('gear', rollRarity(rng.next(), act, { elite: true }));
       const killer = this.heroes().find((h) => h.id === this.eliteKiller);
       const got = this.giveItem(killer, id);
       const info = itemInfo(id);
@@ -2456,7 +2489,7 @@ export class Game {
     if (kind === 'heal') {
       this.shot(m, f, '#7ddc6f');
       const amount = rollDice(sup.heal) + (m.ally ? (this.run?.act ?? 1) - 1 : 0); // NPC allies grow with the act
-      const healed = f.kind === 'player' ? this.healBy(null, f, amount) : this.healMonster(f, amount);
+      const healed = f.kind === 'player' ? this.healBy(null, f, amount, false, true) : this.healMonster(f, amount);
       this.addLog('heal', `${m.glyph} ${m.name} heals ${f.name}: +${healed} HP.`);
       if (healed > 0) this.callout(f, 'healed', { ally: m.name });
     } else {
@@ -2742,7 +2775,7 @@ export class Game {
       else if (s.roll === 'contest') landed = f.kind === 'monster' && this.contestHit(p, f, s, name);
       else {
         for (let i = 0; i < hitsOf(p, s) && this.entities.includes(f) && !(f.kind === 'player' && !this.standing(f)); i++) {
-          const hit = s.roll === 'save' ? this.saveHit(p, f, s, name, color) : this.weaponHit(p, f, s, name, color, basic);
+          const hit = s.roll === 'save' ? this.saveHit(p, f, s, name, color, atEdge(s, res.center, f)) : this.weaponHit(p, f, s, name, color, basic);
           landed ||= hit;
         }
       }
@@ -2765,7 +2798,7 @@ export class Game {
       if (s.heal) {
         const drink = SKILLS[own.id].kind === 'item' && this.hasRelic('alchemist_kit') ? 1.5 : 1; // Alchemist's Kit
         const amount = Math.round((rollDice({ n: s.heal.n, d: s.heal.d }) + healBonus(p, s)) * drink);
-        const healed = this.healBy(p, fr, amount, s.overheal);
+        const healed = this.healBy(p, fr, amount, s.overheal, !s.noRevive);
         if (fr !== p) healedAll += healed;
         const line =
           s.target === 'self'
@@ -2775,6 +2808,7 @@ export class Game {
               : `${fr.name} is healed`;
         this.addLog('heal', `${s.icon} ${line}: +${healed} HP.`);
       }
+      if (s.helpUp) this.helpUp(p, fr);
       if (s.tempHp) fr.tempHp = Math.max(fr.tempHp, rollDice(s.tempHp));
       if (s.block && this.standing(fr)) this.blockFrom(p, fr, s.block, s.blockLevel);
       if (s.cleanse) fr.statuses = fr.statuses.filter((x) => !CLEANSED.includes(x.id));
@@ -2834,17 +2868,19 @@ export class Game {
   }
 
   /** A saving-throw skill against one creature (a hero, if caught in friendly fire). Returns true if it failed the save. */
-  private saveHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string): boolean {
+  /** A save against a hero's skill. `edge`: on the outer ring of a blast with falloff (Fireball), half damage. */
+  private saveHit(p: PlayerEntity, f: Entity, s: SkillStats, name: string, color: string, edge = false): boolean {
     const save = s.save ?? 'dex';
     const { total, text: rolled } = this.creatureSave(f, save);
     const dc = heroDc(p);
     const saved = total >= dc;
     this.shot(p, f, color);
     let dmg = s.dmg ? rollDice(s.dmg) + damageMod(p, s) + this.bonusDamage(p, f, s.element ?? 'physical') : 0;
+    if (edge) dmg = Math.floor(dmg / 2);
     const evasion = f.kind === 'player' && s.target === 'area' && hasBranch(f, 'opportunist', 'B');
     if (saved) dmg = s.half && !evasion ? Math.floor(dmg / 2) : 0;
     else if (evasion) dmg = Math.floor(dmg / 2);
-    const roll = `${save.toUpperCase()} save ${rolled} vs DC ${dc}`;
+    const roll = `${save.toUpperCase()} save ${rolled} vs DC ${dc}${edge ? ', edge of the blast' : ''}`;
     this.addLog(saved ? 'miss' : 'hit', `${f.name} ${saved ? 'resists' : 'is caught by'} ${p.name}'s ${name} (${roll})${dmg ? `: ${dmg}${elementWord(s.element)}` : ''}.`);
     if (dmg > 0) this.damage(f, dmg, p, s.element ?? 'physical', s.target === 'area');
     else if (saved) this.float(f, 'saved', '#9aa0a6');
@@ -3194,7 +3230,7 @@ export class Game {
     if (hasBranch(p, 'divine_strike', 'A')) this.applyStatus(t, { id: 'blinded', turns: 1 }, p);
     if (hasBranch(p, 'divine_strike', 'B')) {
       const hurt = this.heroes()
-        .filter((h) => !h.dead && dist(h, p) <= 6 && h.hp < h.maxHp)
+        .filter((h) => this.standing(h) && dist(h, p) <= 6 && h.hp < h.maxHp)
         .sort((x, y) => x.hp / x.maxHp - y.hp / y.maxHp)[0];
       if (hurt) {
         const healed = this.healBy(p, hurt, rollDice({ n: 1, d: 4 }) + statMod(p.classId, 'wis'));
@@ -3494,11 +3530,12 @@ export class Game {
   }
 
   /**
-   * Heals a hero (getting them up if downed) and returns how much HP they gained.
+   * Heals a hero and returns how much HP they gained. Only a `revive` (healing spells, potions, scrolls, NPC healers)
+   * gets a downed hero up, Groggy: they lose their next turn. Passives, auras and cantrips only heal the standing.
    * `healer` earns support XP and triggers healing passives when the target is someone else.
    */
-  private healBy(healer: PlayerEntity | null, t: PlayerEntity, amount: number, overheal = false): number {
-    if (t.dead) return 0;
+  private healBy(healer: PlayerEntity | null, t: PlayerEntity, amount: number, overheal = false, revive = false): number {
+    if (t.dead || (t.downed && !revive)) return 0;
     if (healer && hasBranch(healer, 'blessed_healer', 'B')) amount += 2; // Shepherd
     const room = t.maxHp - t.hp;
     const wasDown = t.downed;
@@ -3507,10 +3544,8 @@ export class Game {
     if (overheal && amount > room) t.tempHp = Math.max(t.tempHp, amount - room);
     if (healed > 0) this.float(t, `+${healed}`, '#7ddc6f');
     if (t.downed && t.hp > 0) {
-      t.downed = false;
-      t.saves = { ok: 0, fail: 0 };
-      if (this.hasRelic('smelling_salts')) t.hp = Math.min(t.maxHp, t.hp + 5);
-      this.addLog('heal', `${t.name} is back on their feet!`);
+      this.getUp(t);
+      this.addLog('heal', `${t.name} is back on their feet, but groggy: they lose their next turn.`);
     }
     if (healer && healer !== t && (healed > 0 || wasDown)) {
       if (wasDown) this.callout(healer, 'revive', { ally: t.name });
@@ -3528,6 +3563,26 @@ export class Game {
       if (hasBranch(healer, 'blessed_healer', 'A')) this.applyStatus(t, { id: 'shielded', turns: 1, power: 2 }, healer);
     }
     return healed;
+  }
+
+  /** Back up from 0 HP with someone's help: Groggy, so the next turn is lost (Smelling Salts add 5 HP). */
+  private getUp(t: PlayerEntity) {
+    t.downed = false;
+    t.saves = { ok: 0, fail: 0 };
+    if (this.hasRelic('smelling_salts')) t.hp = Math.min(t.maxHp, t.hp + 5);
+    t.statuses = [...t.statuses.filter((x) => x.id !== 'groggy'), { id: 'groggy', turns: 1 }];
+    this.float(t, '🥴 groggy', '#ffd84d');
+  }
+
+  /** 🤝 Help Up (everyone, 2 AP): a downed friend next to you gets back up at HELP_UP_HP of their max HP. */
+  private helpUp(p: PlayerEntity, t: PlayerEntity) {
+    if (!t.downed || t.dead) return;
+    t.hp = Math.max(1, Math.ceil(t.maxHp * HELP_UP_HP));
+    this.getUp(t);
+    this.float(t, `+${t.hp}`, '#7ddc6f');
+    this.addLog('heal', `🤝 ${p.name} hauls ${t.name} back to their feet (${t.hp} HP). ${t.name} is groggy and loses their next turn.`);
+    this.grantXp(p, XP_REVIVE);
+    this.callout(p, 'revive', { ally: t.name });
   }
 
   private deathSave(p: PlayerEntity) {
@@ -3582,11 +3637,12 @@ export class Game {
   }
 
   private stockShop(act: number): ShopOffer[] {
-    const run = this.run!;
     const gear = new Set<ItemId>();
-    for (let i = 0; gear.size < 3 && i < 30; i++) gear.add(this.randomItem('gear', SHOP_GEAR[act] ?? ['rare']));
-    const consumables = shuffle([...CONSUMABLE_IDS]).slice(0, 3);
-    const relic = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity !== 'boss' && !run.relics.includes(id)))[0];
+    for (let i = 0; gear.size < 3 && i < 30; i++) gear.add(this.randomItem('gear', rollRarity(rng.next(), act)));
+    const stock = new Set<ItemId>();
+    for (let i = 0; stock.size < 3 && i < 30; i++) stock.add(this.randomItem('consumable', rollRarity(rng.next(), act)));
+    const consumables = [...stock];
+    const relic = this.rollRelics(1)[0];
     return [
       ...[...gear].map((id): ShopOffer => ({ kind: 'item', id, price: itemPrice(id), left: 1 })),
       ...consumables.map((id): ShopOffer => ({ kind: 'item', id, price: itemPrice(id), left: 2 })),

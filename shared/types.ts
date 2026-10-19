@@ -79,6 +79,8 @@ export interface PlayerEntity extends EntityBase {
   levelUps: number; // level-up picks still to make: since rewards come after every win (2026-10-19), only the subclass pick
   elitePicks: number; // elite-spoils picks still to make (one per hero for every elite beaten)
   rewardPicks?: number; // victory picks still to make (one per hero for every fight won): two skill cards and an item card
+  injuries?: number; // deaths since the last rest: -INJURY_PCT max HP each (shared/rules.ts)
+  pity?: number; // rarity pity for this hero's item cards: points moved from common to rare until a rare comes up
   offer: OfferCard[] | null; // the cards for the current pick
   offerKind?: 'level' | 'elite' | 'reward'; // which kind of pick the current offer is
   bonusHp: number; // permanent max HP from events, boons and items

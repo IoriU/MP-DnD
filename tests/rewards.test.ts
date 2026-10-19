@@ -57,17 +57,21 @@ test('a victory offer is two skill cards and an item card (a boon when the bag i
   for (let seed = 1; seed <= 50; seed++) assert.equal(makeRewardOffer(full, makeRng(seed), 1)[2].kind, 'boon', 'no item card with a full bag');
 });
 
-test('victory items: no rares in act 1, gear the hero is not wearing, consumables too', () => {
+test('victory items: rares are rare in act 1, gear the hero is not wearing, consumables too', () => {
   const seen = new Set<string>();
+  let cards = 0;
+  let rares = 0;
   for (let seed = 1; seed <= 400; seed++) {
     const p = hero('rogue');
     p.gear.weapon = 'fine_blade';
     const card = makeRewardOffer(p, makeRng(seed), 1)[2];
     if (card.kind !== 'item') continue;
-    assert.notEqual(ITEMS[card.item].rarity, 'rare', `seed ${seed}: ${card.item}`);
+    cards++;
+    if (['rare', 'epic', 'legendary'].includes(ITEMS[card.item].rarity)) rares++;
     assert.notEqual(card.item, 'fine_blade', 'not what it already wears');
     seen.add(ITEMS[card.item].kind);
   }
+  assert.ok(rares / cards < 0.12, `${rares} rare or better of ${cards} act 1 item cards`);
   assert.deepEqual([...seen].sort(), ['consumable', 'gear']);
 });
 

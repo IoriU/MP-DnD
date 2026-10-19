@@ -89,6 +89,7 @@
   border-radius: 8px;
   cursor: help;
 }
+.relic.uncommon { border-color: #3d8f5a; }
 .relic.rare { border-color: #3d6aa8; }
 .relic.boss { border-color: var(--accent); background: #2a210f; box-shadow: 0 0 6px #e8b04a44; }
 .relic:focus-visible, .ally-chip:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }

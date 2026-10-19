@@ -1,8 +1,8 @@
 // Hero progression: XP shares, level-ups, level-up offers (pick 1 of 3), elite spoils, and training at rest sites.
 // Pure functions on PlayerEntity, so they can be unit tested without a running game.
 
-import { ELITE_GEAR, GEAR_IDS, ITEMS, ITEM_IDS, bagRoom, gearBonus, gearDef, isItemId, type ItemId, type Rarity } from '../shared/items.ts';
-import { BOON_HP, CLASSES, LEVEL_CAP, MAX_BONUS_AC, XP_ASSIST, XP_KILL, XP_SHARED, maxHpFor, maxSlotsFor, xpToNext } from '../shared/rules.ts';
+import { GEAR_IDS, ITEMS, ITEM_IDS, bagRoom, gearBonus, gearDef, isItemId, nextPity, rarityPool, rollRarity, type ItemId } from '../shared/items.ts';
+import { BOON_HP, CLASSES, INJURY_PCT, LEVEL_CAP, MAX_BONUS_AC, MAX_INJURIES, XP_ASSIST, XP_KILL, XP_SHARED, maxHpFor, maxSlotsFor, xpToNext } from '../shared/rules.ts';
 import {
   COUNTED_KINDS,
   SKILLS,
@@ -31,7 +31,8 @@ export const startingSkills = (c: ClassId): OwnedSkill[] => CLASSES[c].start.map
 export function recalcHero(p: PlayerEntity) {
   const c = CLASSES[p.classId];
   const drained = p.statuses.find((s) => s.id === 'drained')?.power ?? 0; // a Wight's touch, until the fight ends
-  const maxHp = Math.max(1, maxHpFor(p.classId, p.level) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0) + gearBonus(p, 'hp') - drained);
+  const injured = 1 - INJURY_PCT * Math.min(p.injuries ?? 0, MAX_INJURIES); // 🩹 deaths since the last rest
+  const maxHp = Math.max(1, Math.round((maxHpFor(p.classId, p.level) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0) + gearBonus(p, 'hp')) * injured) - drained);
   const hpGain = maxHp - p.maxHp;
   p.maxHp = maxHp;
   if (hpGain > 0 && !p.downed && !p.dead) p.hp += hpGain;
@@ -140,26 +141,19 @@ export function makeOffer(p: PlayerEntity, r: Rng): OfferCard[] {
   return cards;
 }
 
-/** What a victory's item card can be, by act: mostly common early, rare late. */
-const REWARD_RARITY: Record<number, Partial<Record<Rarity, number>>> = {
-  1: { common: 0.65, uncommon: 0.35 },
-  2: { common: 0.35, uncommon: 0.45, rare: 0.2 },
-  3: { uncommon: 0.5, rare: 0.5 },
-};
-
-/** A victory's item: gear the hero isn't wearing, or a consumable, half the time each. */
+/**
+ * A victory's item: gear the hero isn't wearing, or a consumable, half the time each. Its rarity rolls on the act's
+ * RARITY_ODDS with the hero's pity (shared/items.ts), or the nearest rarity there is.
+ */
 export function rewardItem(p: PlayerEntity, r: Rng, act: number): ItemId | null {
-  const odds = REWARD_RARITY[Math.min(3, Math.max(1, act))];
-  let roll = r.next();
-  let rarity: Rarity = 'common';
-  for (const [k, w] of Object.entries(odds) as [Rarity, number][]) {
-    rarity = k;
-    if ((roll -= w) < 0) break;
-  }
+  const rarity = rollRarity(r.next(), act, { pity: p.pity });
   const worn = new Set(Object.values(p.gear));
   const gear = r.next() < 0.5;
-  const pool = ITEM_IDS.filter((id) => ITEMS[id].rarity === rarity && (gear ? ITEMS[id].kind === 'gear' && !worn.has(id) : ITEMS[id].kind === 'consumable'));
-  return pool.length ? r.pick(pool) : null;
+  const pool = rarityPool(ITEM_IDS.filter((id) => (gear ? ITEMS[id].kind === 'gear' && !worn.has(id) : ITEMS[id].kind === 'consumable')), (id) => ITEMS[id].rarity, rarity);
+  if (!pool.length) return null;
+  const id = r.pick(pool);
+  p.pity = nextPity(p.pity, ITEMS[id].rarity);
+  return id;
 }
 
 /**
@@ -187,10 +181,14 @@ export function makeEliteOffer(p: PlayerEntity, r: Rng, act: number): OfferCard[
   const upgrades = candidates(p, 'class').concat(candidates(p, 'common')).filter((c) => c.card.kind === 'upgrade');
   const learns = candidates(p, 'class').filter((c) => c.card.kind === 'learn');
   const cards = takeWeighted(upgrades.length ? upgrades : learns, 1, r, taken);
-  const rarities = ELITE_GEAR[act] ?? ['rare'];
+  const want = rollRarity(r.next(), act, { pity: p.pity, elite: true }); // the next act's odds, never common
   const worn = new Set(Object.values(p.gear));
-  const gear = GEAR_IDS.filter((id) => rarities.includes(ITEMS[id].rarity) && !worn.has(id));
-  if (gear.length) cards.push({ kind: 'gear', item: r.pick(gear) });
+  const gear = rarityPool(GEAR_IDS.filter((id) => !worn.has(id)), (id) => ITEMS[id].rarity, want);
+  if (gear.length) {
+    const item = r.pick(gear);
+    p.pity = nextPity(p.pity, ITEMS[item].rarity);
+    cards.push({ kind: 'gear', item });
+  }
   const boons = candidates(p, 'common').filter((c) => c.card.kind === 'boon');
   cards.push(...takeWeighted(boons, 3 - cards.length, r, taken));
   return cards;
