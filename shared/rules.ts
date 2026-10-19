@@ -197,7 +197,57 @@ export interface MonsterDef {
   role?: Role; // how it fights (default: archer if it shoots, else brute)
   shove?: boolean; // shoves heroes into fire, poison and other hazards when it can (STR contest, like the heroes' Shove)
   support?: { heal: Dice; buff: StatusApply }; // a support's spells, at its attack range: mend a hurt friend, or buff one
+  trick?: MonsterTrick; // a set-up it can use instead of attacking (server/monsterai.ts decides when)
+  rider?: MonsterRider; // what its attacks do on a hit
+  leader?: boolean; // gives its side orders (ORDERS)
 }
+
+/**
+ * A monster's trick (Phase 12): instead of attacking, it throws a net, spits a web or brands a hero in range, so that
+ * its friends hit harder. The target saves against `dc`, or without a save it's an attack roll. Then the trick needs
+ * `cooldown` of its turns to be ready again.
+ */
+export interface MonsterTrick {
+  name: string;
+  icon: string;
+  verb: string; // "throws a net at"
+  range: number;
+  save?: 'dex' | 'str' | 'wis';
+  dc?: number;
+  status: StatusApply[];
+  cooldown: number; // 99: once a fight
+}
+
+/** What a monster's attacks do on a hit: the target saves against `dc` or gets the status (without a save, always). */
+export interface MonsterRider {
+  status: StatusApply;
+  save?: 'dex' | 'str' | 'wis';
+  dc?: number;
+  text: string; // "knocks {target} down"
+}
+
+/**
+ * Help: instead of attacking, a melee monster gets in an enemy's face, and the next attack against them has advantage.
+ * Weak monsters next to a hero help their big friends hit. NPC allies do it for the party too.
+ */
+export const HELP: StatusApply = { id: 'distracted', turns: 1 };
+export const canHelp = (def: MonsterDef) => def.range <= 1 && roleOf(def) !== 'support';
+
+/** A leader's orders: a free shout at the start of its turn, on its first turn and then every ORDER_EVERY turns. */
+export type OrderId = 'charge' | 'hold' | 'kill';
+export const ORDERS: Record<OrderId, { name: string; icon: string; desc: string }> = {
+  charge: { name: 'Charge!', icon: '📯', desc: 'Every friend within 8 tiles gets +3 movement on its next turn and a stack of Rallied.' },
+  hold: { name: 'Hold the line!', icon: '🛡️', desc: 'Every friend within 8 tiles is Shielded (+2 AC) for 2 turns.' },
+  kill: { name: 'Kill that one!', icon: '🎯', desc: 'Marks one enemy for 2 turns: attacks against it have advantage.' },
+};
+export const ORDER_RANGE = 8;
+export const ORDER_EVERY = 3;
+export const ORDER_STATUS: Record<OrderId, StatusApply[]> = {
+  charge: [{ id: 'charging', turns: 1 }, { id: 'rallied', turns: 3, power: 1, stack: 3 }],
+  hold: [{ id: 'shielded', turns: 2, power: 2 }],
+  kill: [{ id: 'marked', turns: 2 }],
+};
+export const CHARGE_MOVES = 3;
 
 export const roleOf = (def: MonsterDef): Role => def.role ?? (def.range > 1 ? 'archer' : 'brute');
 
@@ -213,16 +263,22 @@ export const monsterSave = (def: MonsterDef, save: 'dex' | 'str' | 'wis') => def
 export const MONSTERS: Record<string, MonsterDef> = {
   // Act 1: Goblin Warrens
   rat: m('Giant Rat', '🐀', 7, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, role: 'coward', verb: 'bites' }),
-  kobold: m('Kobold', '🦎', 5, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, role: 'coward', verb: 'stabs' }),
-  goblin: m('Goblin', '👺', 7, 15, 4, { n: 1, d: 6, bonus: 2 }, 2, { dex: 2, role: 'skirmisher', verb: 'slashes' }),
+  kobold: m('Kobold', '🦎', 5, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, {
+    dex: 2, role: 'coward', verb: 'stabs',
+    trick: { name: 'Net', icon: '🪢', verb: 'throws a net at', range: 3, status: [{ id: 'netted', turns: 2 }], cooldown: 99 },
+  }),
+  goblin: m('Goblin', '👺', 7, 15, 4, { n: 1, d: 6, bonus: 2 }, 2, {
+    dex: 2, role: 'skirmisher', verb: 'slashes',
+    trick: { name: 'Dirty Trick', icon: '🫳', verb: 'throws sand in the eyes of', range: 1, save: 'dex', dc: 12, status: [{ id: 'blinded', turns: 1 }], cooldown: 3 },
+  }),
   archer: m('Goblin Archer', '🏹', 7, 13, 4, { n: 1, d: 6, bonus: 2 }, 2, { dex: 2, range: 8, verb: 'shoots' }),
   firebomber: m('Goblin Firebomber', '💣', 7, 12, 4, { n: 1, d: 6, bonus: 1 }, 3, { dex: 2, range: 6, element: 'fire', verb: 'lobs a firebomb at' }),
   shaman: m('Goblin Shaman', '🔮', 9, 12, 3, { n: 1, d: 4, bonus: 1 }, 3, {
     range: 6, wis: 2, element: 'lightning', role: 'support', verb: 'zaps',
-    support: { heal: { n: 1, d: 8, bonus: 2 }, buff: { id: 'blessed', turns: 2 } },
+    support: { heal: { n: 1, d: 8, bonus: 2 }, buff: { id: 'rallied', turns: 3, power: 1, stack: 3 } },
   }),
-  hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, shove: true, verb: 'cuts' }),
-  goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, shove: true, verb: 'slashes' }),
+  hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, shove: true, leader: true, verb: 'cuts' }),
+  goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, shove: true, leader: true, verb: 'slashes' }),
   mimic: m('Mimic', '📦', 30, 12, 4, { n: 1, d: 8, bonus: 2 }, 10, { attacks: 2, speed: 4, dex: 0, str: 3, verb: 'chomps' }),
   // Act 2: Forgotten Crypt
   skeleton: m('Skeleton', '💀', 13, 13, 4, { n: 1, d: 6, bonus: 2 }, 3, { dex: 2, wis: -1, resist: { poison: 'immune' }, verb: 'hacks' }),
@@ -231,30 +287,52 @@ export const MONSTERS: Record<string, MonsterDef> = {
     speed: 4, dex: -2, str: 2, wis: -2, resist: { poison: 'immune' }, verb: 'slaps',
     death: { ground: 'poison', radius: 1, text: 'bursts in a spray of poison' },
   }),
-  wolf: m('Wolf', '🐺', 11, 13, 4, { n: 2, d: 4, bonus: 2 }, 3, { speed: 8, dex: 2, role: 'skirmisher', verb: 'bites' }),
-  spider: m('Giant Spider', '🕷️', 22, 14, 5, { n: 1, d: 8, bonus: 3 }, 5, { dex: 3, role: 'skirmisher', resist: { poison: 'resist' }, verb: 'bites' }),
+  wolf: m('Wolf', '🐺', 11, 13, 4, { n: 2, d: 4, bonus: 2 }, 3, {
+    speed: 8, dex: 2, role: 'skirmisher', verb: 'bites',
+    rider: { status: { id: 'prone', turns: 1 }, save: 'str', dc: 11, text: 'drags {target} to the ground' },
+  }),
+  spider: m('Giant Spider', '🕷️', 22, 14, 5, { n: 1, d: 8, bonus: 3 }, 5, {
+    dex: 3, role: 'skirmisher', resist: { poison: 'resist' }, verb: 'bites',
+    trick: { name: 'Web', icon: '🕸️', verb: 'spits a web at', range: 4, save: 'dex', dc: 12, status: [{ id: 'webbed', turns: 3 }], cooldown: 4 },
+  }),
   necromancer: m('Necromancer', '🧛', 16, 12, 4, { n: 1, d: 8 }, 5, {
     range: 6, wis: 2, element: 'cold', role: 'support', resist: { cold: 'resist' }, verb: 'sends a chill at',
     support: { heal: { n: 2, d: 6, bonus: 2 }, buff: { id: 'shielded', turns: 2, power: 2 } },
   }),
-  wight: m('Wight', '👻', 45, 14, 5, { n: 1, d: 8, bonus: 3 }, 12, { attacks: 2, dex: 2, str: 2, wis: 2, element: 'cold', resist: { poison: 'immune', cold: 'resist' }, verb: 'drains' }),
-  broodmother: m('Spider Broodmother', '🕸️', 50, 14, 6, { n: 1, d: 10, bonus: 3 }, 12, { dex: 3, str: 3, attacks: 2, resist: { poison: 'resist' }, verb: 'bites' }),
-  bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, { attacks: 2, str: 4, wis: 2, xp: 350, shove: true, resist: { poison: 'immune' }, verb: 'cleaves' }),
+  wight: m('Wight', '👻', 45, 14, 5, { n: 1, d: 8, bonus: 3 }, 12, {
+    attacks: 2, dex: 2, str: 2, wis: 2, element: 'cold', resist: { poison: 'immune', cold: 'resist' }, verb: 'drains',
+    rider: { status: { id: 'drained', turns: 99, power: 2, stack: 5 }, text: 'drinks the life from {target}' },
+  }),
+  broodmother: m('Spider Broodmother', '🕸️', 50, 14, 6, { n: 1, d: 10, bonus: 3 }, 12, {
+    dex: 3, str: 3, attacks: 2, resist: { poison: 'resist' }, verb: 'bites',
+    trick: { name: 'Web', icon: '🕸️', verb: 'spits a web at', range: 4, save: 'dex', dc: 13, status: [{ id: 'webbed', turns: 3 }], cooldown: 3 },
+  }),
+  bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, {
+    attacks: 2, str: 4, wis: 2, xp: 350, shove: true, leader: true, resist: { poison: 'immune' }, verb: 'cleaves',
+  }),
   // Act 3: Dragon's Lair
   orc: m('Orc', '👹', 15, 13, 5, { n: 1, d: 12, bonus: 3 }, 4, { str: 3, shove: true, verb: 'cleaves' }),
-  cultist: m('Dragon Cultist', '🦹', 18, 12, 5, { n: 2, d: 6 }, 4, { range: 6, wis: 1, element: 'fire', resist: { fire: 'resist' }, verb: 'hurls fire at' }),
+  cultist: m('Dragon Cultist', '🦹', 18, 12, 5, { n: 2, d: 6 }, 4, {
+    range: 6, wis: 1, element: 'fire', resist: { fire: 'resist' }, verb: 'hurls fire at',
+    trick: { name: 'Dragon Brand', icon: '🎯', verb: 'brands', range: 6, save: 'wis', dc: 13, status: [{ id: 'marked', turns: 2 }], cooldown: 3 },
+  }),
   imp: m('Magma Imp', '😈', 16, 13, 5, { n: 1, d: 6, bonus: 2 }, 4, {
     range: 4, dex: 3, element: 'fire', resist: { fire: 'absorb', cold: 'weak' }, verb: 'spits magma at',
     death: { ground: 'fire', radius: 1, text: 'collapses into a pool of fire' },
   }),
-  ogre: m('Ogre', '🧌', 45, 11, 6, { n: 2, d: 8, bonus: 4 }, 8, { dex: -1, str: 4, wis: -2, shove: true, verb: 'smashes' }),
+  ogre: m('Ogre', '🧌', 45, 11, 6, { n: 2, d: 8, bonus: 4 }, 8, {
+    dex: -1, str: 4, wis: -2, shove: true, verb: 'smashes',
+    rider: { status: { id: 'prone', turns: 1 }, save: 'str', dc: 13, text: 'knocks {target} flat' },
+  }),
   priest: m('Dragon Priest', '🕯️', 20, 13, 5, { n: 1, d: 8, bonus: 1 }, 5, {
     range: 6, wis: 2, element: 'fire', role: 'support', resist: { fire: 'resist' }, verb: 'scorches',
     support: { heal: { n: 2, d: 8, bonus: 2 }, buff: { id: 'blessed', turns: 2 } },
   }),
-  warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, shove: true, verb: 'cleaves' }),
+  warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, shove: true, leader: true, verb: 'cleaves' }),
   drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, resist: { fire: 'immune' }, verb: 'rends' }),
-  wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, { attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, shove: true, resist: { fire: 'resist' }, verb: 'rends' }),
+  wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, {
+    attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, shove: true, leader: true, resist: { fire: 'resist' }, verb: 'rends',
+  }),
   // NPC allies (shared/elites.ts): they fight for the party; act 1 numbers, they grow with the act
   sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, shove: true, verb: 'cuts' }),
   acolyte: m('Acolyte', '😇', 16, 13, 4, { n: 1, d: 8 }, 0, {

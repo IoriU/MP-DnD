@@ -5,7 +5,7 @@
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
 import { dist, hasLOS, reachable } from '../shared/grid.ts';
-import { diceText, MONSTERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
+import { diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
   CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planWalk, previewField, reactionSummary,
@@ -146,10 +146,10 @@ function advantageLine(a: AdvantageInfo): string {
 
 const desc = (text: string) => `<span class="tip-desc">${esc(text)}</span>`;
 
-const BUFF_VERB: Partial<Record<StatusId, string>> = { blessed: 'Blesses', shielded: 'Shields' }; // a support's buff, in words
+const BUFF_VERB: Partial<Record<StatusId, string>> = { blessed: 'Blesses', shielded: 'Shields', rallied: 'Rallies' }; // a support's buff, in words
 
 /** A monster's role and tricks: "🛡️ Brute: pushes to the front", "✋ Shoves heroes into hazards", "✨ Heals 1d8+2 · 🙏 Blesses allies". */
-function roleLines(def: MonsterDef): string[] {
+function roleLines(def: MonsterDef, mon?: MonsterEntity): string[] {
   const role = ROLES[roleOf(def)];
   const lines = [`<span class="tip-role"><b>${role.icon} ${esc(role.name)}:</b> ${esc(role.desc)}</span>`];
   if (def.shove) lines.push('<span class="tip-role">✋ Shoves heroes into hazards</span>');
@@ -158,6 +158,19 @@ function roleLines(def: MonsterDef): string[] {
     const st = STATUSES[buff.id];
     lines.push(`<span class="tip-role">✨ Heals ${diceText(heal)} · ${st.icon} ${BUFF_VERB[buff.id] ?? esc(st.name)} allies (${buff.turns} rounds)</span>`);
   }
+  // Phase 12 tricks: what it sets up for its friends.
+  const t = def.trick;
+  if (t) {
+    const roll = t.save ? `${t.save.toUpperCase()} save DC ${t.dc ?? 12}` : 'attack roll';
+    const statuses = t.status.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name}`).join(', ');
+    const cd = mon?.trickCd ? ` · ready in ${mon.trickCd} turn${mon.trickCd === 1 ? '' : 's'}` : t.cooldown >= 99 ? ' · once a fight' : '';
+    lines.push(`<span class="tip-role">${t.icon} ${esc(t.name)}: ${statuses} (range ${t.range}, ${roll})${cd}</span>`);
+  }
+  if (def.rider) {
+    const st = STATUSES[def.rider.status.id];
+    lines.push(`<span class="tip-role">${st.icon} Its hits: ${esc(st.name)}${def.rider.save ? ` (${def.rider.save.toUpperCase()} save DC ${def.rider.dc ?? 12})` : ''}</span>`);
+  }
+  if (def.leader) lines.push(`<span class="tip-role">📯 Leader: shouts orders (${Object.values(ORDERS).map((o) => o.name).join(' ')})</span>`);
   return lines;
 }
 const roundsLeft = (turns: number | null) => (turns === null ? 'permanent' : `${turns} round${turns === 1 ? '' : 's'} left`);
@@ -1141,7 +1154,7 @@ class DungeonScene extends Phaser.Scene {
     if (s.phase === 'combat' && s.turn?.allyFocus === e.id && mon) lines.push('<span class="tip-adv up">🎯 Your allies are going for it</span>');
     // What it is in the squad, and its tricks.
     const mdef = mon ? MONSTERS[mon.type] : undefined;
-    if (mdef) lines.push(...roleLines(mdef));
+    if (mdef) lines.push(...roleLines(mdef, mon ?? undefined));
     // An elite's traits, one short block each.
     for (const t of mon?.traits ?? []) {
       const tr = TRAITS[t];

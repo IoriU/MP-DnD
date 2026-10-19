@@ -101,6 +101,8 @@ export interface MonsterEntity extends EntityBase {
   dmgBonus?: number;
   summons?: number; // Summoner: minions called so far
   fled?: number; // a coward's turns spent running away (server/monsterai.ts)
+  trickCd?: number; // its turns until its trick is ready again (shared/rules.ts MonsterTrick)
+  orderCd?: number; // a leader's turns until its next order
 }
 
 export type Entity = PlayerEntity | MonsterEntity;

@@ -120,7 +120,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 9 | Smarter enemy AI + difficulty | 🟢 |
 | 10 | ~~AI Dungeon Master (local LLM)~~ | ❌ |
 | 11 | Experiments: PPO monsters, bot personalities | 🟢 |
-| 12 | Content backlog | ⚪ |
+| 12 | Content backlog | 🟡 |
 | 13 | Balance pass | ⚪ |
 
 ---
@@ -668,15 +668,31 @@ Party losses per hero: the share of HP lost, 2 if downed, 3 if dead, averaged pe
 
 ---
 
-## Phase 12: Content backlog ⚪
+## Phase 12: Content backlog 🟡
 
+Started 2026-10-19. Order: the codex first (to see the pools), then monster abilities, then the rest of the list.
+
+- [x] **Codex: a content dashboard** (your ask, 2026-10-19: "view + checks"). `/codex` on the played build, `/codex.html` in dev.
+  - Browse every pool: heroes, skills (every tier), items, relics, blessings, monsters, acts and encounters, elites and allies, statuses and surfaces, events.
+  - It imports the real game data, so it can't drift. Every entry shows the file and line it lives on (a VS Code link in dev); edits still happen in code.
+  - Pool checks: broken references (errors), unused content and missing sprites (warnings), and coverage against the goals below (events and encounters per act, classes). `tests/codex.test.ts` fails on any error.
 - [ ] More classes: Ranger, Paladin, Barbarian, Bard
-- [ ] **Monster abilities** (decided 2026-10-19, after Phase 11 showed monsters that only move and hit leave PPO nothing to learn):
-  - debuffs on heroes: a Kobold's net (can't move), a Goblin's dirty trick (blinded), a Cultist's mark (attacks on them have advantage), a Spider's web (stuck until freed), a Wight's drain (lower max HP)
-  - setups another monster pays off: knocked prone (melee advantage), drenched (extra lightning damage), netted (can't dodge the archers), a "help" action (the next ally's attack on that hero has advantage)
-  - buffs that stack, and leader orders from elites ("Charge!": more movement, "Hold!": more AC)
-  - the scripted squad AI learns to use them (set up first, then pay off), and the hero bots learn to answer them (cut the web, kill the marker first)
-  - then retrain the PPO monsters (training/README.md): this is where learned coordination can beat handwritten rules
+  - The codex also shows the current pools are thin: every class has only 2 class passives (a hero holds 2 at level 1, so no choice there), and the Fighter has exactly 3 cantrips and 3 spells (the hotbar limits). New classes should come with deeper pools, and the old ones need more passives.
+- [x] **Monster abilities** (decided 2026-10-19, after Phase 11 showed monsters that only move and hit leave PPO nothing to learn):
+  - [x] Tricks, instead of attacking (`MonsterDef.trick`): 🪢 Kobold's Net (Netted: can't move, ranged attacks have advantage; once a fight), 🫳 Goblin's Dirty Trick (Blinded), 🕸️ Giant Spider's and Broodmother's Web (Webbed: stuck, attacks have advantage, its own have disadvantage, until cut free or burned), 🎯 Dragon Cultist's Brand (Marked)
+  - [x] Riders on hits (`MonsterDef.rider`): Wolves and Ogres knock you 🤕 Prone (melee advantage, ranged disadvantage, getting up costs half your movement); a Wight's touch 🩸 Drains max HP until the fight ends (stacks)
+  - [x] 👉 Help: any melee monster can get in a hero's face instead of attacking (Distracted: the next attack on them has advantage)
+  - [x] Stacking buffs: 📯 Rallied (+1 to hit and damage per stack, up to 3), from the Goblin Shaman and the Charge order
+  - [x] Leader orders (Hobgoblin Captain, Orc Warchief and the three bosses), a free shout every 3rd turn: 📯 Charge! (+3 movement and a Rallied stack), 🛡️ Hold the line! (+2 AC), 🎯 Kill that one! (Marked)
+  - [x] Drenched: already there (Wet from water: lightning stuns, cold freezes); no new trick needed
+  - [x] The scripted squad AI uses them: a set-up is worth what the friends who act before the target's next turn gain from it (`trickValue` in server/monsterai.ts, with the initiative order and pack targets)
+  - [x] The hero bots answer: ✂️ Cut Free (everyone, bonus action) for themselves or a friend next to them, and they go for trick-throwers and leaders first
+  - [ ] Retrain the PPO monsters (training/README.md). The option features changed (44 → 48: the trick and Help kinds, and what an option sets up), so the old policy no longer fit.
+    - [x] For now 🧠 PPO ships the imitation stage of run 3 (it copies the scripted AI 100%), so the lobby choice keeps working
+    - [ ] PPO run 3 (`training/runs/ppo3`, entropy bonus lowered to 0.002 after run 2's drift), then a 2,000-fight comparison and export
+  - Bot runs (3 batches of 18, all difficulties, 3–6 heroes): 0 anomalies, 0 rejected actions, 0 server errors. Per 18 runs: about 55 tricks (half land), 50–65 orders, 26 Cut Frees by the bots, 5–14 knockdowns, 8–20 drains; Help is rare (it only wins next to a big hitter, like Kobolds next to an Ogre).
+  - Tests: `tests/abilities.test.ts` (34). It caught a bug: a netted hero could dash out of the net (dash movement now waits until it's free).
+- [ ] More monsters and elites per act; alternate bosses
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)
 - [ ] Traps and interactive room props (doors, levers, collapsing floors)

@@ -23,7 +23,7 @@ import type { Server } from 'socket.io';
 import { isFoe } from '../shared/elites.ts';
 import type { Entity, PlayerEntity } from '../shared/types.ts';
 import { Game, type MonsterBrain } from '../server/game.ts';
-import { MAX_OPTIONS, OPTION_FEATURES, STATE_FEATURES } from '../server/monsterai.ts';
+import { MAX_OPTIONS, OPTION_FEATURES, STATE_FEATURES, TOP_FEATURE } from '../server/monsterai.ts';
 import { monsterPolicy } from '../server/policy.ts';
 import type { SaveFile } from '../server/saves.ts';
 
@@ -148,7 +148,7 @@ function playFight(): Promise<Result> {
   });
 }
 
-send({ hello: { features: OPTION_FEATURES, state: STATE_FEATURES, maxOptions: MAX_OPTIONS, fights: files.length, mode, atOnce: AT_ONCE } });
+send({ hello: { features: OPTION_FEATURES, state: STATE_FEATURES, top: TOP_FEATURE, maxOptions: MAX_OPTIONS, fights: files.length, mode, atOnce: AT_ONCE } });
 
 if (mode === 'train') {
   // Forever (the trainer kills the worker when it's done).

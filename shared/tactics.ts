@@ -63,9 +63,16 @@ export function attackAdvantage(attacker: Entity, target: Entity, entities: Enti
   if (hasStatus(attacker, 'hidden')) adv.push('hidden');
   if (hasStatus(attacker, 'focused')) adv.push('focused');
   if (hasStatus(target, 'marked')) adv.push('marked');
+  if (hasStatus(target, 'webbed')) adv.push('webbed');
+  if (hasStatus(target, 'distracted') && !sameSide(attacker, target)) adv.push('distracted');
+  // Shooting someone in a net is easy; someone lying down is easy to hit up close and hard to hit from afar.
+  const ranged = dist(attacker, target) > 1;
+  if (hasStatus(target, 'netted') && ranged) adv.push('netted');
+  if (hasStatus(target, 'prone')) (ranged ? dis : adv).push('prone');
   if (isFlanking(attacker, target, entities)) adv.push('flanking');
   if (isBehind(target, attacker)) adv.push('from behind');
   if (hasStatus(attacker, 'blinded')) dis.push('blinded');
+  if (hasStatus(attacker, 'webbed')) dis.push('webbed');
   return { adv, dis };
 }
 

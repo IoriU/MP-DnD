@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Delvers Codex</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>" />
+  </head>
+  <body>
+    <!-- The Codex: a read-only dashboard over the game's content (see client/codex/) -->
+    <header class="top">
+      <div class="top-inner">
+        <div class="brand"><h1>📖 Delvers Codex</h1><span>Read-only. Every entry shows where it lives; edit it in code.</span></div>
+        <nav id="tabs" class="tabs" aria-label="Content pools"></nav>
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search this tab (press / to focus)" autocomplete="off" spellcheck="false" aria-label="Search this tab" />
+          <span id="filters"></span>
+          <span id="count"></span>
+        </div>
+      </div>
+    </header>
+    <main id="view"></main>
+    <script type="module" src="/client/codex/main.ts"></script>
+  </body>
+</html>

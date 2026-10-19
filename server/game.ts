@@ -14,14 +14,20 @@ import {
   BREATH_DC,
   CLASSES,
   CLASS_IDS,
+  CHARGE_MOVES,
   COWARD_TURNS,
   DIFFICULTIES,
+  HELP,
   MONSTER_AIS,
   LEVEL_CAP,
   MAX_ACT,
   MAX_PLAYERS,
   MIN_PARTY,
   MONSTERS,
+  ORDERS,
+  ORDER_EVERY,
+  ORDER_RANGE,
+  ORDER_STATUS,
   PLAYER_COLORS,
   REST_HEAL,
   REST_MS,
@@ -47,8 +53,10 @@ import {
   type Dice,
   type Difficulty,
   type MonsterAi,
+  type MonsterRider,
 } from '../shared/rules.ts';
 import {
+  ROOTED,
   SKILLS,
   SKIP_TURN,
   SLOWED,
@@ -126,6 +134,7 @@ import {
   isAllyId,
   isAllyNpc,
   isFoe,
+  sameSide,
   traitCount,
   type AllyId,
   type TraitId,
@@ -185,7 +194,10 @@ import { getEvent, pickEvent, type CheckResult, type EventChoiceDef, type EventD
 import { BARK_ODDS, barkLine, type BarkEvent } from './barks.ts';
 import { BOT_NAMES, LOW_HP, calloutLine, newChatter, tryCallout, type CallEvent, type CallVars } from './companions.ts';
 import { autoApproachChoice, autoEquip, autoEventChoice, autoGive, autoLevelPick, autoPathChoice, autoRestPick, autoShopPick, nextHeroIntent, upkeepIntent } from './heroai.ts';
-import { canHitFrom, elementOf, monsterChoices, planMonster, shoveResist, squadFocus, squadPlan, type MonsterChoices, type MonsterPlan } from './monsterai.ts';
+import {
+  canHitFrom, elementOf, monsterChoices, pickOrder, planMonster, shoveResist, squadFocus, squadPlan,
+  type MonsterChoices, type MonsterOrder, type MonsterPlan, type MonsterView,
+} from './monsterai.ts';
 import { monsterPolicy } from './policy.ts';
 import { applyLevelUps, applyPick, dealOffer, killShares, recalcHero, startingSkills, upgrade, validCard, validRestPick } from './progression.ts';
 import { pick, randInt, rng, shuffle } from './rng.ts';
@@ -277,6 +289,7 @@ export class Game {
   private entities: Entity[] = [];
   private turn: TurnState | null = null;
   private turnOwner: string | null = null; // whose turn it is (stays set even if they're removed mid-turn)
+  private heldMoves = 0; // the turn's movement, held back while it's stuck in a net or a web (Cut Free gives it back)
   private log: LogLine[] = [];
   private logId = 0;
   private idSeq = 0;
@@ -1505,7 +1518,7 @@ export class Game {
 
   /** Moves one tile on your turn. Returns false if it couldn't. */
   private tryMove(p: PlayerEntity, next: Pos): boolean {
-    if (!this.canMove(p) || !this.turn || this.turn.movesLeft <= 0) return false;
+    if (!this.canMove(p) || !this.turn || this.turn.movesLeft <= 0 || ROOTED.some((id) => hasStatus(p, id))) return false;
     const dx = next.x - p.x;
     const dy = next.y - p.y;
     if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1 || !canStep(this, p, dx, dy) || this.occupied(next.x, next.y, p.id)) return false;
@@ -1589,10 +1602,24 @@ export class Game {
     const e = this.current();
     if (!e) return this.advanceTurn();
     this.turnOwner = e.id;
-    t.movesLeft = SLOWED.some((id) => hasStatus(e, id)) ? Math.floor(e.speed / 2) : e.speed;
+    t.movesLeft = (SLOWED.some((id) => hasStatus(e, id)) ? Math.floor(e.speed / 2) : e.speed) + (hasStatus(e, 'charging') ? CHARGE_MOVES : 0);
     t.actionUsed = false;
     t.bonusUsed = false;
     if (e.kind === 'player' && e.dead) return this.advanceTurn();
+    if (hasStatus(e, 'prone')) {
+      // Getting back up costs half its movement.
+      e.statuses = e.statuses.filter((s) => s.id !== 'prone');
+      if (!(e.kind === 'player' && e.downed)) {
+        t.movesLeft = Math.floor(t.movesLeft / 2);
+        this.addLog('info', `🤕 ${e.name} gets back up.`);
+      }
+    }
+    this.heldMoves = 0;
+    if (ROOTED.some((id) => hasStatus(e, id))) [this.heldMoves, t.movesLeft] = [t.movesLeft, 0];
+    if (e.kind === 'monster') {
+      if (e.trickCd) e.trickCd--;
+      if (e.orderCd) e.orderCd--;
+    }
 
     if (e.kind === 'player' && !e.downed) this.heroTurnStart(e);
     this.tickStatuses(e);
@@ -1757,7 +1784,13 @@ export class Game {
         p.downed = false;
         p.saves = { ok: 0, fail: 0 };
       }
+      const drained = hasStatus(p, 'drained');
       p.statuses = [];
+      if (drained) {
+        const hp = p.hp;
+        recalcHero(p); // max HP comes back, the HP doesn't
+        p.hp = Math.min(hp, p.maxHp);
+      }
       p.tempHp = 0;
       p.used = [];
       for (const s of p.skills) s.cd = 0;
@@ -1899,8 +1932,20 @@ export class Game {
 
     if (hasTrait(m, 'summoner')) this.summon(m);
 
-    // The plan (server/monsterai.ts): where to walk, then attack, shove, hit the ground, heal, buff or run.
-    const plan = await this.monsterPlan(m);
+    // A leader shouts an order first (a free action), then takes its turn. Not on Story: monsters there fight on instinct.
+    const view = this.monsterView(m);
+    if (def.leader && !ally && !(m.orderCd ?? 0) && DIFFICULTIES[this.diff].squad) {
+      const order = pickOrder(view);
+      if (order) {
+        this.giveOrder(m, order);
+        this.broadcast();
+        await sleep(600);
+        if (!ok()) return;
+      }
+    }
+
+    // The plan (server/monsterai.ts): where to walk, then attack, shove, hit the ground, heal, buff, trick, help or run.
+    const plan = await this.monsterPlan(m, view);
     if (!ok()) return;
     if (plan.kind === 'flee') {
       m.fled = (m.fled ?? 0) + 1;
@@ -1953,6 +1998,17 @@ export class Game {
     }
     if (plan.kind === 'ignite' && plan.tile && canHit(m, plan.tile) && !taunter) {
       this.groundShot(m, plan.tile);
+      return this.afterMonsterAct(m, token, ok, diedMidTurn);
+    }
+    const trick = def.trick;
+    if (plan.kind === 'trick' && trick && aimed && this.up(aimed) && !(m.trickCd ?? 0) && !(taunter && aimed !== taunter)) {
+      if (dist(m, aimed) <= trick.range && (trick.range <= 1 || hasLOS(this, m, aimed))) {
+        this.useTrick(m, aimed);
+        return this.afterMonsterAct(m, token, ok, diedMidTurn);
+      }
+    }
+    if (plan.kind === 'help' && aimed && this.up(aimed) && dist(m, aimed) === 1 && !(taunter && aimed !== taunter)) {
+      this.help(m, aimed);
       return this.afterMonsterAct(m, token, ok, diedMidTurn);
     }
 
@@ -2008,6 +2064,7 @@ export class Game {
         this.float(m, `+${drained}`, '#c0392b');
       }
     }
+    if (hit && def.rider && this.entities.includes(target) && this.up(target)) this.applyRider(m, target, def.rider);
     // Fire, cold and lightning attacks react with whatever the target stands in (a firebomb on oil...).
     const el = fieldElement(element);
     if (el) this.runField([{ kind: 'touch', tiles: [at.y * this.width + at.x], element: el }], m);
@@ -2079,14 +2136,16 @@ export class Game {
   }
 
   /**
-   * The squad director (server/monsterai.ts) picks or keeps the packs' targets, one per pack (more packs against bigger
-   * parties), and a new target gets called out with a bark; then the monster plans its turn around its pack's target.
-   * The NPC allies pick one target of their own. On Story there's no squad: every monster goes for whoever is closest.
+   * What a monster sees: the room, who its pack hunts, and who acts when. The squad director (server/monsterai.ts) picks
+   * or keeps the packs' targets, one per pack (more packs against bigger parties), and a new target gets called out with
+   * a bark; then the monster plans its turn around its pack's target. The NPC allies pick one target of their own. On
+   * Story there's no squad: every monster goes for whoever is closest.
    */
-  private async monsterPlan(m: MonsterEntity): Promise<MonsterPlan> {
+  private monsterView(m: MonsterEntity): MonsterView {
     const t = this.turn!;
     const brain = m.ally ? null : this.learnedBrain();
     let focus: string | null = null;
+    let assign: Record<string, string> | undefined;
     if (DIFFICULTIES[this.diff].squad && m.ally) {
       const before = t.allyFocus ?? null;
       focus = t.allyFocus = squadFocus(this.entities, 'allies', before);
@@ -2095,6 +2154,7 @@ export class Game {
       const before = t.focus ?? [];
       const squad = squadPlan(this.entities, before);
       t.focus = squad.targets;
+      assign = squad.assign;
       focus = squad.assign[m.id] ?? squad.targets[0] ?? null;
       const fresh = squad.targets.find((id) => !before.includes(id));
       if (fresh) {
@@ -2102,7 +2162,13 @@ export class Game {
         this.callout(this.entity(fresh), 'hunted'); // a bot hears it's the target
       }
     }
-    const view = { me: m, map: this, entities: this.entities, moves: t.movesLeft, difficulty: this.diff, focus, rand: () => rng.next(), round: t.round };
+    const i = Math.max(0, t.order.indexOf(m.id));
+    const order = [...t.order.slice(i), ...t.order.slice(0, i)];
+    return { me: m, map: this, entities: this.entities, moves: t.movesLeft, difficulty: this.diff, focus, rand: () => rng.next(), round: t.round, order, assign };
+  }
+
+  private async monsterPlan(m: MonsterEntity, view = this.monsterView(m)): Promise<MonsterPlan> {
+    const brain = m.ally ? null : this.learnedBrain();
     if (!brain) return planMonster(view);
     // The learned policy (or the trainer) picks from the same options the scripted AI weighs.
     const choices = monsterChoices(view);
@@ -2167,7 +2233,102 @@ export class Game {
     } else {
       this.shot(m, f, '#ffd84d');
       this.applyStatus(f, sup.buff, m);
-      this.addLog('info', `${m.glyph} ${m.name} ${sup.buff.id === 'shielded' ? 'wards' : 'blesses'} ${f.name} (${STATUSES[sup.buff.id].name}).`);
+      const verb = sup.buff.id === 'shielded' ? 'wards' : sup.buff.id === 'rallied' ? 'rallies' : 'blesses';
+      this.addLog('info', `${m.glyph} ${m.name} ${verb} ${f.name} (${STATUSES[sup.buff.id].name}).`);
+    }
+  }
+
+  /** A leader's shout (shared/rules.ts ORDERS): its side within 8 tiles charges or holds, or everyone goes for one enemy. */
+  private giveOrder(m: MonsterEntity, o: MonsterOrder) {
+    const def = ORDERS[o.id];
+    m.orderCd = ORDER_EVERY;
+    const target = o.target ? this.entity(o.target) : undefined;
+    this.addLog('say', `${m.glyph} ${m.name}: "${o.id === 'kill' && target ? `Kill ${target.name}!` : def.name}"`);
+    this.float(m, `${def.icon} ${def.name}`, '#ff8a5c');
+    if (o.id === 'kill') {
+      if (!target) return;
+      this.face(m, target);
+      for (const st of ORDER_STATUS.kill) this.applyStatus(target, st, m);
+      if (target.kind === 'player') this.callout(target, 'hunted');
+      return;
+    }
+    const squad = this.entities.filter((e) => e.kind === 'monster' && sameSide(e, m) && dist(e, m) <= ORDER_RANGE);
+    for (const f of squad) for (const st of ORDER_STATUS[o.id]) this.applyStatus(f, st, m);
+  }
+
+  /** A monster's trick (shared/rules.ts MonsterTrick): a net, a web, a brand... a save, or an attack roll without one. */
+  private useTrick(m: MonsterEntity, t: Entity) {
+    const trick = MONSTERS[m.type].trick!;
+    m.trickCd = trick.cooldown;
+    this.face(m, t);
+    if (dist(m, t) > 1) this.shot(m, t, '#c8b6ff');
+    const what = `${trick.icon} ${m.name} ${trick.verb} ${t.name}`;
+    let landed: boolean;
+    if (trick.save) {
+      const dc = trick.dc ?? 12;
+      const sv = this.creatureSave(t, trick.save);
+      landed = sv.total < dc;
+      this.addLog(landed ? 'hit' : 'miss', `${what}: ${trick.save.toUpperCase()} save ${sv.text} vs DC ${dc}, ${landed ? 'failed' : 'saved'}.`);
+    } else {
+      const why = attackAdvantage(m, t, this.entities);
+      const net = netAdvantage(why);
+      const r1 = rollDie(20);
+      const r2 = rollDie(20);
+      const d20 = net > 0 ? Math.max(r1, r2) : net < 0 ? Math.min(r1, r2) : r1;
+      const bonus = MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + this.rallyOf(m);
+      const ac = this.acOf(t);
+      landed = d20 === 20 || (d20 !== 1 && d20 + bonus >= ac);
+      if (why.adv.includes('distracted')) t.statuses = t.statuses.filter((s) => s.id !== 'distracted');
+      const rolled = net ? `🎲${r1}|${r2}→${d20}` : `🎲${d20}`;
+      this.addLog(landed ? 'hit' : 'miss', `${what}: ${rolled}${fmtMod(bonus)}=${d20 + bonus} vs AC ${ac}, ${landed ? 'hit' : 'miss'}.`);
+    }
+    if (!landed) {
+      this.float(t, 'dodged', '#9aa0a6');
+      return;
+    }
+    for (const st of trick.status) this.applyStatus(t, st, m);
+  }
+
+  /** Help: it gets in an enemy's face, and the next attack against them (from its side) has advantage. */
+  private help(m: MonsterEntity, t: Entity) {
+    this.face(m, t);
+    this.applyStatus(t, HELP, m);
+    this.addLog('info', `👉 ${m.name} gets in ${t.name}'s face: the next attack against ${t.name} has advantage.`);
+  }
+
+  /** What a monster's hit does on top of the damage: a Wolf drags you down, a Wight drains your life. */
+  private applyRider(m: MonsterEntity, t: Entity, rider: MonsterRider) {
+    if (rider.status.id === 'drained' && t.kind !== 'player') return;
+    if (hasStatus(t, rider.status.id) && !rider.status.stack) return;
+    let save = '';
+    if (rider.save) {
+      const dc = rider.dc ?? 12;
+      const sv = this.creatureSave(t, rider.save);
+      if (sv.total >= dc) return;
+      save = ` (${rider.save.toUpperCase()} save ${sv.text} vs DC ${dc})`;
+    }
+    this.applyStatus(t, rider.status, m);
+    this.addLog('hit', `${STATUSES[rider.status.id].icon} ${m.name} ${rider.text.replace('{target}', t.name)}${save}.`);
+  }
+
+  /** Rallied stacks: +1 to attack rolls and damage each. */
+  private rallyOf(e: Entity): number {
+    return e.statuses.find((s) => s.id === 'rallied')?.power ?? 0;
+  }
+
+  /** Extra movement this turn (a dash). Stuck in a net or a web, it's held back until it gets free. */
+  private addMoves(e: Entity, n: number) {
+    if (!this.turn) return;
+    if (ROOTED.some((id) => hasStatus(e, id))) this.heldMoves += n;
+    else this.turn.movesLeft += n;
+  }
+
+  /** Out of a net or a web: on its own turn it gets its held-back movement. */
+  private unrooted(e: Entity) {
+    if (ROOTED.some((id) => hasStatus(e, id))) return;
+    if (this.turn && this.current()?.id === e.id && this.heldMoves) {
+      this.turn.movesLeft += this.heldMoves;
+      this.heldMoves = 0;
     }
   }
 
@@ -2363,6 +2524,8 @@ export class Game {
       }
       if (s.tempHp) fr.tempHp = Math.max(fr.tempHp, rollDice(s.tempHp));
       if (s.cleanse) fr.statuses = fr.statuses.filter((x) => !CLEANSED.includes(x.id));
+      if (s.frees) fr.statuses = fr.statuses.filter((x) => !ROOTED.includes(x.id));
+      if (s.cleanse || s.frees) this.unrooted(fr);
       for (const st of s.status ?? []) this.applyStatus(fr, st, p);
       if (s.status?.length && fr !== p) this.grantXp(p, XP_BUFF);
     }
@@ -2376,7 +2539,7 @@ export class Game {
       if (taunted.length) this.addLog('info', `😤 ${taunted.map((m) => m.name).join(', ')} can't take their eyes off ${p.name}.`);
     }
     if (this.turn && this.phase === 'combat' && this.current()?.id === p.id) {
-      if (s.dash) this.turn.movesLeft += s.dash;
+      if (s.dash) this.addMoves(p, s.dash);
       if (s.refresh) {
         this.turn.actionUsed = false;
         p.used.push('turn:surge');
@@ -2570,15 +2733,18 @@ export class Game {
       this.addLog('info', `⏰ ${t.name} is too alert to be caught off guard.`);
       return;
     }
+    if (a.id === 'drained' && t.kind !== 'player') return;
     const turns = a.turns + (t.id === this.turnOwner ? 1 : 0);
     const have = t.statuses.find((x) => x.id === a.id);
     if (have) {
       have.turns = Math.max(have.turns, turns);
-      if (a.power) have.power = Math.max(have.power ?? 0, a.power);
+      if (a.stack) have.power = Math.min((have.power ?? 0) + (a.power ?? 1), (a.power ?? 1) * a.stack); // Rallied, Drained
+      else if (a.power) have.power = Math.max(have.power ?? 0, a.power);
       if (by) have.by = by.id;
     } else {
       t.statuses.push({ id: a.id, turns, ...(a.power ? { power: a.power } : {}), ...(by ? { by: by.id } : {}) });
     }
+    if (a.id === 'drained' && t.kind === 'player') recalcHero(t); // max HP comes down (progression.ts)
     const def = STATUSES[a.id];
     // Only new statuses pop up: wading through a puddle shouldn't say "Wet" on every step.
     if (this.phase === 'combat' && t !== by && !have) this.float(t, `${def.icon} ${def.name}`, def.good ? '#7ddc6f' : '#ffb04d');
@@ -2616,8 +2782,10 @@ export class Game {
     const adv = net > 0;
     const dis = net < 0;
     const hidden = a.statuses.find((s) => s.id === 'hidden');
-    // Focus and hiding are spent on this attack, and you turn to face what you're hitting.
+    // Focus and hiding are spent on this attack, and you turn to face what you're hitting. So is a Help on the target.
     a.statuses = a.statuses.filter((s) => s.id !== 'focused' && s.id !== 'hidden');
+    if (why.adv.includes('distracted')) t.statuses = t.statuses.filter((s) => s.id !== 'distracted');
+    const rally = this.rallyOf(a);
     this.face(a, t);
     const r1 = rollDie(20);
     const r2 = rollDie(20);
@@ -2629,7 +2797,7 @@ export class Game {
       d20 = rollDie(20);
       reroll = ` 🍀→${d20}`;
     }
-    const bonus = o.bonus + (hasStatus(a, 'blessed') ? 2 : 0) - (hasStatus(a, 'dazed') ? 2 : 0);
+    const bonus = o.bonus + (hasStatus(a, 'blessed') ? 2 : 0) - (hasStatus(a, 'dazed') ? 2 : 0) + rally;
     const ac = this.acOf(t);
     const critRange = hero && (hasBranch(hero, 'lucky', 'B') || this.hasRelic('loaded_dice')) ? 19 : 20;
     const crit = d20 >= critRange || (!!o.critFull && t.hp >= t.maxHp);
@@ -2644,7 +2812,7 @@ export class Game {
       return false;
     }
 
-    let total = rollDice(o.dmg, crit) + (o.extra ?? 0) + this.bonusDamage(a, t, o.element);
+    let total = rollDice(o.dmg, crit) + (o.extra ?? 0) + this.bonusDamage(a, t, o.element) + rally;
     const notes: string[] = [];
     if (hero && o.sneak && !hero.used.includes('turn:sneak')) {
       const flanked = this.entities.some((e) => e !== hero && !isFoe(e) && this.up(e) && dist(e, t) <= 1);
@@ -2706,6 +2874,11 @@ export class Game {
   }
 
   private damage(t: Entity, amount: number, by?: Entity, element: Element = 'physical', area = false) {
+    if (element === 'fire' && amount > 0 && hasStatus(t, 'webbed')) {
+      t.statuses = t.statuses.filter((s) => s.id !== 'webbed');
+      this.addLog('info', `🔥 The web around ${t.name} burns away.`);
+      this.unrooted(t);
+    }
     if (element !== 'physical' && amount > 0) {
       // Resistances (monsters by kind, Attunement), and Wet halves fire.
       const k = damageFactor(t, element);
@@ -2957,7 +3130,7 @@ export class Game {
     if (thirst) {
       const healed = this.healBy(null, p, thirst.value);
       if (healed) this.addLog('heal', `🩸 ${p.name} drinks in the victory: +${healed} HP.`);
-      if (hasBranch(p, 'bloodthirsty', 'A') && this.turn && this.current()?.id === p.id) this.turn.movesLeft += 3;
+      if (hasBranch(p, 'bloodthirsty', 'A') && this.turn && this.current()?.id === p.id) this.addMoves(p, 3);
       if (hasBranch(p, 'bloodthirsty', 'B')) for (const h of this.heroes()) if (h !== p && this.standing(h)) this.healBy(null, h, 2);
     }
     const myTurn = this.turn && this.current()?.id === p.id;

@@ -28,7 +28,8 @@ export const startingSkills = (c: ClassId): OwnedSkill[] => CLASSES[c].start.map
  */
 export function recalcHero(p: PlayerEntity) {
   const c = CLASSES[p.classId];
-  const maxHp = Math.max(1, maxHpFor(p.classId, p.level) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0) + gearBonus(p, 'hp'));
+  const drained = p.statuses.find((s) => s.id === 'drained')?.power ?? 0; // a Wight's touch, until the fight ends
+  const maxHp = Math.max(1, maxHpFor(p.classId, p.level) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0) + gearBonus(p, 'hp') - drained);
   const hpGain = maxHp - p.maxHp;
   p.maxHp = maxHp;
   if (hpGain > 0 && !p.downed && !p.dead) p.hp += hpGain;

@@ -62,7 +62,11 @@ const barkRe = (ev: BarkEvent) => {
 const AI_RES: [string, RegExp][] = [
   ['target calls', barkRe('focus')], ['flees', barkRe('flee')], ['cornered', barkRe('cornered')],
   ['shoves', /^✋ .* shoves /], ['shoves held', /tries to shove .* hold their ground/], ['ground shots', / the ground!$/],
-  ['monster heals', /^(🔮|🧛|🕯️) .+ heals /], ['buffs', / (blesses|wards) .+ \((Blessed|Shielded)\)\.$/], ['barks', /^💬 /],
+  ['monster heals', /^(🔮|🧛|🕯️) .+ heals /], ['buffs', / (blesses|wards|rallies) .+ \((Blessed|Shielded|Rallied)\)\.$/], ['barks', /^💬 /],
+  // Phase 12 tricks
+  ['tricks', / (throws a net at|throws sand in the eyes of|spits a web at|brands) [^:]+: /], ['tricks landed', / (throws a net at|throws sand in the eyes of|spits a web at|brands) [^:]+: .*(failed|hit)\.$/],
+  ['helps', / gets in .+'s face/], ['orders', /: "(Charge!|Hold the line!|Kill .+!)"$/], ['knocked down', /^🤕 .+ (drags|knocks) /], ['drained', /^🩸 .+ drinks the life/],
+  ['cut free', / uses Cut Free/], ['webs burned', /The web around .+ burns away/],
 ];
 const REACTION_RE = /^(🔥 The oil|💥 It explodes|⚡ Lightning crackles|🧊 The water freezes|💧 The ice melts|♨️ A cloud of steam|💨 The fire goes out|🛢️ Oil spills|🔥 Burning coals|💧 The water washes)/u;
 const ENCOUNTER_RE = /^(?:⚔️?|\u{1F480}|\u{1F451}) ([^:]+): /u; // "⚔️ Goblin Patrol: Goblin ×2, ..." (not "💀 X is slain!")

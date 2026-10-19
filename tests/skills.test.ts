@@ -84,9 +84,9 @@ test('descriptions are generated for every skill at every tier without gaps', ()
   }
 });
 
-test('hotbar order: basic attacks, cantrips, spells, then Shove and the potion', () => {
+test('hotbar order: basic attacks, cantrips, spells, then Shove, the potion and Cut Free', () => {
   const r = hero('rogue');
-  assert.deepEqual(hotbar(r), ['rapier', 'shortbow', 'cunning_dash', 'shadow_step', 'shove', 'potion']);
+  assert.deepEqual(hotbar(r), ['rapier', 'shortbow', 'cunning_dash', 'shadow_step', 'shove', 'potion', 'cut_free']);
 });
 
 test('block reasons: cooldowns, slots, action economy, out of combat', () => {

@@ -7,12 +7,13 @@ still sets the monsters' numbers either way.
 ## How it fits together
 
 - **The options.** The scripted AI (`server/monsterai.ts`) lists everything a monster could do this turn: every tile
-  it can reach and every attack, shove, heal, buff or shot at the ground from there. `monsterChoices` keeps the best
-  option for each action and target, plus the next best, 32 at most.
-  - Each option is 44 numbers: the kind of action, the hit chance and expected damage, flanking, danger, hazards,
-    whether the target is the one its pack hunts, and so on. Three of them are the scripted AI's own opinion of it.
+  it can reach and every attack, shove, heal, buff, trick, Help or shot at the ground from there. `monsterChoices`
+  keeps the best option for each action and target, plus the next best, 32 at most.
+  - Each option is 48 numbers: the kind of action, the hit chance and expected damage, flanking, danger, hazards,
+    what a trick sets up, whether the target is the one its pack hunts, and so on. Three of them are the scripted
+    AI's own opinion of it.
   - The policy only ever picks among these, so its moves are always legal.
-- **The network.** It scores each option (44 numbers in, a score out; two hidden layers of 64), and the monster takes
+- **The network.** It scores each option (48 numbers in, a score out; two hidden layers of 64), and the monster takes
   the best. While training, it samples from a softmax over the scores instead. A second small network estimates how
   the fight is going (PPO's value).
 - **The environment** (`training/env.ts`) plays real fights with the real game code, headless and at full speed, many

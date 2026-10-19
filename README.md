@@ -137,6 +137,8 @@ For faster bot testing, start the server with `DELVERS_SPEED=10` (monster turns 
 
 To test multiplayer alone, open several browser tabs. Each new tab is a new player. Reloading a tab puts you back into your character.
 
+**The Codex** is a read-only dashboard over all the game's content: heroes, skills (every tier), items, relics, blessings, monsters and their tricks, acts and encounters, elites, statuses, surfaces and events. It reads the real game data, so it's always current, and every entry names the file and line it lives on (a VS Code link in dev). Its Overview runs pool checks: broken references, unused content, missing sprites, and the coverage goals from PLAN.md. Open http://localhost:5173/codex.html with `npm run dev`, or http://localhost:3000/codex on a played build.
+
 ### Project layout
 
 ```
@@ -155,7 +157,7 @@ server/actmap.ts   Slay-the-Spire-style act map generator
 server/room.ts     battle room generator
 server/events.ts   ❓ event scenes and their choices
 server/heroai.ts   auto-play brain for heroes (AFK players, bots, tests)
-server/monsterai.ts  the monsters' brain: squad target, roles, flanking, support spells, shoving
+server/monsterai.ts  the monsters' brain: squad target, roles, flanking, support spells, shoving, tricks and orders
 server/barks.ts    the monsters' one-liners (the italic 💬 lines in the log)
 server/companions.ts  the bots' voices and callouts (their chat lines in the log)
 server/progression.ts  XP shares, level-ups, level-up cards, elite spoils, training
@@ -166,6 +168,7 @@ client/runview.ts  the act map and event screens
 client/scene.ts    Phaser rendering of the battle room: tiles, creatures, effects
 client/hud.ts      sidebar: party, abilities, turn order, dice log
 client/lobby.ts    home screen and tavern lobby
+client/codex/      the Codex (codex.html): the content dashboard and its pool checks
 ```
 
 The server is authoritative: it rolls every die and validates every move, so players can't cheat and all clients stay in sync. Clients only send intents ("move here", "use Fire Bolt on that goblin") and draw the state they get back.

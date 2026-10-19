@@ -188,7 +188,6 @@ def flatten(episodes, hello):
     return steps, opts, mask, torch.tensor([s['state'] for s in steps], dtype=torch.float32), tensor('a', torch.long), tensor('logp'), tensor('adv'), tensor('ret')
 
 
-TOP = 7  # the option feature that says "the scripted AI's top pick" (server/monsterai.ts optionFeatures)
 
 
 def imitate(net, episodes, hello, args):
@@ -209,7 +208,7 @@ def imitate(net, episodes, hello, args):
     with torch.no_grad():
         picks = net.logits(opts, mask).argmax(-1)
         # Ties count: several options often share the top score (the same hit from two tiles).
-        agree = opts[torch.arange(n), picks, TOP].mean().item()
+        agree = opts[torch.arange(n), picks, hello['top']].mean().item()
     return agree
 
 
@@ -412,7 +411,7 @@ def main():
             n_dec = sum(len(e) for e in episodes)
             total += n_dec
             stats = ppo_update(net, opt, episodes, hello, args)
-            agree = sum(s['opts'][s['a']][TOP] for e in episodes for s in e) / max(1, n_dec)
+            agree = sum(s['opts'][s['a']][hello['top']] for e in episodes for s in e) / max(1, n_dec)
             win = 100 * sum(r['won'] for r in results) / max(1, len(results))
             score = sum(r['score'] for r in results) / max(1, len(results))
             row = [update, total, round(time.time() - t0), len(results), round(win, 2), round(score, 4), round(agree, 3),

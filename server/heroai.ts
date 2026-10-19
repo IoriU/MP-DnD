@@ -27,6 +27,7 @@ import {
   hitsOf,
   hotbar,
   limitFor,
+  ROOTED,
   nextTier,
   ownedSkill,
   passiveOf,
@@ -131,8 +132,13 @@ const isMelee = (m: MonsterEntity) => (MONSTERS[m.type]?.range ?? 1) <= 1;
 /** Moves next turn: dazed and chilled monsters get half (game.ts beginTurn). */
 const movesOf = (m: MonsterEntity) => (SLOWED.some((id) => hasStatus(m, id)) ? Math.floor(m.speed / 2) : m.speed);
 const reachOf = (m: MonsterEntity) => movesOf(m) + (MONSTERS[m.type]?.range ?? 1);
+/** Monsters that set the others up (nets, webs, brands, Help riders, orders) are worth taking out first. */
+function trickster(m: MonsterEntity): number {
+  const d = MONSTERS[m.type];
+  return d ? (d.trick ? 1 : 0) + (d.leader ? 2 : 0) + (d.rider ? 0.5 : 0) : 0;
+}
 /** What taking a monster out of the fight is worth (on top of the damage itself). */
-const killValue = (m: MonsterEntity) => 3 + 1.5 * threat(m) + (m.boss || m.elite ? 3 : 0);
+const killValue = (m: MonsterEntity) => 3 + 1.5 * threat(m) + (m.boss || m.elite ? 3 : 0) + trickster(m);
 const tauntedBy = (m: MonsterEntity) => m.statuses.find((x) => x.id === 'taunted')?.by;
 
 // ---------------------------------------------------------------- the situation being scored
@@ -757,6 +763,8 @@ function friendValue(sim: Sim, s: SkillStats, f: PlayerEntity): number {
   }
   if (s.tempHp) v += avgDice(s.tempHp) * (exposure(sim, f) > 0 ? 0.5 : 0.1);
   if (s.cleanse) v += 1.5 * f.statuses.filter((x) => CLEANSED.includes(x.id)).length;
+  // Out of a net or a web: free to move again, and a web's advantage for the monsters is gone.
+  if (s.frees) v += (hasStatus(f, 'webbed') ? 4 : 2.5) + 0.2 * exposure(sim, f);
   for (const st of s.status ?? []) v += heroStatusValue(sim, f, st);
   return v;
 }
@@ -793,7 +801,7 @@ function refreshValue(sim: Sim): number {
 
 /** Extra movement is worth a lot when it's the only way to reach a target this turn. */
 function dashValue(sim: Sim, extra: number): number {
-  if (!sim.root || !sim.actionLater) return 0;
+  if (!sim.root || !sim.actionLater || ROOTED.some((id) => hasStatus(sim.me, id))) return 0; // stuck: a dash waits until it's free
   const canAct = (moves: number) => memo(sim, `act:${moves}`, () => scan(variant(sim, sim.me), moves, actionAt).score) > 5;
   if (canAct(sim.turn.movesLeft)) return 0;
   return canAct(sim.turn.movesLeft + extra) ? 6 : 1;
@@ -1214,6 +1222,7 @@ function scorePlan(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, setup: 
     early ||= gain > MIN_BONUS;
   }
   if (s.heal && res.friends.some((f) => f.downed || hpPct(f) < 0.35)) early = true; // patch people up first
+  if (s.frees) early = true; // cut free before walking or attacking
   return { score: score - costOf(sim, id, s), early };
 }
 

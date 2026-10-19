@@ -29,7 +29,14 @@ export type StatusId =
   | 'wet'
   | 'chilled'
   | 'frozen'
-  | 'shocked';
+  | 'shocked'
+  | 'netted'
+  | 'webbed'
+  | 'prone'
+  | 'distracted'
+  | 'drained'
+  | 'rallied'
+  | 'charging';
 
 export interface StatusDef {
   name: string;
@@ -63,19 +70,33 @@ export const STATUSES: Record<StatusId, StatusDef> = {
   chilled: { name: 'Chilled', icon: '🥶', good: false, desc: 'Half movement. More cold freezes it solid.' },
   frozen: { name: 'Frozen', icon: '🧊', good: false, desc: 'Frozen solid: loses its next turn. Fire thaws it.' },
   shocked: { name: 'Shocked', icon: '⚡', good: false, desc: '−2 AC. More lightning stuns it.' },
+  // Monster tricks (Phase 12): set-ups that another monster pays off.
+  netted: { name: 'Netted', icon: '🪢', good: false, desc: "Can't move, and ranged attacks against it have advantage. Cut Free (a bonus action) gets out of it." },
+  webbed: {
+    name: 'Webbed', icon: '🕸️', good: false,
+    desc: "Stuck in a web: can't move, attacks against it have advantage and its own have disadvantage. Cut Free (a bonus action) or fire gets out of it.",
+  },
+  prone: { name: 'Prone', icon: '🤕', good: false, desc: 'Knocked down: melee attacks against it have advantage, ranged ones disadvantage. Getting up costs half its movement.' },
+  distracted: { name: 'Distracted', icon: '👉', good: false, desc: "Someone's in its face: the next attack against it has advantage." },
+  drained: { name: 'Drained', icon: '🩸', good: false, desc: 'Max HP lowered by its power until the end of the fight.' },
+  rallied: { name: 'Rallied', icon: '📯', good: true, desc: '+1 to attack rolls and +1 damage per stack (stacks up to 3).' },
+  charging: { name: 'Charging', icon: '🏃', good: true, desc: '+3 movement on its next turn.' },
 };
 
 /** Statuses that make a creature lose its turn. */
 export const SKIP_TURN: StatusId[] = ['stunned', 'frozen', 'surprised'];
 /** Statuses that halve movement. */
 export const SLOWED: StatusId[] = ['dazed', 'chilled'];
+/** Statuses that keep a creature from moving. Cut Free (a bonus action) removes them; fire burns a web away. */
+export const ROOTED: StatusId[] = ['netted', 'webbed'];
 /** What Lay on Hands and other cleanses remove. */
-export const CLEANSED: StatusId[] = ['burning', 'poisoned', 'dazed', 'blinded', 'chilled', 'shocked', 'frozen'];
+export const CLEANSED: StatusId[] = ['burning', 'poisoned', 'dazed', 'blinded', 'chilled', 'shocked', 'frozen', 'netted', 'webbed'];
 
 export interface StatusApply {
   id: StatusId;
   turns: number;
   power?: number;
+  stack?: number; // it stacks: each application adds its power, up to this many times (Rallied)
 }
 
 // ---------------------------------------------------------------- skill schema
@@ -144,7 +165,8 @@ export interface SkillStats {
   healMod?: boolean; // + casting stat modifier
   healLevel?: boolean; // + hero level
   overheal?: boolean; // healing past max HP becomes temporary HP
-  cleanse?: boolean; // removes Burning, Poisoned, Dazed and Blinded
+  cleanse?: boolean; // removes the statuses in CLEANSED
+  frees?: boolean; // cuts a Netted or Webbed hero free
   tempHp?: Dice;
   status?: StatusApply[]; // on each friend affected
   // you
@@ -194,6 +216,7 @@ const SKILL_DEFS = {
   dagger: { kind: 'basic', pool: 'wizard', base: { name: 'Dagger', icon: '🔪', cost: 'action', target: 'enemy', range: 4, stat: 'dex', roll: 'attack', dmg: d(1, 4), mod: true, note: 'Stab, or throw it up to 4 tiles.' } },
   mace: { kind: 'basic', pool: 'cleric', base: { name: 'Mace', icon: '🔨', cost: 'action', target: 'enemy', range: 1, stat: 'str', roll: 'attack', dmg: d(1, 6), mod: true } },
   potion: { kind: 'item', pool: 'common', base: { name: 'Potion', icon: '🧪', cost: 'bonus', target: 'ally', range: 1, heal: d(2, 4, 2), note: 'Drink it, or feed it to an ally next to you.' } },
+  cut_free: { kind: 'action', pool: 'common', base: { name: 'Cut Free', icon: '✂️', cost: 'bonus', target: 'ally', range: 1, frees: true } },
 
   // ---------------------------------------------- consumables (shared/items.ts): one use each, from the bag
   greater_potion: { kind: 'item', pool: 'common', base: { name: 'Greater Potion', icon: '🧴', cost: 'bonus', target: 'ally', range: 1, heal: d(4, 4, 4), note: 'Drink it, or feed it to an ally next to you.' } },
@@ -507,7 +530,7 @@ export function skillTitle(o: Pick<OwnedSkill, 'id' | 'tier' | 'branch'>): strin
 }
 
 /** Things every hero can do without learning them. */
-export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion'];
+export const COMMON_ACTIONS: SkillId[] = ['shove', 'potion', 'cut_free'];
 
 /** Consumables in the bag, one hotbar entry per kind. */
 export const bagConsumables = (p: Pick<PlayerEntity, 'bag'>): SkillId[] =>
@@ -662,7 +685,8 @@ export function describe(s: SkillStats, hero?: Hero): string {
     parts.push(`${s.target === 'self' ? 'Heal' : `${who}: heal`} ${diceStr(s.heal, bonus)}${extra}. Gets the downed back up`);
   }
   if (s.overheal) parts.push('Healing past max HP becomes temporary HP');
-  if (s.cleanse) parts.push('Removes Burning, Poisoned, Dazed, Blinded, Chilled, Shocked and Frozen');
+  if (s.cleanse) parts.push(`Removes ${CLEANSED.map((id) => STATUSES[id].name).join(', ').replace(/, ([^,]*)$/, ' and $1')}`);
+  if (s.frees) parts.push(`${who}: cut free of a net or a web`);
   if (s.tempHp) parts.push(`+${diceStr(s.tempHp)} temporary HP`);
   if (s.status?.length) parts.push(`${s.heal || s.target === 'self' ? '' : `${who}: `}${statusList(s.status)}`);
   if (s.selfStatus?.length) parts.push(`You: ${statusList(s.selfStatus)}`);
@@ -795,6 +819,7 @@ export function resolveAim(s: SkillStats, caster: PlayerEntity, aim: string | Po
       if (!byId) return 'Pick an ally (or yourself).';
       if (byId.kind !== 'player' || byId.dead) return 'Pick an ally (or yourself).';
       if (ctx.inCombat && !inRange(byId)) return outOfRange();
+      if (s.frees && !ROOTED.some((id) => hasStatus(byId, id))) return `${byId.id === caster.id ? "You aren't" : `${byId.name} isn't`} stuck.`;
       return { center: byId, main: byId, foes: [], friends: [byId] };
     }
     case 'area': {

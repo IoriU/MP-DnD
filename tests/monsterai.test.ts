@@ -411,14 +411,14 @@ test('a shaman mends a hurt goblin in range rather than attacking', () => {
   assert.equal(p.target, goblin.id);
 });
 
-test('a shaman blesses a healthy hobgoblin that is fighting next to a hero', () => {
+test('a shaman rallies a healthy hobgoblin that is fighting next to a hero', () => {
   const f = hero('fighter', 5, 4);
   const hob = monster('hobgoblin', 6, 4);
   const shaman = monster('shaman', 9, 4);
   const p = plan(shaman, [f, hob, shaman]);
   assert.equal(p.kind, 'buff');
   assert.equal(p.target, hob.id);
-  assert.equal(MONSTERS.shaman.support?.buff.id, 'blessed');
+  assert.equal(MONSTERS.shaman.support?.buff.id, 'rallied');
 });
 
 test('a necromancer shields a healthy skeleton that two heroes are cutting into', () => {

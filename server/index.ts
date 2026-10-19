@@ -19,6 +19,7 @@ const ROOM_TTL_MS = 15 * 60_000; // rooms with nobody connected are deleted afte
 const app = express();
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
+  app.get('/codex', (_req, res, next) => (fs.existsSync(path.join(distDir, 'codex.html')) ? res.sendFile(path.join(distDir, 'codex.html')) : next())); // the content dashboard (client/codex/)
 } else {
   app.get('/', (_req, res) => {
     res.type('text').send('The client is not built yet.\n\nDevelopment: npm run dev, then open http://localhost:5173\nPlay with friends: npm run play');

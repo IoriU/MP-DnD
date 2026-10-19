@@ -4,12 +4,20 @@
 // just goes for whoever is closest, and on Story they all fight that way. NPC allies run on the same code, for the
 // party's side.
 //
+// Phase 12: tricks. Monsters set each other up: a Kobold nets a hero for the archers, a Spider webs one for the pack, a
+// Goblin gets in a hero's face (Help) so the Ogre's swing lands, a leader shouts orders. A set-up is worth what the
+// friends who act before the target's next turn gain from it (trickValue).
+//
 // Pure: game.ts (runMonster) hands it a snapshot and carries out the plan; the tests call it directly.
 
 import { ALLIES, ENRAGED_DMG, auraOf, hasTrait, isAllyNpc, isFoe, sameSide } from '../shared/elites.ts';
 import { DIRS, canStep, dist, hasLOS } from '../shared/grid.ts';
-import { COWARD_HP, COWARD_TURNS, DIFFICULTIES, MONSTERS, packsFor, roleOf, statMod, type Difficulty, type Role } from '../shared/rules.ts';
-import { avgDice, hasStatus, passiveOf, type Element, type StatusApply } from '../shared/skills.ts';
+import { gearBonus } from '../shared/items.ts';
+import {
+  CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
+  type Difficulty, type OrderId, type Role,
+} from '../shared/rules.ts';
+import { ROOTED, SKIP_TURN, SLOWED, avgDice, hasStatus, passiveOf, type Element, type StatusApply } from '../shared/skills.ts';
 import { EXPLOSION, damageFactor, fieldElement, hazardAt, previewField, type FieldLike } from '../shared/surfaces.ts';
 import { attackAdvantage, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import type { Entity, MonsterEntity, Pos } from '../shared/types.ts';
@@ -24,13 +32,15 @@ export interface MonsterView {
   rand?: () => number; // for slips; the tests pass their own
   smart?: boolean; // force the squad's full tactics on or off (the learned policy always sees every option)
   round?: number; // the fight's round (a feature for the learned policy)
+  order?: string[]; // who acts when: entity ids from this monster on (a set-up only pays off before the target's turn)
+  assign?: Record<string, string>; // each monster's pack target (squadPlan): who its friends are going for
 }
 
 /** What a monster does this turn: walk `path`, then act. */
 export interface MonsterPlan {
-  kind: 'attack' | 'shove' | 'ignite' | 'heal' | 'buff' | 'flee' | 'move';
+  kind: 'attack' | 'shove' | 'ignite' | 'heal' | 'buff' | 'flee' | 'move' | 'trick' | 'help';
   path: Pos[];
-  target?: string; // who it attacks, shoves, heals or buffs
+  target?: string; // who it attacks, shoves, heals, buffs, tricks or helps against
   tile?: Pos; // ignite: the ground it hits (oil under the party...)
   instinct?: boolean; // it slipped: went for the closest enemy without a plan
   cornered?: boolean; // a coward with nowhere left to run
@@ -53,6 +63,9 @@ const FRIENDLY_FIRE = 1.2; // harm to its own side counts this much
 const IGNITE_MIN = 3; // hitting the ground instead of a creature has to be worth at least this
 const HEAL_BELOW = 0.75; // supports mend friends under this share of their HP
 const SUPPORT_BIAS = 1; // a support would rather cast its spells than fight
+const TRICK_BIAS = 1.5; // a monster with a trick would rather play it (that's what it's known for), when it sets something up
+const OTHER_PACK = 0.5; // a friend hunting someone else might still take a swing at a set-up target
+const ORDER_MIN = 1; // an order has to be worth at least this to be shouted
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
@@ -71,13 +84,32 @@ const acOf = (e: Entity) => e.ac + e.statuses.reduce((s, x) => s + (x.id === 'sh
 /** HP that has to go before it drops: temp HP and an elite's ward count. */
 const ehp = (e: Entity) => Math.max(1, e.hp + (e.kind === 'player' ? e.tempHp : (e.ward ?? 0)));
 const enraged = (m: MonsterEntity) => hasTrait(m, 'enraged') && m.hp < m.maxHp / 2;
-const atkOf = (m: MonsterEntity) => MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0);
-const dmgOf = (m: MonsterEntity) => avgDice(MONSTERS[m.type].dmg) + (m.dmgBonus ?? 0) + (enraged(m) ? ENRAGED_DMG : 0);
+const rallyOf = (e: Entity) => e.statuses.find((x) => x.id === 'rallied')?.power ?? 0;
+const atkOf = (m: MonsterEntity) => MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + rallyOf(m);
+const dmgOf = (m: MonsterEntity) => avgDice(MONSTERS[m.type].dmg) + (m.dmgBonus ?? 0) + (enraged(m) ? ENRAGED_DMG : 0) + rallyOf(m);
 const attacksOf = (m: MonsterEntity) => MONSTERS[m.type].attacks + (enraged(m) ? 1 : 0);
 export const elementOf = (m: MonsterEntity): Element => auraOf(m) ?? MONSTERS[m.type].element ?? 'physical';
 const rangeOf = (m: MonsterEntity) => MONSTERS[m.type].range;
 const shoots = (e: Entity) => e.kind === 'monster' && rangeOf(e) > 1;
 const hunts = (m: MonsterEntity) => !!m.ally && Object.values(ALLIES).some((a) => a.monster === m.type && a.hunts);
+const skips = (e: Entity) => SKIP_TURN.some((id) => hasStatus(e, id));
+const rooted = (e: Entity) => ROOTED.some((id) => hasStatus(e, id));
+/** Moves on its next turn: half if slowed, more if charging, none if stuck in a net or a web. */
+const movesOf = (m: MonsterEntity) =>
+  rooted(m) ? 0 : (SLOWED.some((id) => hasStatus(m, id)) ? Math.floor(m.speed / 2) : m.speed) + (hasStatus(m, 'charging') ? CHARGE_MOVES : 0);
+/** Could it get to `t` and hit it on its next turn (walls aside)? */
+const reaches = (m: MonsterEntity, t: Pos) => dist(m, t) <= movesOf(m) + rangeOf(m);
+/** Roughly what an enemy deals in a round: a hero by level, an NPC ally by its stat block. */
+const threatOf = (e: Entity) => (e.kind === 'player' ? 3 + 1.2 * e.level : attacksOf(e) * dmgOf(e) * 0.6);
+
+/** Chance a creature fails a save against this DC (d20 + its bonus, like game.ts creatureSave). */
+export function saveFails(e: Entity, save: 'dex' | 'str' | 'wis', dc: number): number {
+  const bonus =
+    e.kind === 'player'
+      ? statMod(e.classId, save) + (passiveOf(e, 'steady')?.value ?? 0) + (hasStatus(e, 'blessed') ? 2 : 0) + gearBonus(e, 'saves')
+      : MONSTERS[e.type][save];
+  return clamp((dc - bonus - 1) / 20, 0.05, 0.95);
+}
 
 /** Expected damage per round from a straight attack (no advantage). */
 const roundDamage = (m: MonsterEntity, t: Entity) => attacksOf(m) * hitChance(atkOf(m), acOf(t)) * dmgOf(m) * damageFactor(t, elementOf(m));
@@ -342,6 +374,7 @@ interface Raw {
   shove?: number; // win chance × harm of a shove
   heal?: number;
   buff?: number;
+  setup?: number; // what a trick, a Help or its attacks' rider sets up for its friends
 }
 
 interface Candidates {
@@ -486,10 +519,24 @@ function candidates(v: MonsterView): Candidates {
         const bite = Math.min(ev, ehp(t)) + KILL_BONUS * clamp(ev / ehp(t), 0, 1) ** 2;
         let score = base + weight(t) * bite + groundValue(tileOf(t));
         if (smart && role === 'skirmisher' && why.adv.includes('flanking')) score += FLANK;
+        // What its attacks do on a hit (a Wolf drags them down, a Wight drains them), if they live through it.
+        let setup = 0;
+        if (smart && def.rider && t.kind === 'player') {
+          const land = 1 - (1 - p) ** attacksOf(me);
+          const fails = def.rider.save ? saveFails(t, def.rider.save, def.rider.dc ?? 12) : 1;
+          setup = land * fails * (1 - clamp(ev / ehp(t), 0, 1)) * trickValue(v, def.rider.status, t, meAt);
+          score += weight(t) * setup;
+        }
         const hit: Partial<Raw> = {
           ...about(t), ev, p, net: netAdvantage(why), flank: why.adv.includes('flanking'), behind: why.adv.includes('from behind'), ground: groundValue(tileOf(t)),
+          setup,
         };
         consider(score, { kind: 'attack', path: walk.path, target: t.id, instinct }, hit);
+        // Help instead: get in its face so a bigger friend's swing lands.
+        if (smart && canHelp(def) && dist(at, t) === 1) {
+          const val = trickValue(v, HELP, t, meAt);
+          if (val > 0) consider(base + weight(t) * val, { kind: 'help', path: walk.path, target: t.id }, { ...about(t), setup: val });
+        }
         // Shove it into the fire instead?
         if (smart && def.shove && dist(at, t) === 1) {
           const d = dirTo(at, t);
@@ -501,6 +548,22 @@ function candidates(v: MonsterView): Candidates {
               consider(base + weight(t) * win * (harm * SHOVE_HARM + 1), { kind: 'shove', path: walk.path, target: t.id }, { ...hit, shove: win * harm });
             }
           }
+        }
+      }
+
+      // ---- its trick: a net, a web, sand in the eyes, a brand, set up for its friends
+      const trick = def.trick;
+      if (smart && trick && !(me.trickCd ?? 0)) {
+        for (const t of targets) {
+          if (dist(at, t) > trick.range || (trick.range > 1 && !hasLOS(map, at, t))) continue;
+          let chance = trick.save ? saveFails(t, trick.save, trick.dc ?? 12) : 0;
+          if (!trick.save) {
+            const tNow = moved && turnsToFace(t, meAt, at) ? { ...t, facing: dirTo(t, at) } : t;
+            const others = entities.map((e) => (e.id === me.id ? meAt : e.id === t.id ? tNow : e));
+            chance = hitChance(atkOf(me), acOf(t), netAdvantage(attackAdvantage(meAt, tNow, others)));
+          }
+          const val = trick.status.reduce((s, st) => s + trickValue(v, st, t, meAt), 0);
+          if (val > 0) consider(base + TRICK_BIAS + weight(t) * chance * val, { kind: 'trick', path: walk.path, target: t.id }, { ...about(t), p: chance, setup: chance * val });
         }
       }
 
@@ -531,7 +594,7 @@ function candidates(v: MonsterView): Candidates {
             const big = f.kind === 'monster' && (f.boss || f.elite) ? 1 : 0;
             consider(base + SUPPORT_BIAS + mend * urgency + (down ? 8 : 0) + big, { kind: 'heal', path: walk.path, target: f.id }, { target: f, heal: mend / f.maxHp });
           }
-          if (!down && !hasStatus(f, support.buff.id)) {
+          if (!down && canBuff(f, support.buff)) {
             const val = buffValue(f, support.buff, enemies);
             if (val > 0) consider(base + SUPPORT_BIAS + val, { kind: 'buff', path: walk.path, target: f.id }, { target: f, buff: val });
           }
@@ -557,10 +620,12 @@ export interface MonsterChoices {
   state: number[]; // the fight as this monster sees it (for the trainer's value estimate)
 }
 
-const KINDS: MonsterPlan['kind'][] = ['attack', 'shove', 'ignite', 'heal', 'buff', 'move'];
+const KINDS: MonsterPlan['kind'][] = ['attack', 'shove', 'ignite', 'heal', 'buff', 'move', 'trick', 'help'];
 const ROLE_IDS: Role[] = ['brute', 'skirmisher', 'archer', 'support', 'coward'];
-const SELF_FEATURES = 10;
-export const OPTION_FEATURES = 34 + SELF_FEATURES;
+const SELF_FEATURES = 11;
+export const OPTION_FEATURES = KINDS.length + 29 + SELF_FEATURES;
+/** Where optionFeatures puts "the scripted AI's top pick" (the trainer measures how often the policy agrees with it). */
+export const TOP_FEATURE = KINDS.length + 1;
 export const STATE_FEATURES = SELF_FEATURES + 3;
 export const MAX_OPTIONS = 32;
 const bit = (b: boolean | undefined) => (b ? 1 : 0);
@@ -571,7 +636,7 @@ function selfFeatures(v: MonsterView, friends: Entity[], enemies: Entity[]): num
   const role = roleOf(MONSTERS[me.type]);
   return [
     me.hp / me.maxHp, ...ROLE_IDS.map((r) => bit(r === role)), bit(me.elite || me.boss),
-    friends.length / 6, enemies.length / 6, Math.min(1, (v.round ?? 1) / 10),
+    friends.length / 6, enemies.length / 6, Math.min(1, (v.round ?? 1) / 10), bit(!!MONSTERS[me.type].trick && !(me.trickCd ?? 0)),
   ];
 }
 
@@ -589,7 +654,7 @@ function optionFeatures(c: Candidate, top: number, moves: number, self: number[]
     bit(r.focus), bit(r.taunter), t ? t.hp / t.maxHp : 0, t ? Math.min(3, ehp(t) / 50) : 0, bit(t?.kind === 'player'), bit(!!t && shoots(t)),
     Math.min(3, (r.ev ?? 0) / 10), t && r.ev !== undefined ? clamp(r.ev / ehp(t), 0, 1.5) : 0, r.p ?? 0, r.net ?? 0, bit(r.flank), bit(r.behind),
     Math.min(3, (r.turns ?? 0) / 3), clamp((r.ground ?? 0) / 10, -3, 3), Math.min(3, (r.shove ?? 0) / 10), r.heal ?? 0, Math.min(3, (r.buff ?? 0) / 5),
-    bit(t?.kind === 'player' && t.downed),
+    bit(t?.kind === 'player' && t.downed), Math.min(3, (r.setup ?? 0) / 5),
     ...self,
   ];
 }
@@ -627,7 +692,13 @@ export function monsterChoices(v: MonsterView): MonsterChoices {
   return { forced: null, options: chosen.map((c) => ({ plan: c.plan, score: c.score, features: optionFeatures(c, top, v.moves, self) })), state };
 }
 
-/** Roughly what a buff adds over its turns: Blessed lands more hits, Shielded turns some away. */
+/** Not on it yet, or it stacks and has room for another. */
+function canBuff(f: Entity, buff: StatusApply): boolean {
+  const have = f.statuses.find((x) => x.id === buff.id);
+  return !have || (!!buff.stack && (have.power ?? 0) < (buff.power ?? 1) * buff.stack);
+}
+
+/** Roughly what a buff adds over its turns: Blessed and Rallied land more (and harder) hits, Shielded turns some away. */
 function buffValue(f: Entity, buff: StatusApply, enemies: Entity[]): number {
   const turns = Math.min(buff.turns, 2);
   const near = enemies.filter((e) => dist(e, f) <= (f.kind === 'monster' ? rangeOf(f) + 1 : 2)).length;
@@ -636,6 +707,109 @@ function buffValue(f: Entity, buff: StatusApply, enemies: Entity[]): number {
     const swing = f.kind === 'monster' ? attacksOf(f) * dmgOf(f) : 7;
     return 0.1 * swing * turns * (f.kind === 'monster' && (f.boss || f.elite) ? 1.5 : 1);
   }
+  if (buff.id === 'rallied') {
+    const hits = f.kind === 'monster' ? attacksOf(f) : 1;
+    return hits * (0.55 + 0.05 * (f.kind === 'monster' ? dmgOf(f) : 7)) * (buff.power ?? 1) * turns * (f.kind === 'monster' && (f.boss || f.elite) ? 1.5 : 1);
+  }
   if (buff.id === 'shielded') return 0.05 * (buff.power ?? 2) * 6 * enemies.filter((e) => dist(e, f) <= 1).length * turns;
   return 0;
+}
+
+// ---------------------------------------------------------------- tricks: set-ups and orders (Phase 12)
+
+/** Will `a` act before `b` gets its next turn? Unknown order: assume so. */
+function actsBefore(v: MonsterView, a: Entity, b: Entity): boolean {
+  if (!v.order) return true;
+  const i = v.order.indexOf(a.id);
+  const j = v.order.indexOf(b.id);
+  return i >= 0 && (j < 0 || i < j);
+}
+
+/**
+ * What its friends gain against `t` from a change to their attack rolls (advantage +1, disadvantage -1), over at most
+ * `swings` attacks each: the friends who can get to it before its turn (all of them with `anyTime`), its pack fully
+ * and the rest by half. `best`: only the best one counts (a Help is spent on the first attack).
+ */
+function swingGain(v: MonsterView, t: Entity, net: 1 | -1, pick: (f: MonsterEntity) => boolean, o: { swings?: number; best?: boolean; anyTime?: boolean } = {}): number {
+  let sum = 0;
+  for (const f of v.entities) {
+    if (f.kind !== 'monster' || f.id === v.me.id || !sameSide(f, v.me) || skips(f) || !pick(f) || !reaches(f, t)) continue;
+    if (!o.anyTime && !actsBefore(v, f, t)) continue;
+    const p0 = hitChance(atkOf(f), acOf(t));
+    const g = Math.abs(hitChance(atkOf(f), acOf(t), net) - p0) * Math.min(attacksOf(f), o.swings ?? 9) * dmgOf(f) * damageFactor(t, elementOf(f));
+    const share = v.assign?.[f.id] === undefined || v.assign[f.id] === t.id ? 1 : OTHER_PACK;
+    sum = o.best ? Math.max(sum, g * share) : sum + g * share;
+  }
+  return sum;
+}
+
+/** What keeping `t` from moving is worth: a melee hero who can't walk in is out of the fight; anyone else can't get away. */
+function rootValue(v: MonsterView, t: Entity): number {
+  const engaged = v.entities.some((f) => f.kind === 'monster' && sameSide(f, v.me) && dist(f, t) <= 1);
+  const melee = t.kind === 'player' ? t.classId === 'fighter' || t.classId === 'cleric' : !shoots(t);
+  return engaged || !melee ? 0.5 : 0.5 * threatOf(t);
+}
+
+/** What putting this status on `t` is worth to the monster's side (`me`: the monster where it would stand). */
+export function trickValue(v: MonsterView, st: StatusApply, t: Entity, me: MonsterEntity = v.me): number {
+  if (!upNow(t)) return 0;
+  const has = hasStatus(t, st.id);
+  const all = () => true;
+  const view = me === v.me ? v : { ...v, me };
+  switch (st.id) {
+    case 'netted': // the archers get advantage; it can't come at us or get away
+      return rooted(t) ? 0 : swingGain(view, t, 1, shoots) + rootValue(view, t);
+    case 'webbed': // everyone gets advantage, its own attacks get disadvantage; stuck until it cuts itself free
+      return rooted(t) ? 0 : swingGain(view, t, 1, all) + 0.3 * threatOf(t) + rootValue(view, t);
+    case 'prone': // melee gets advantage until it stands up, archers get disadvantage
+      return has ? 0 : swingGain(view, t, 1, (f) => !shoots(f)) - swingGain(view, t, -1, shoots);
+    case 'marked': // advantage for everyone, for two turns
+      return has ? 0 : 1.5 * swingGain(view, t, 1, all, { anyTime: true });
+    case 'distracted': // the next attack against it has advantage
+      return has ? 0 : swingGain(view, t, 1, all, { swings: 1, best: true });
+    case 'blinded': // its attacks have disadvantage for a turn
+      return has ? 0 : 0.3 * threatOf(t);
+    case 'drained':
+      return t.kind === 'player' ? 0.5 * (st.power ?? 2) : 0;
+    default:
+      return 0;
+  }
+}
+
+export interface MonsterOrder {
+  id: OrderId;
+  target?: string; // Kill that one!
+}
+
+/**
+ * A leader's order at the start of its turn (game.ts gives it, then the leader takes its turn as usual):
+ * - Charge! when friends are just out of reach (+3 movement gets them in) or a Rallied stack helps the fight;
+ * - Hold the line! when friends are in the thick of it, the hurt ones and the big ones most;
+ * - Kill that one! on the enemy the most friends can get to, so they all hit it with advantage.
+ */
+export function pickOrder(v: MonsterView): MonsterOrder | null {
+  const { me } = v;
+  const enemies = enemiesOf(me, v.entities);
+  if (!enemies.length) return null;
+  const squad = v.entities.filter((f): f is MonsterEntity => f.kind === 'monster' && sameSide(f, me) && dist(f, me) <= ORDER_RANGE && !skips(f));
+  let charge = 0;
+  let hold = 0;
+  for (const f of squad) {
+    const gap = Math.min(...enemies.map((e) => dist(e, f))) - rangeOf(f);
+    const swing = attacksOf(f) * 0.55 * dmgOf(f);
+    if (!rooted(f) && gap > movesOf(f) && gap <= movesOf(f) + CHARGE_MOVES) charge += swing;
+    if (gap <= movesOf(f) + CHARGE_MOVES && rallyOf(f) < 3) charge += attacksOf(f) * 1.5;
+    const adjacent = enemies.filter((e) => dist(e, f) <= 1).length;
+    if (adjacent && !hasStatus(f, 'shielded')) hold += 1.2 * adjacent * (f.hp < f.maxHp / 2 ? 1.5 : 1) * (f.boss || f.elite ? 1.5 : 1);
+  }
+  let kill = 0;
+  let target: Entity | undefined;
+  for (const t of inSight(enemies)) {
+    const val = trickValue(v, { id: 'marked', turns: 2 }, t);
+    if (val > kill) [kill, target] = [val, t];
+  }
+  const best = Math.max(charge, hold, kill);
+  if (best < ORDER_MIN) return null;
+  if (best === kill && target) return { id: 'kill', target: target.id };
+  return best === charge ? { id: 'charge' } : { id: 'hold' };
 }
