@@ -3,7 +3,7 @@
 import {
   ALLIES, ALLY_FIGHTS, ALLY_IDS, AURA_DICE, ENRAGED_DMG, MAX_ALLIES, MAX_SUMMONS, SUMMON_EVERY, TRAITS, TRAIT_IDS, WARD_EVERY, WARD_SHARE, allyScaling, traitCount,
 } from '../../../shared/elites.ts';
-import { ACTS, CHARGE_MOVES, HELP, MONSTERS, ORDERS, ORDER_EVERY, ORDER_RANGE, ORDER_STATUS, ROLES, diceText, roleOf, type OrderId } from '../../../shared/rules.ts';
+import { ACTS, CHARGE_MOVES, HELP, MONSTERS, ORDERS, ORDER_EVERY, ORDER_RANGE, ORDER_STATUS, ROLES, diceText, isHardVersion, roleOf, type OrderId } from '../../../shared/rules.ts';
 import { MONSTER_SPRITES } from '../../sprites.ts';
 import { srcConst, srcTag } from '../sources.ts';
 import { chip, esc, group, icon, kv, monsterChip, q, statusText, td, th, wrapTable, type TabDef } from '../ui.ts';
@@ -35,7 +35,7 @@ function orders(): string {
     const o = ORDERS[id];
     return `<tr data-id="${id}" data-q="${q(o.name, id, o.desc, 'order leader', ORDER_STATUS[id].map((x) => x.id).join(' '))}">${td(`<span class="emoji">${o.icon}</span>`)}${td(`<b>${esc(o.name)}</b>`)}${td(`<code>${id}</code>`)}${td(esc(o.desc), undefined, 'wide')}${td(ORDER_STATUS[id].map((x) => esc(statusText(x))).join('<br>'), undefined, 'wide')}${td(srcTag('order', id))}</tr>`;
   }).join('');
-  const leaders = Object.entries(MONSTERS).filter(([, m]) => m.leader).map(([id]) => monsterChip(id)).join('');
+  const leaders = Object.entries(MONSTERS).filter(([id, m]) => m.leader && !isHardVersion(id)).map(([id]) => monsterChip(id)).join('');
   return `${wrapTable([th(''), th('Order'), th('Id'), th('Effect'), th('Statuses applied'), th('Source')].join(''), rows)}
     <p class="note"><span class="muted">Leaders:</span> <span class="chips">${leaders}</span></p>${kv([
       ['Order range', `${ORDER_RANGE} tiles`, srcConst('ORDER_RANGE')],

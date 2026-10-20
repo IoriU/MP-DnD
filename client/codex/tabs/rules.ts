@@ -1,6 +1,6 @@
 // Rules: statuses, the battlefield (grounds, clouds, props, element reactions) and monster roles.
 
-import { FULL_COVER, HALF_COVER, HELP_UP_HP, INJURY_PCT, MAX_INJURIES, MONSTERS, NODE_INFO, ROLES, diceText, roleOf } from '../../../shared/rules.ts';
+import { FULL_COVER, HALF_COVER, HELP_UP_HP, INJURY_PCT, MAX_INJURIES, NODE_INFO, ROLES, diceText, roleOf } from '../../../shared/rules.ts';
 import { CLEANSED, ROOTED, SKIP_TURN, SLOWED, STATUSES, type StatusId } from '../../../shared/skills.ts';
 import {
   CLOUDS, COMBOS, EXPLOSION, ELECTRIFIED, FIELD_STATUS_TURNS, GROUNDS, HAZARD_DICE, ICE_DC, OIL_FIRE_TURNS, PROPS, REACTIONS, SHOCK_TURNS, type CloudId, type GroundId,
@@ -71,7 +71,7 @@ const surfaceNumbers = () =>
 
 function roles(): string {
   const rows = Object.entries(ROLES).map(([id, r]) => {
-    const who = Object.entries(MONSTERS).filter(([, m]) => roleOf(m) === id).map(([, m]) => m.name);
+    const who = Object.entries(DATA.monsters).filter(([, m]) => roleOf(m) === id).map(([, m]) => m.name);
     return `<tr ${attrs(id, 'role', r.name, r.desc, who.join(' '))}>${td(`<span class="emoji">${r.icon}</span>`)}${td(`<b>${r.name}</b>`)}${td(`<code>${id}</code>`)}${td(esc(r.desc), undefined, 'wide')}${td(who.map(esc).join(', '), undefined, 'wide muted')}${td(srcTag('role', id))}</tr>`;
   }).join('');
   return wrapTable([th(''), th('Role'), th('Id'), th('How it fights'), th('Monsters'), th('Source')].join(''), rows);

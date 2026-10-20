@@ -5,7 +5,7 @@ import { EVENTS, type EventDef } from '../../server/events.ts';
 import { ENGINES, type EngineDef } from '../../shared/engines.ts';
 import { ALLIES, type AllyDef } from '../../shared/elites.ts';
 import { ITEMS, type ItemDef } from '../../shared/items.ts';
-import { ACTS, CLASSES, HELP, MONSTERS, ORDER_STATUS, type ActDef, type ClassDef, type MonsterDef } from '../../shared/rules.ts';
+import { ACTS, CLASSES, HELP, MONSTERS, ORDER_STATUS, isHardVersion, type ActDef, type ClassDef, type MonsterDef } from '../../shared/rules.ts';
 import { SKILLS, STATUSES, type SkillDef, type StatusDef } from '../../shared/skills.ts';
 import { CLASS_SPRITES, MONSTER_SPRITES } from '../sprites.ts';
 
@@ -31,7 +31,7 @@ export interface CodexData {
 }
 
 export const liveData = (eventFights: Record<string, EventFight> = {}): CodexData => ({
-  monsters: MONSTERS,
+  monsters: Object.fromEntries(Object.entries(MONSTERS).filter(([id]) => !isHardVersion(id))), // a Hard version shows on its monster's row
   acts: ACTS,
   classes: CLASSES,
   engines: ENGINES,

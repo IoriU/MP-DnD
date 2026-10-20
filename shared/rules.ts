@@ -266,6 +266,8 @@ export interface MonsterDef {
   rider?: MonsterRider; // what its attacks do on a hit
   leader?: boolean; // gives its side orders (ORDERS)
   block?: number; // 🧱 Block at the start of each of its turns: a shield
+  raise?: string; // Raise Dead: once a fight, after a friend has fallen, this monster stands up next to it
+  hardMove?: string; // a Hard version's extra move, in a few words (HARD_MOVES)
 }
 
 /**
@@ -410,6 +412,60 @@ export const MONSTERS: Record<string, MonsterDef> = {
 };
 
 /**
+ * 💀 On Hard every regular monster brings one more move (your call, 2026-10-20: Hard gets smarter monsters, not just
+ * tougher ones). Its Hard version is registered as `<id>_hard`, with the same name and numbers plus the move, and spawns in
+ * its place on Hard (server/game.ts spawnMonster). `move` says what's new, in a few words (tooltips, the codex).
+ */
+export const HARD_MOVES: Record<string, { move: string; add: Partial<MonsterDef> }> = {
+  // Act 1: Goblin Warrens
+  rat: { move: '🦠 Filthy bites: they Poison', add: { rider: { status: { id: 'poisoned', turns: 2, power: 1 }, text: 'infects {target}' } } },
+  kobold: { move: '✋ Shoves heroes into fire, oil and lava', add: { shove: true } },
+  goblin: { move: '🦵 Hamstring: its hits can Daze (DEX save)', add: { rider: { status: { id: 'dazed', turns: 1 }, save: 'dex', dc: 12, text: 'hamstrings {target}' } } },
+  archer: {
+    move: '📌 Pinning Shot: pins a hero in place (DEX save)',
+    add: { trick: { name: 'Pinning Shot', icon: '📌', verb: 'pins down', range: 8, save: 'dex', dc: 12, status: [{ id: 'netted', turns: 1 }], cooldown: 3 } },
+  },
+  firebomber: { move: '💥 Drops its last bomb when it dies', add: { death: { ground: 'fire', radius: 1, text: 'drops its last bomb' } } },
+  shaman: {
+    move: '🌀 Hex: marks a hero, so everyone hits them more easily (WIS save)',
+    add: { trick: { name: 'Hex', icon: '🌀', verb: 'hexes', range: 6, save: 'wis', dc: 12, status: [{ id: 'marked', turns: 1 }], cooldown: 3 } },
+  },
+  // Act 2: Forgotten Crypt
+  skeleton: {
+    move: '🛡️ Shield Bash: knocks a hero down (STR save)',
+    add: { trick: { name: 'Shield Bash', icon: '🛡️', verb: 'shield-bashes', range: 1, save: 'str', dc: 12, status: [{ id: 'prone', turns: 1 }], cooldown: 3 } },
+  },
+  zombie: { move: '✊ Grab: its hits hold a hero in place (STR save)', add: { rider: { status: { id: 'netted', turns: 1 }, save: 'str', dc: 12, text: 'grabs hold of {target}' } } },
+  bloated: {
+    move: '🤮 Vomit: Poisons a hero up to 3 tiles away (DEX save)',
+    add: { trick: { name: 'Vomit', icon: '🤮', verb: 'vomits on', range: 3, save: 'dex', dc: 12, status: [{ id: 'poisoned', turns: 2, power: 1 }], cooldown: 3 } },
+  },
+  wolf: { move: '🐺 Howls orders to the pack', add: { leader: true } },
+  spider: { move: '🕷️ Venom: its bites Poison', add: { rider: { status: { id: 'poisoned', turns: 2, power: 1 }, text: 'poisons {target}' } } },
+  necromancer: { move: '🧟 Raise Dead: once a fight, after a friend falls, a Zombie claws its way up', add: { raise: 'zombie' } },
+  // Act 3: Dragon's Lair (the kobolds above come along)
+  orc: { move: '💢 Staggering blows: its hits can Daze (STR save)', add: { rider: { status: { id: 'dazed', turns: 1 }, save: 'str', dc: 13, text: 'staggers {target}' } } },
+  cultist: { move: '🔥 Its fire sets heroes Burning', add: { rider: { status: { id: 'burning', turns: 2, power: 1 }, text: 'sets {target} alight' } } },
+  imp: {
+    move: '✨ Cinder Spit: Blinds a hero (DEX save)',
+    add: { trick: { name: 'Cinder Spit', icon: '✨', verb: 'spits cinders in the eyes of', range: 4, save: 'dex', dc: 13, status: [{ id: 'blinded', turns: 1 }], cooldown: 3 } },
+  },
+  ogre: {
+    move: '📢 Bellow: Dazes a hero (WIS save)',
+    add: { trick: { name: 'Bellow', icon: '📢', verb: 'bellows at', range: 3, save: 'wis', dc: 13, status: [{ id: 'dazed', turns: 1 }], cooldown: 3 } },
+  },
+  priest: { move: '📯 Leads the faithful: shouts orders', add: { leader: true } },
+};
+
+const HARD_SUFFIX = '_hard';
+/** The Hard version of a monster, if it has one. */
+export const hardId = (type: string) => (Object.hasOwn(HARD_MOVES, type) ? `${type}${HARD_SUFFIX}` : type);
+/** The monster a Hard version is made from (sprites, voices). */
+export const baseType = (type: string) => (type.endsWith(HARD_SUFFIX) ? type.slice(0, -HARD_SUFFIX.length) : type);
+export const isHardVersion = (type: string) => type.endsWith(HARD_SUFFIX) && Object.hasOwn(HARD_MOVES, baseType(type));
+for (const [id, h] of Object.entries(HARD_MOVES)) MONSTERS[`${id}${HARD_SUFFIX}`] = { ...MONSTERS[id], ...h.add, hardMove: h.move };
+
+/**
  * A handwritten encounter template. The fight draws monsters from `monsters` until the threat budget runs out
  * (list a type twice to make it twice as common), so the same template scales with party size and map row.
  */
@@ -525,8 +581,8 @@ export const DIFFICULTIES: Record<Difficulty, DifficultyDef> = {
     desc: 'Monsters fight as a squad: they gang up on one hero, flank, and use the battlefield.',
   },
   hard: {
-    name: 'Hard', icon: '💀', hp: 1.3, atk: 1, dmg: 1.2, budget: 1.3, squad: true, slip: 0,
-    desc: 'More monsters, tougher ones, and they never miss a trick.',
+    name: 'Hard', icon: '💀', hp: 1.15, atk: 1, dmg: 1.2, budget: 1.3, squad: true, slip: 0,
+    desc: 'More monsters, tougher ones, and every one brings an extra move: hamstrings, shield bashes, venom, raised dead.',
   },
 };
 

@@ -9,7 +9,7 @@ import { getEvent } from '../server/events.ts';
 import { Game } from '../server/game.ts';
 import { makeRng, rng } from '../server/rng.ts';
 import { generateRoom, pickDeployment } from '../server/room.ts';
-import { ACTS, INJURY_PCT, MONSTERS } from '../shared/rules.ts';
+import { ACTS, HARD_MOVES, INJURY_PCT, MONSTERS, baseType, hardId, isHardVersion } from '../shared/rules.ts';
 import type { ClassId, PlayerEntity, PlayerInfo } from '../shared/types.ts';
 
 // More events and encounters (Phase 12, 2026-10-20): events can hand out spoils picks, XP and random relics, charge an
@@ -156,4 +156,57 @@ test('a fight node passes its template twist to the room: a Goblin Campfire is t
   } finally {
     ACTS[0].encounters = real;
   }
+});
+
+// ---------------------------------------------------------------- Hard movesets
+
+test('on Hard every regular monster has one more move; its Hard version is the same monster plus the move', () => {
+  const regular = new Set(ACTS.flatMap((a) => a.pool));
+  for (const id of regular) {
+    assert.ok(HARD_MOVES[id], `${id} has no Hard move`);
+    const hard = MONSTERS[hardId(id)];
+    const base = MONSTERS[id];
+    assert.equal(hardId(id), `${id}_hard`);
+    assert.equal(baseType(hardId(id)), id);
+    assert.ok(isHardVersion(hardId(id)) && !isHardVersion(id));
+    for (const k of ['name', 'glyph', 'hp', 'ac', 'atk', 'threat', 'xp'] as const) assert.deepEqual(hard[k], base[k], `${id}: ${k}`);
+    assert.ok(hard.hardMove, `${id}: the move is described`);
+    const added = Object.keys(HARD_MOVES[id].add);
+    assert.ok(added.length >= 1 && added.every((k) => (base as any)[k] === undefined), `${id}: the move is new (${added.join()})`);
+  }
+  assert.equal(hardId('goblin_king'), 'goblin_king', 'elites and bosses have their own traits and signatures');
+  assert.equal(hardId('zombie_hard'), 'zombie_hard', 'never twice');
+});
+
+test('on Hard the monsters spawn as their Hard versions; on Normal and Story as they are', () => {
+  for (const [diff, type] of [['hard', 'goblin_hard'], ['normal', 'goblin'], ['story', 'goblin']] as const) {
+    const { p } = camp();
+    p.run.difficulty = diff;
+    const m = p.spawnMonster('goblin', { x: 3, y: 3 }, 2);
+    assert.equal(m.type, type, diff);
+    assert.equal(m.name, 'Goblin');
+  }
+});
+
+test('Raise Dead: a Hard necromancer stands a Zombie back up once a fight, only after a friend has fallen, and it gives no XP', () => {
+  const { p, heroes } = camp(['fighter', 'wizard', 'cleric']);
+  p.run.difficulty = 'hard';
+  seeded(4, () => p.startRoom('combat', ['necromancer', 'skeleton'], 'Test', 'charge'));
+  const necro = p.monsters().find((m: any) => m.type === 'necromancer_hard');
+  assert.ok(necro, 'the necromancer is the Hard one');
+  p.runMonster = async () => {};
+  p.raiseDead(necro, 'zombie');
+  assert.equal(p.monsters().length, 2, 'nobody has fallen yet');
+  const bones = p.monsters().find((m: any) => m.type === 'skeleton_hard');
+  p.damage(bones, 999, heroes[0]);
+  const xp = heroes.map((h) => h.xp);
+  p.raiseDead(necro, 'zombie');
+  const zombie = p.monsters().find((m: any) => m.type === 'zombie_hard');
+  assert.ok(zombie && zombie.risen, 'a Hard zombie claws its way up');
+  assert.ok(p.turn.order.includes(zombie.id), 'and joins the turn order');
+  assert.ok(logged(p, /raises the dead/));
+  p.raiseDead(necro, 'zombie');
+  assert.equal(p.monsters().filter((m: any) => m.type === 'zombie_hard').length, 1, 'once a fight');
+  p.damage(zombie, 999, heroes[0]);
+  assert.deepEqual(heroes.map((h) => h.xp), xp, 'no XP the second time');
 });

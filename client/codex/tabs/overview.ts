@@ -37,7 +37,7 @@ function counts(): string {
     [CONSUMABLE_IDS.length, 'Consumables', 'items', ''],
     [RELIC_IDS.length, 'Relics', 'items', ''],
     [BLESSING_IDS.length, 'Blessings', 'items', ''],
-    [Object.keys(MONSTERS).length - ALLY_MONSTERS.size, 'Monsters', 'monsters', `+ ${ALLY_MONSTERS.size} NPC ally stat blocks`],
+    [Object.keys(DATA.monsters).length - ALLY_MONSTERS.size, 'Monsters', 'monsters', `+ ${ALLY_MONSTERS.size} NPC ally stat blocks`],
     [ACTS.reduce((n, a) => n + a.encounters.length, 0), 'Encounter templates', 'acts', `${ACTS.length} acts`],
     [TRAIT_IDS.length, 'Elite traits', 'elites', ''],
     [npc, 'NPC allies', 'elites', ''],

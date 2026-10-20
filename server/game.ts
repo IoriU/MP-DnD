@@ -11,6 +11,7 @@ import {
   ACTS,
   ACT_ROWS,
   type EncounterDef,
+  hardId,
   AMBUSH_CHANCE,
   BREATH_DC,
   CLASSES,
@@ -362,6 +363,7 @@ export class Game {
   private phoenixUsed = false; // Phoenix Feather: once per fight
   private journal: Journal | null = null; // the run journal (server/journal.ts), from the run's start
   private fightMeta: { kind: string; name: string; deployment: string } | null = null; // the room being fought in
+  private slain = 0; // monsters fallen this fight (Raise Dead needs a body)
   private fallen: { type: string; x: number; y: number; at: number }[] = []; // Rise Again: minions to stand back up, and when
   /** This fight's numbers for the journal: downs and deaths, the party's HP share (start, lowest), damage per hero. */
   private fightStats: { downs: number; deaths: number; startHp: number; minHp: number; dmg: Record<string, number> } | null = null;
@@ -1525,7 +1527,8 @@ export class Game {
     if (d.x || d.y) e.facing = d;
   }
 
-  private spawnMonster(type: string, pos: Pos, partySize: number): MonsterEntity {
+  private spawnMonster(base: string, pos: Pos, partySize: number): MonsterEntity {
+    const type = this.diff === 'hard' ? hardId(base) : base; // on Hard, with one more move (HARD_MOVES)
     const def = MONSTERS[type];
     const boss = ACTS.some((a) => a.boss === type);
     const elite = !boss && (ACTS.some((a) => a.elites.includes(type)) || type === 'mimic');
@@ -1706,6 +1709,7 @@ export class Game {
   private startCombat() {
     this.phoenixUsed = false;
     this.fallen = [];
+    this.slain = 0;
     this.traps.clear();
     this.raised.clear();
     this.eliteKiller = null;
@@ -2499,6 +2503,7 @@ export class Game {
     }
 
     if (hasTrait(m, 'summoner')) this.summon(m);
+    if (def.raise && !ally) this.raiseDead(m, def.raise);
 
     // A leader shouts an order first (a free action), then takes its turn. Not on Story: monsters there fight on instinct.
     const view = this.monsterView(m);
@@ -2792,6 +2797,21 @@ export class Game {
   }
 
   /** Summoner: every other round the elite calls in one of its escorts (3 at most, never past a full room). */
+  /** Raise Dead (a Hard necromancer): once a fight, after a friend has fallen, it stands one back up next to itself. */
+  private raiseDead(m: MonsterEntity, type: string) {
+    if (m.raised || !this.slain || this.monsters().length >= MAX_ROOM_MONSTERS) return;
+    const spot = this.freeSpotNear(m);
+    if (!spot) return;
+    m.raised = true;
+    const back = this.spawnMonster(type, spot, this.heroes().length);
+    back.risen = true; // no XP the second time
+    this.face(back, this.heroes().find((h) => this.standing(h)) ?? m);
+    this.addLog('info', `🧟 ${m.name} raises the dead: a ${back.name} claws its way up!`);
+    this.float(back, '🧟', '#9ad1a0');
+    this.joinInitiative(back);
+    this.standIn(back, 'appear');
+  }
+
   private summon(m: MonsterEntity) {
     const round = this.turn?.round ?? 1;
     if (round % SUMMON_EVERY !== 0 || (m.summons ?? 0) >= MAX_SUMMONS || this.monsters().length >= MAX_ROOM_MONSTERS) return;
@@ -4521,6 +4541,7 @@ export class Game {
 
   /** Kill credit, kill steals, XP shares and on-kill passives. */
   private monsterDies(t: MonsterEntity, by?: Entity) {
+    this.slain++;
     this.entities = this.entities.filter((e) => e !== t);
     this.removeFromOrder(t.id);
     const killer = by?.kind === 'player' ? by : null;

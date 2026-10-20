@@ -4,7 +4,7 @@
 // A line starting with '*' is something it does rather than says (beasts and the mindless dead don't talk); those
 // start with {me}, which becomes "The Wolf" (or an NPC ally's own name).
 
-import { CLASSES, MONSTERS } from '../shared/rules.ts';
+import { CLASSES, MONSTERS, baseType } from '../shared/rules.ts';
 import type { Entity, MonsterEntity } from '../shared/types.ts';
 
 export type BarkEvent = 'focus' | 'flee' | 'cornered' | 'shove' | 'ignite' | 'heal' | 'buff';
@@ -97,7 +97,7 @@ export const BARK_ODDS: Record<BarkEvent, number> = { focus: 1, flee: 1, cornere
 
 /** The log line for a bark, or null if this creature has nothing to say about it. */
 export function barkLine(m: MonsterEntity, ev: BarkEvent, target: Entity | undefined, roll: number): string | null {
-  const lines = LINES[VOICE[m.type] ?? 'beast']?.[ev];
+  const lines = LINES[VOICE[baseType(m.type)] ?? 'beast']?.[ev];
   if (!lines?.length) return null;
   const pick = lines[Math.floor(roll * lines.length) % lines.length];
   const cls = target?.kind === 'player' ? CLASSES[target.classId].name : target ? MONSTERS[target.type]?.name ?? 'thing' : 'enemy';

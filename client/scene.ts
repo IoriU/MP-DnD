@@ -5,7 +5,7 @@
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
 import { LOW_COVER, dist, hasLOS, reachable } from '../shared/grid.ts';
-import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
+import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, baseType, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
   CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planWalk, previewField, reactionSummary,
@@ -152,6 +152,7 @@ const BUFF_VERB: Partial<Record<StatusId, string>> = { blessed: 'Blesses', shiel
 function roleLines(def: MonsterDef, mon?: MonsterEntity): string[] {
   const role = ROLES[roleOf(def)];
   const lines = [`<span class="tip-role"><b>${role.icon} ${esc(role.name)}:</b> ${esc(role.desc)}</span>`];
+  if (def.hardMove) lines.push(`<span class="tip-role">💀 On Hard: ${esc(def.hardMove)}</span>`);
   if (def.shove) lines.push('<span class="tip-role">✋ Shoves heroes into hazards</span>');
   if (def.support) {
     const { heal, buff } = def.support;
@@ -905,7 +906,7 @@ class DungeonScene extends Phaser.Scene {
   private artFor(e: Entity): ArtSpec | null {
     if (!spritesOn()) return null;
     const sheet = e.kind === 'player' ? CLASS_SPRITES[e.classId] : undefined;
-    const mon = e.kind === 'monster' ? (platinoFor(e.type, e.id) ? PLATINO : MONSTER_SPRITES[e.type]) : undefined;
+    const mon = e.kind === 'monster' ? (platinoFor(baseType(e.type), e.id) ? PLATINO : MONSTER_SPRITES[baseType(e.type)]) : undefined;
     const spec = sheet ? { sheet, frame: 0, walk: true } : mon ? { sheet: mon.sheet, frame: mon.frame, walk: false } : null;
     return spec && this.ready.has(spec.sheet) ? spec : null;
   }

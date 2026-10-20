@@ -117,7 +117,8 @@ export interface MonsterEntity extends EntityBase {
   dmgBonus?: number;
   summons?: number; // Summoner: minions called so far
   calledAt?: number; // a boss: the round it last blew its War Horn
-  risen?: boolean; // stood back up by a Rise Again boss (worth no XP the second time)
+  risen?: boolean; // stood back up by a Rise Again boss or a Raise Dead necromancer (worth no XP the second time)
+  raised?: boolean; // a necromancer that has used its Raise Dead this fight
   fled?: number; // a coward's turns spent running away (server/monsterai.ts)
   trickCd?: number; // its turns until its trick is ready again (shared/rules.ts MonsterTrick)
   orderCd?: number; // a leader's turns until its next order

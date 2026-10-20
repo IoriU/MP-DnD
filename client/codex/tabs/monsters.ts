@@ -1,6 +1,6 @@
 // Monsters: a sortable table of every stat block, with where each one appears (acts, encounters, elites, bosses, allies, events).
 
-import { ACTS, BOSS_SIGNATURES, BREATH_DC, HELP, MONSTERS, RESIST_WORD, ROLES, canHelp, diceText, roleOf, type MonsterDef } from '../../../shared/rules.ts';
+import { ACTS, BOSS_SIGNATURES, BREATH_DC, HARD_MOVES, HELP, MONSTERS, RESIST_WORD, ROLES, canHelp, diceText, roleOf, type MonsterDef } from '../../../shared/rules.ts';
 import { STATUSES } from '../../../shared/skills.ts';
 import { MONSTER_SPRITES } from '../../sprites.ts';
 import { usageActs, type Usage } from '../data.ts';
@@ -25,6 +25,8 @@ function specials(id: string, m: MonsterDef): string[] {
     out.push(chip(`${STATUSES[b.id].icon} Buffs ${STATUSES[b.id].name} ${b.turns}t${b.power ? ` +${b.power}` : ''}`, 'good', 'Or buffs one'));
   }
   if (m.death) out.push(chip(`💥 ${esc(m.death.text)}`, 'dim', `Leaves ${[m.death.ground, m.death.cloud].filter(Boolean).join(' and ')} within ${m.death.radius}`));
+  const hard = HARD_MOVES[id];
+  if (hard) out.push(chip(`💀 Hard: ${esc(hard.move)}`, 'bad', 'On Hard it spawns with this extra move (shared/rules.ts HARD_MOVES)'));
   return out;
 }
 
@@ -111,6 +113,6 @@ export const monsters: TabDef = {
       th('Role', 'str'), th('Element', 'str'), th('Resistances'), th('Saves'), th('Threat', 'num'), th('XP', 'num'), th('Specials'), th('Tricks'), th('Where it appears'), th('Source'),
     ].join('');
     return `<p class="lead">Threat is the monster's cost against an encounter's budget; XP is shared out when it dies. Click a column to sort. Elites and bosses get their HP from scaledHp instead of the party-size scaling.</p>
-      ${wrapTable(head, Object.keys(MONSTERS).map(row).join(''), 'sortable monsters')}`;
+      ${wrapTable(head, Object.keys(DATA.monsters).map(row).join(''), 'sortable monsters')}`;
   },
 };
