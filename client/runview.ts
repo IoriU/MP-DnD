@@ -141,11 +141,17 @@ function progressHtml(s: GameState, vote: VoteState | null): string {
   return `<span class="rv-progress"${title}>${voted}/${total} voted</span>`;
 }
 
-/** An outcome screen: who is ready to move on, out of the people at the keyboard (bots don't wait). */
+/**
+ * An outcome screen waits for the people at the keyboard (bots don't wait): each clicks Continue, and someone on
+ * auto-play is ready once their picks are made (auto-play makes them after a while).
+ */
+const outcomeReady = (s: GameState, vote: VoteState, p: GameState['players'][number]) =>
+  vote.votes[p.id] !== undefined || (p.auto && s.autoPicks?.[p.id] === undefined);
+
 function readyHtml(s: GameState, vote: VoteState): string {
-  const people = s.players.filter((p) => p.connected && !p.bot && !p.auto);
-  const ready = people.filter((p) => vote.votes[p.id] !== undefined).length;
-  const waiting = people.filter((p) => vote.votes[p.id] === undefined).map((p) => p.name);
+  const people = s.players.filter((p) => p.connected && !p.bot);
+  const ready = people.filter((p) => outcomeReady(s, vote, p)).length;
+  const waiting = people.filter((p) => !outcomeReady(s, vote, p)).map((p) => p.name);
   const title = waiting.length ? ` title="${esc(`Waiting for ${waiting.join(', ')}`)}"` : '';
   return `<span class="rv-progress"${title}>${ready}/${people.length} ready</span>`;
 }
@@ -153,7 +159,9 @@ function readyHtml(s: GameState, vote: VoteState): string {
 function outcomeStatusHtml(s: GameState, vote: VoteState | null, picks: number): string {
   if (!vote) return '<span class="rv-status">The party is on the move…</span>';
   if (myVote(vote) === undefined) return `<span class="rv-status go">${picks ? 'Pick your spoils, then continue' : 'Continue when you are ready'}</span>`;
-  const waiting = s.players.filter((p) => p.connected && !p.bot && !p.auto && vote.votes[p.id] === undefined).map((p) => esc(p.name));
+  const waiting = s.players
+    .filter((p) => p.connected && !p.bot && !outcomeReady(s, vote, p))
+    .map((p) => `${esc(p.name)}${p.auto ? ' (still picking)' : ''}`);
   return `<span class="rv-status">${waiting.length ? `Waiting for ${waiting.join(' and ')}…` : 'Moving on…'}</span>`;
 }
 
@@ -177,6 +185,8 @@ function updateCountdowns(selector: string, t: Timed | null | undefined) {
 function tick() {
   updateCountdowns('#map-view [data-countdown], #event-view [data-countdown], #approach-view [data-countdown]', store.state?.vote);
   updateCountdowns('#rest-view [data-countdown]', store.state?.rest);
+  const auto = remainingMs(store.state?.rest ? { endsInMs: store.state.rest.autoInMs } : null);
+  if (auto !== null) for (const el of document.querySelectorAll<HTMLElement>('#rest-view [data-autorest]')) el.textContent = `${Math.ceil(auto / 1000)}s`;
   updateCountdowns('#shop-view [data-countdown]', store.state?.shop);
   if (pendingScroll) scrollToFocus();
 }
@@ -511,6 +521,7 @@ function renderEvent(view: HTMLElement, s: GameState, ev: EventView) {
     vote && [vote.kind, vote.options, vote.votes, vote.endsInMs === null],
     s.run?.gold,
     picksWaiting(s),
+    Object.keys(s.autoPicks ?? {}),
     s.players.map((p) => [p.id, p.name, p.color, p.connected, p.auto]),
   ]);
   if (key === eventKey) return;
@@ -596,6 +607,7 @@ function renderRest(view: HTMLElement, s: GameState, rest: RestState) {
     store.playerId,
     rest.picks,
     rest.endsInMs === null,
+    rest.autoInMs === null,
     m && [m.hp, m.maxHp, m.slots, m.maxSlots, m.level, m.dead, m.skills.map((o) => [o.id, o.tier, o.branch])],
     s.players.map((p) => [p.id, p.name, p.color, p.connected, p.auto, p.bot]),
   ]);
@@ -674,6 +686,7 @@ function restHtml(s: GameState, rest: RestState, m: PlayerEntity | undefined): s
   const options = m ? trainOptions(m) : [];
   const decided = Object.keys(rest.picks).length;
   const total = Math.max(decided, s.players.filter((p) => p.connected).length);
+  const autoOn = !!s.players.find((p) => p.id === store.playerId)?.auto;
 
   const long = m
     ? restChoice(
@@ -696,7 +709,7 @@ function restHtml(s: GameState, rest: RestState, m: PlayerEntity | undefined): s
     ${m ? `<div class="rv-train"><div class="rv-train-head">📖 Train <span class="muted">upgrade one cantrip or spell a tier</span></div><div class="rv-choices">${train}</div></div>` : ''}
     <ul class="rv-picks">${picksHtml(s, rest)}</ul>
     <div class="rv-event-foot">
-      <span class="rv-sub"><span class="rv-status${m && !mine ? ' go' : ''}">${m && !mine ? 'Pick how to rest' : 'Waiting for the party…'}</span><span class="rv-progress">${decided}/${total} decided</span></span>
+      <span class="rv-sub"><span class="rv-status${m && !mine ? ' go' : ''}">${m && !mine ? `Pick how to rest${autoOn && rest.autoInMs !== null ? ' · 🤖 auto-play picks for you in <b data-autorest></b>' : ''}` : 'Waiting for the party…'}</span><span class="rv-progress">${decided}/${total} decided</span></span>
       <span class="rv-stats">${timerHtml(rest, 'Time left. Anyone undecided takes a Long Rest.')}${s.run ? `<span class="rv-pill gold" title="Party gold">💰 ${s.run.gold}</span>` : ''}</span>
     </div>
   </div>`;

@@ -42,6 +42,7 @@ import {
   REST_MS,
   STEAL_SHARE,
   CONTINUE_MS,
+  PICK_WAIT_MS,
   VOTE_MS,
   XP_BUFF,
   XP_CATCH_UP,
@@ -341,6 +342,9 @@ export class Game {
   private heroTurns = new Map<string, number>(); // hero id -> the turn their auto-play is playing
   private event: (EventDef & Pick<EventView, 'chosen' | 'lines'>) | null = null;
   private onContinue: (() => void) | null = null; // where an outcome screen's Continue leads
+  private pickAt = new Map<string, number>(); // playerId -> when auto-play makes the pick for a person who has it on
+  private pickTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private restAutoAt: number | null = null; // when auto-play chooses at the rest site for the people who have it on
   private told: string[] | null = null; // collecting what gets logged, for an outcome screen's lines
   private seenEvents: string[] = [];
   private notice: Notice | null = null;
@@ -417,6 +421,12 @@ export class Game {
   /** Real people at the keyboard right now (not bots, not on auto, not disconnected). */
   private humans(): PlayerInfo[] {
     return this.players.filter((p) => p.connected && !p.bot && !p.auto);
+  }
+
+  /** A person at the keyboard with auto-play on: the AI fights for them, but each pick waits PICK_WAIT_MS for them. */
+  private watching(playerId: string): boolean {
+    const info = this.players.find((p) => p.id === playerId);
+    return !!info && info.auto && info.connected && !info.bot;
   }
 
   /** Auto-play covers bots, players who switched it on, and players who dropped out. */
@@ -632,8 +642,16 @@ export class Game {
     this.broadcast();
   }
 
-  /** Stops everything time-based: walks, monster turns, turn timers, the vote and the rest site. */
+  /** Stops everything time-based (the game is closing, or back to the tavern): the room's timers and the pick countdowns. */
   dispose() {
+    this.endRoom();
+    for (const t of this.pickTimers.values()) clearTimeout(t);
+    this.pickTimers.clear();
+    this.pickAt.clear();
+  }
+
+  /** Leaving a room: stops walks, monster turns, turn timers, the vote and the rest site. Pick countdowns carry on. */
+  private endRoom() {
     this.cancelAllWalks();
     this.turnToken++;
     this.turn = null;
@@ -651,6 +669,7 @@ export class Game {
     this.onContinue = null;
     this.restPicks = null;
     this.restDeadline = null;
+    this.restAutoAt = null;
     this.approachDc = null;
   }
 
@@ -774,7 +793,7 @@ export class Game {
 
   /** Back to the map: the party votes on the next node. */
   private toMap() {
-    this.dispose();
+    this.endRoom();
     const run = this.run;
     if (!run) return;
     this.phase = 'map';
@@ -837,6 +856,7 @@ export class Game {
     this.autoVoteTimer = setTimeout(() => {
       this.autoVoteTimer = null;
       if (this.vote !== vote || this.humans().length) return;
+      if (vote.kind === 'continue' && this.pickAt.size) return; // someone on auto-play is still picking: their last pick moves on
       if (vote.kind === 'path') this.autoUpkeep(); // before the party moves on (its own timer would fire too late)
       const heroes = this.heroes();
       for (const p of this.players) {
@@ -893,6 +913,12 @@ export class Game {
   private maybeResolveVote() {
     const v = this.vote;
     if (!v) return;
+    if (v.kind === 'continue') {
+      // An outcome screen waits for everyone at a keyboard; someone on auto-play is ready once their picks are made.
+      const people = this.players.filter((p) => p.connected && !p.bot);
+      if (people.length && people.every((p) => v.votes[p.id] || (p.auto && !this.pickAt.has(p.id)))) this.resolveVote();
+      return;
+    }
     const voters = this.humans();
     if (voters.length && voters.every((p) => v.votes[p.id])) this.resolveVote();
   }
@@ -900,6 +926,14 @@ export class Game {
   private resolveVote() {
     const v = this.vote;
     if (!v) return;
+    if (v.kind === 'continue') {
+      if (this.voteTimer) clearTimeout(this.voteTimer);
+      this.voteTimer = null;
+      this.vote = null;
+      this.moveOn();
+      this.broadcast();
+      return;
+    }
     const tally = new Map<string, number>();
     for (const option of Object.values(v.votes)) tally.set(option, (tally.get(option) ?? 0) + 1);
     if (!tally.size) return;
@@ -912,7 +946,6 @@ export class Game {
     const winner = pick(winners);
     if (v.kind === 'path') this.enterNode(winner);
     else if (v.kind === 'approach') this.resolveApproach(winner);
-    else if (v.kind === 'continue') this.moveOn();
     else this.chooseEventOption(winner);
     this.broadcast();
   }
@@ -1205,6 +1238,7 @@ export class Game {
     this.phase = 'rest';
     this.restPicks = {};
     this.restDeadline = null;
+    this.restAutoAt = Date.now() + PICK_WAIT_MS / SPEED;
     this.addLog('system', '🔥 A rest site. Each hero chooses: Long Rest (heal and restore slots) or Train (upgrade a cantrip or spell).');
     this.scheduleAutoRest();
     this.broadcast();
@@ -1231,14 +1265,21 @@ export class Game {
     this.broadcast();
   }
 
+  /** Bots (and players who dropped out) choose right away; people on auto-play get PICK_WAIT_MS to choose themselves. */
   private scheduleAutoRest() {
-    setTimeout(() => {
-      const picks = this.restPicks;
-      if (this.phase !== 'rest' || !picks) return;
-      for (const h of this.heroes()) {
-        if (this.isAuto(h.playerId) && !picks[h.playerId]) this.handleRest(h.playerId, autoRestPick(h, this.heroes()));
-      }
-    }, AUTO_DELAY_MS / SPEED);
+    setTimeout(() => this.autoRest(false), AUTO_DELAY_MS / SPEED);
+    if (this.restAutoAt === null) return;
+    const timer = setTimeout(() => this.autoRest(true), Math.max(0, this.restAutoAt - Date.now()));
+    timer.unref?.();
+  }
+
+  private autoRest(watched: boolean) {
+    const picks = this.restPicks;
+    if (this.phase !== 'rest' || !picks) return;
+    for (const h of this.heroes()) {
+      const id = h.playerId;
+      if (this.isAuto(id) && !picks[id] && (watched || !this.watching(id))) this.handleRest(id, autoRestPick(h, this.heroes()));
+    }
   }
 
   private resolveRest() {
@@ -1248,6 +1289,7 @@ export class Game {
     this.restTimer = null;
     this.restPicks = null;
     this.restDeadline = null;
+    this.restAutoAt = null;
     const lines = this.collect(() => {
       for (const p of this.heroes()) this.healInjuries(p, 'by the fire');
       for (const p of this.heroes()) {
@@ -1311,25 +1353,64 @@ export class Game {
 
   /** Auto heroes take their level-up picks on their own. */
   private scheduleAutoPicks() {
-    if (!this.heroes().some((p) => p.offer && this.isAuto(p.playerId))) return;
-    setTimeout(() => {
-      for (const p of this.heroes()) {
-        for (let guard = 0; guard < 16 && p.offer && picksLeft(p) > 0 && this.isAuto(p.playerId); guard++) {
-          const icon = PICK_ICON[p.offerKind ?? 'level'];
-          const [offered, kind, req] = [p.offer, p.offerKind ?? 'level', autoLevelPick(p)];
-          const res = applyPick(p, req, rng, this.run?.act ?? 1);
-          if (!res.ok) {
-            console.warn(`[auto pick ${p.name}] rejected: ${res.error}`);
-            break;
-          }
-          this.journalPick(p, offered, kind, req, res.text, true);
-          this.addLog('level', `${icon} ${p.name} ${res.text}.`);
-          this.autoManage(p); // gear from elite spoils
-        }
+    // People on auto-play build their own hero if they like: each pick waits PICK_WAIT_MS for them (their panel counts down).
+    for (const p of this.heroes()) {
+      const id = p.playerId;
+      if (!this.watching(id) || !p.offer || picksLeft(p) <= 0) {
+        this.clearPickTimer(id);
+        continue;
       }
+      if (!this.pickAt.has(id)) this.pickAt.set(id, Date.now() + PICK_WAIT_MS / SPEED);
+      if (this.pickTimers.has(id)) continue;
+      const timer = setTimeout(() => {
+        this.pickTimers.delete(id);
+        this.pickAt.delete(id);
+        const h = this.hero(id);
+        if (!h || !this.run) return;
+        this.autoPick(h, 1);
+        this.afterPick();
+      }, Math.max(0, this.pickAt.get(id)! - Date.now()));
+      timer.unref?.();
+      this.pickTimers.set(id, timer);
+    }
+    // Bots and players who dropped out pick right away.
+    if (!this.heroes().some((p) => p.offer && this.isAuto(p.playerId) && !this.watching(p.playerId))) return;
+    setTimeout(() => {
+      for (const p of this.heroes()) if (!this.watching(p.playerId)) this.autoPick(p, 16);
       this.checkpoint();
       this.broadcast();
     }, AUTO_DELAY_MS / SPEED);
+  }
+
+  /** Auto-play makes up to `n` of a hero's picks. */
+  private autoPick(p: PlayerEntity, n: number) {
+    for (let i = 0; i < n && p.offer && picksLeft(p) > 0 && this.isAuto(p.playerId); i++) {
+      const icon = PICK_ICON[p.offerKind ?? 'level'];
+      const [offered, kind, req] = [p.offer, p.offerKind ?? 'level', autoLevelPick(p)];
+      const res = applyPick(p, req, rng, this.run?.act ?? 1);
+      if (!res.ok) {
+        console.warn(`[auto pick ${p.name}] rejected: ${res.error}`);
+        break;
+      }
+      this.journalPick(p, offered, kind, req, res.text, true);
+      this.addLog('level', `${icon} ${p.name} ${res.text}.`);
+      this.autoManage(p); // gear from elite spoils
+    }
+  }
+
+  private clearPickTimer(playerId: string) {
+    const t = this.pickTimers.get(playerId);
+    if (t) clearTimeout(t);
+    this.pickTimers.delete(playerId);
+    this.pickAt.delete(playerId);
+  }
+
+  /** A pick was made: the next one gets its own countdown, and an outcome screen may have been waiting for it. */
+  private afterPick() {
+    this.scheduleAutoPicks();
+    this.maybeResolveVote();
+    this.checkpoint();
+    this.broadcast();
   }
 
   handlePick(playerId: string, req: PickRequest) {
@@ -1340,10 +1421,10 @@ export class Game {
     const pick = { card: Number(req?.card), branch: req?.branch, forget: req?.forget };
     const res = applyPick(p, pick, rng, this.run?.act ?? 1);
     if (!res.ok) return this.whisper(playerId, res.error);
-    this.journalPick(p, offered, kind, pick, res.text, this.isAuto(playerId));
+    this.journalPick(p, offered, kind, pick, res.text, this.isAuto(playerId) && !this.watching(playerId));
     this.addLog('level', `${icon} ${p.name} ${res.text}.`);
-    this.checkpoint();
-    this.broadcast();
+    this.clearPickTimer(playerId);
+    this.afterPick();
   }
 
   // ------------------------------------------------------------ events
@@ -1498,7 +1579,7 @@ export class Game {
    * 'ambush': the heroes start surprised; 'charge': a straight fight.
    */
   private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge', warmup = false, twist?: Twist) {
-    this.dispose();
+    this.endRoom();
     const deployment = pickDeployment(kind, start, rng, warmup, twist?.deploy);
     const layout = generateRoom(kind, rng, this.run?.act ?? 1, deployment, twist?.terrain);
     this.width = layout.width;
@@ -2405,7 +2486,7 @@ export class Game {
     const song = Math.max(0, ...this.heroes().map((h) => passiveOf(h, 'song_of_rest')?.value ?? 0)) / 100;
     const breather = BREATHER.heal + (this.hasRelic('rations') ? 0.1 : 0) + song;
     for (const h of this.heroes()) if (hasBranch(h, 'song_of_rest', 'B') && h.slots < h.maxSlots) h.slots++; // Encore
-    this.dispose();
+    this.endRoom();
     const gold = this.goldFound(roomGold(run.act, kind));
     run.gold += gold;
     this.addLog('loot', `✅ Room cleared! The party loots ${gold} gold.`);
@@ -2536,7 +2617,7 @@ export class Game {
 
   private endRun(victory: boolean) {
     this.journalFightEnd(victory);
-    this.dispose();
+    this.endRoom();
     this.phase = victory ? 'victory' : 'defeat';
     try {
       archiveSave(this.code, victory ? 'victory' : 'defeat');
@@ -5244,7 +5325,9 @@ export class Game {
       rest: this.restPicks && {
         picks: this.restPicks,
         endsInMs: this.restDeadline === null ? null : Math.max(0, this.restDeadline - Date.now()),
+        autoInMs: this.restAutoAt === null ? null : Math.max(0, this.restAutoAt - Date.now()),
       },
+      autoPicks: Object.fromEntries([...this.pickAt].map(([id, at]) => [id, Math.max(0, at - Date.now())])),
       shop: this.shop && { ...this.shop, endsInMs: this.shopDeadline === null ? null : Math.max(0, this.shopDeadline - Date.now()) },
       approach: this.approachDc === null ? null : { dc: this.approachDc },
       notice: this.notice,

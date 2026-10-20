@@ -228,6 +228,7 @@ export interface VoteState {
 export interface RestState {
   picks: Record<string, RestPick>; // playerId -> choice so far
   endsInMs: number | null; // countdown after the first pick; anyone undecided takes a Long Rest
+  autoInMs: number | null; // until auto-play chooses for the people who have it on
 }
 
 /** One thing for sale at a shop. */
@@ -310,6 +311,7 @@ export interface GameState {
   rest: RestState | null;
   shop: ShopView | null;
   approach: { dc: number } | null; // the Sneak-or-Charge vote before a fight: the group Stealth DC
+  autoPicks: Record<string, number>; // playerId -> ms until auto-play makes the pick for a person who has it on
   notice: Notice | null; // the act's introduction, shown on the map (what happened in a room has its own screen)
   roomKind: NodeType | null; // combat, elite or boss while a fight is on
   width: number; // current room; 0 when not in a room

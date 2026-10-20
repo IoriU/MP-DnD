@@ -8,7 +8,7 @@
 import './levelup.css';
 import { ENGINES, type CardRarity } from '../shared/engines.ts';
 import { RARITY_COLOR, SLOT_NAME, bagRoom, describeStats, gearDef, isItemId } from '../shared/items.ts';
-import { BOONS, CLASSES } from '../shared/rules.ts';
+import { BOONS, CLASSES, PICK_WAIT_MS } from '../shared/rules.ts';
 import {
   SKILLS, TIER_LABEL, cardRarity, countKind, describeSkill, engineCount, engineOf, isSignature, itemInfo, limitFor, ownedSkill, skillTitle, skillsOfKind, statsAt,
   type SkillId, type SkillKind,
@@ -176,9 +176,10 @@ function panelHtml(m: PlayerEntity, isOpen: boolean): string {
   const reward = isReward(m);
   const path = isPath(m);
   const n = picksLeft(m);
+  const auto = autoPickIn() !== undefined;
   if (!isOpen) {
     const label = elite ? '💀 Spoils' : reward ? '🏆 Spoils' : '⬆️ Level up!';
-    return `<button type="button" class="lu-tab${elite ? ' elite' : ''}" data-lu="toggle" title="Open your ${elite ? 'elite spoils' : reward ? 'victory spoils' : 'level-up picks'} (L)">${label} (${n})</button>`;
+    return `<button type="button" class="lu-tab${elite ? ' elite' : ''}" data-lu="toggle" title="Open your ${elite ? 'elite spoils' : reward ? 'victory spoils' : 'level-up picks'} (L)">${label} (${n})${auto ? ' 🤖 <span data-autopick></span>' : ''}</button>`;
   }
   const offer = m.offer ?? [];
   const body =
@@ -188,17 +189,33 @@ function panelHtml(m: PlayerEntity, isOpen: boolean): string {
       <b>${elite ? '💀 Elite spoils' : reward ? '🏆 Victory spoils: pick one' : path ? '⬆️ Choose your path' : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : reward ? '' : 'pick 1 of ' + offer.length}</span></b>
       <button type="button" class="lu-min" data-lu="toggle" title="Collapse (L)" aria-label="Collapse">–</button>
     </div>
+    ${auto ? '<div class="lu-auto" title="Auto-play is on: it fights for you, but your picks wait for you. Press P to turn it off.">🤖 Auto-play picks for you in <b data-autopick></b> unless you pick first.</div>' : ''}
     ${elite ? '<div class="lu-explain">Pick one reward for beating the elite.</div>' : ''}
     ${path ? '<div class="lu-explain">Your old save still has a subclass pick waiting. Its signature skill is yours now (no slot needed).</div>' : ''}
     <div class="lu-cards">${body}</div>
   </div>`;
 }
 
-/** Is a human picking for this hero? Auto-play heroes (switched on, or bots) get their picks made by the server. */
+/**
+ * Is a person picking for this hero? Bots get their picks made by the server. With auto-play on, the AI fights for you,
+ * but each pick still waits PICK_WAIT_MS for you (the panel counts down), so you can build your hero and let it play.
+ */
 const manual = (s: GameState) => {
   const info = s.players.find((p) => p.id === store.playerId);
-  return !!info && !info.auto && !info.bot;
+  return !!info && !info.bot;
 };
+
+/** Milliseconds until auto-play makes your pick, when it's on and a pick is waiting. */
+function autoPickIn(): number | undefined {
+  const ms = store.playerId ? store.state?.autoPicks?.[store.playerId] : undefined;
+  return ms === undefined ? undefined : Math.max(0, ms - (Date.now() - store.receivedAt));
+}
+
+function tickAutoPick() {
+  const ms = autoPickIn();
+  if (ms === undefined) return;
+  for (const el of document.querySelectorAll<HTMLElement>('#levelup [data-autopick]')) el.textContent = `${Math.ceil(ms / 1000)}s`;
+}
 
 /** How many picks wait in the corner panel for you (0 when auto-play makes them): the outcome screens point at it. */
 export function picksWaiting(s: GameState): number {
@@ -217,9 +234,10 @@ export function renderLevelUp(s: GameState) {
   const el = $('#levelup');
   const m = me();
   if (m && manual(s)) {
-    if (lastElite >= 0 && m.elitePicks > lastElite) toast('💀 Elite spoils! Pick a reward in the corner (L).');
-    else if (lastUps >= 0 && m.levelUps > lastUps) toast('⬆️ Level up! Pick a card in the corner (L).');
-    else if (lastReward >= 0 && (m.rewardPicks ?? 0) > lastReward) toast('🏆 Victory! Pick your spoils in the corner (L).');
+    const auto = s.players.find((p) => p.id === store.playerId)?.auto ? ` Auto-play picks for you in ${PICK_WAIT_MS / 1000}s otherwise.` : '';
+    if (lastElite >= 0 && m.elitePicks > lastElite) toast(`💀 Elite spoils! Pick a reward in the corner (L).${auto}`);
+    else if (lastUps >= 0 && m.levelUps > lastUps) toast(`⬆️ Level up! Pick a card in the corner (L).${auto}`);
+    else if (lastReward >= 0 && (m.rewardPicks ?? 0) > lastReward) toast(`🏆 Victory! Pick your spoils in the corner (L).${auto}`);
   }
   lastUps = m ? m.levelUps : -1;
   lastElite = m ? m.elitePicks : -1;
@@ -243,7 +261,7 @@ export function renderLevelUp(s: GameState) {
     lockUntil = 0;
   }
   const isOpen = open ?? s.phase !== 'combat';
-  const key = JSON.stringify([isOpen, forgetCard, m.levelUps, m.elitePicks, m.rewardPicks, m.offerKind, m.level, offerKey, bagRoom(m), m.skills.map((o) => [o.id, o.tier, o.branch]), artKey()]);
+  const key = JSON.stringify([isOpen, forgetCard, m.levelUps, m.elitePicks, m.rewardPicks, m.offerKind, m.level, offerKey, bagRoom(m), m.skills.map((o) => [o.id, o.tier, o.branch]), artKey(), autoPickIn() !== undefined]);
   el.hidden = false;
   el.classList.toggle('collapsed', !isOpen);
   if (key === lastKey) return;
@@ -254,6 +272,7 @@ export function renderLevelUp(s: GameState) {
   el.innerHTML = panelHtml(m, isOpen);
   const fresh = el.querySelector('.lu-cards');
   if (fresh) fresh.scrollTop = top;
+  tickAutoPick();
 }
 
 /** Opens or collapses the panel (the L key, the party card badge, the tab). */
@@ -294,6 +313,7 @@ function choose(card: number, branch?: 'A' | 'B') {
 }
 
 export function initLevelUp() {
+  window.setInterval(tickAutoPick, 250);
   $('#levelup').addEventListener('click', (e) => {
     const t = e.target as HTMLElement;
     const lu = t.closest<HTMLElement>('[data-lu]')?.dataset.lu;
