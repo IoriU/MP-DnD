@@ -17,6 +17,8 @@ export type JournalEntry =
   | { k: 'node'; act: number; row: number; type: string }
   | { k: 'fight'; act: number; row: number; kind: string; name: string; monsters: string[]; deployment: string; heroes: { name: string; classId: string; level: number; hp: number; maxHp: number }[] }
   | { k: 'fightEnd'; won: boolean; rounds: number; downs: number; deaths: number; startHp: number; minHp: number; endHp: number; dmg: Record<string, number> }
+  /** One creature's turn, for pace: how long it took (ms, from the start of its turn), and how many heroes shared it. */
+  | { k: 'turn'; who: string; side: 'hero' | 'monster' | 'ally'; auto: boolean; round: number; ms: number; shared: number }
   | { k: 'pick'; hero: string; classId: string; offerKind: string; auto: boolean; offered: unknown[]; card: number; branch?: string; text: string }
   | { k: 'end'; victory: boolean; act: number; gold: number; relics: string[]; heroes: { name: string; classId: string; level: number; engine?: string; skills: string[]; gear: string[]; injuries: number }[] };
 

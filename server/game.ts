@@ -364,6 +364,8 @@ export class Game {
   private journal: Journal | null = null; // the run journal (server/journal.ts), from the run's start
   private fightMeta: { kind: string; name: string; deployment: string } | null = null; // the room being fought in
   private slain = 0; // monsters fallen this fight (Raise Dead needs a body)
+  private turnStarted = 0; // when the current turn began (the journal times turns)
+  private turnSize = 1; // how many began it together (heroes side by side share a turn)
   private fallen: { type: string; x: number; y: number; at: number }[] = []; // Rise Again: minions to stand back up, and when
   /** This fight's numbers for the journal: downs and deaths, the party's HP share (start, lowest), damage per hero. */
   private fightStats: { downs: number; deaths: number; startHp: number; minHp: number; dmg: Record<string, number> } | null = null;
@@ -1812,6 +1814,8 @@ export class Game {
     if (!only) t.index += ids.length - 1;
     t.group = [...ids];
     t.acts = {};
+    this.turnStarted = Date.now();
+    this.turnSize = ids.length;
     if (this.fightStats) this.fightStats.minHp = Math.min(this.fightStats.minHp, this.partyHp());
     const ready: Entity[] = [];
     let pause = 0;
@@ -2170,6 +2174,7 @@ export class Game {
   /** End of a creature's turn: statuses count down, and a hero's unspent AP is saved for the next turn. */
   private endOfTurn(e: Entity) {
     if (e.kind === 'player') e.savedAp = e.downed || e.dead ? 0 : Math.max(e.savedAp ?? 0, this.turn?.acts[e.id]?.ap ?? 0);
+    this.journalTurn(e);
     // Patience: a turn without moving builds Focus.
     const calm = e.kind === 'player' ? passiveOf(e, 'patience') : null;
     if (calm && e.kind === 'player' && this.standing(e) && !e.used.includes('turn:moved')) {
@@ -2178,6 +2183,16 @@ export class Game {
     }
     for (const s of e.statuses) if (!this.lasting(s)) s.turns--;
     e.statuses = e.statuses.filter((s) => s.turns > 0);
+  }
+
+  /** The run journal's pace data: how long this turn took. Lost turns (down, stunned...) aren't timed. */
+  private journalTurn(e: Entity) {
+    const t = this.turn;
+    if (!this.journal || !t || t.acts[e.id]?.lost || (e.kind === 'player' && (e.dead || e.downed))) return;
+    this.journal.write({
+      k: 'turn', who: e.name, side: e.kind === 'player' ? 'hero' : isAllyNpc(e) ? 'ally' : 'monster',
+      auto: e.kind === 'player' ? this.isAuto(e.playerId) : true, round: t.round, ms: Date.now() - this.turnStarted, shared: this.turnSize,
+    });
   }
 
   /** Virulent Poison and an Avatar's Radiance never wear off. */
