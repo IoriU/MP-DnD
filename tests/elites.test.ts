@@ -488,7 +488,8 @@ test('once only heroes and NPC allies are left standing, the fight is over and t
   const foe = c.foe('goblin', 7, 3, 7);
   p.damage(foe, foe.hp, heroes[0]);
   assert.equal(p.checkEnd(), true);
-  assert.equal(g.phase, 'map');
+  assert.equal(g.phase, 'event');
+  assert.equal(p.event.title, 'Victory!');
   assert.equal(p.run.allies[0].fights, ALLY_FIGHTS - 1, 'an ally that survives the fight has one fight fewer to go');
 });
 
@@ -592,7 +593,8 @@ test("finishing an act fades the party's blessings, and Vigor's HP goes with the
   // The act's boss relic can be Dragon Heart (+10 max HP), granted as the act ends.
   assert.equal(h.maxHp, base + (c.p.run.relics.includes('dragon_heart') ? 10 : 0));
   assert.equal(h.hp, h.maxHp);
-  assert.match(c.p.notice.text, /blessings fade/);
+  assert.ok(c.p.event.lines.some((l: string) => /blessings fade/.test(l)), 'said on the victory screen');
+  assert.doesNotMatch(c.p.notice.text, /blessings|healed/, "the map's banner only introduces the act");
 });
 
 // ---------------------------------------------------------------- hunting allies

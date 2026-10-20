@@ -12,6 +12,7 @@ export const MAX_ACT = 3;
 export const ACT_ROWS = 12; // map rows per act before the boss
 export const MAP_COLS = 7;
 export const VOTE_MS = 20_000; // how long a vote stays open after the first vote
+export const CONTINUE_MS = 60_000; // an outcome screen: how long the others get to read and pick after the first Continue
 
 export const NODE_INFO: Record<NodeType, { icon: string; name: string }> = {
   combat: { icon: '⚔️', name: 'Combat' },

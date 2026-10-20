@@ -22,12 +22,12 @@ export interface SavedPlayer {
 
 /**
  * Where to pick the run back up: the map vote, a node to replay from its start (a fight, event or rest), or the
- * party's vote after an elite (the fight is won, so it isn't replayed).
+ * party's vote after an elite (the fight is won, so it isn't replayed). An outcome screen saves as the map.
  */
 export type SavePoint =
   | { kind: 'map' }
   | { kind: 'node'; nodeId: string; eventId?: string }
-  | { kind: 'reward'; nodeId: string; choices: string[]; text: string };
+  | { kind: 'reward'; nodeId: string; choices: string[]; text: string; lines?: string[] };
 
 export interface SaveFile {
   version: number;

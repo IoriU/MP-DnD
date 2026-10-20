@@ -212,6 +212,7 @@
   background: radial-gradient(ellipse at center, #1c140cd9 0%, #000000f0 75%);
 }
 .rv-event-panel {
+  --pad-b: 24px; /* the bottom padding, which a sticky Continue covers */
   width: min(540px, 100%);
   max-height: 100%;
   overflow-y: auto;
@@ -231,6 +232,45 @@
   overflow-wrap: anywhere;
 }
 .rv-choices { display: grid; gap: 8px; text-align: left; }
+
+/* What happened (an outcome screen, or the elite's spoils): one line per thing gained or lost. */
+.rv-event-chosen { margin: -4px 0 10px; color: var(--muted); font-size: 14px; }
+.rv-event-chosen b { color: var(--text); }
+.rv-event-lines {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.45;
+  background: #0003;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.rv-event-lines li { overflow-wrap: anywhere; }
+.rv-event-picks { margin: 0 0 14px; font-size: 14px; color: var(--accent); }
+.rv-outcome .rv-choice { justify-content: center; }
+/* Continue stays in reach when the story and its lines need scrolling (a small window, with the spoils open). */
+.rv-outcome .rv-event-end {
+  position: sticky;
+  bottom: calc(-1 * var(--pad-b));
+  padding: 8px 0 var(--pad-b);
+  margin-bottom: calc(-1 * var(--pad-b));
+  background: var(--panel);
+}
+.rv-outcome .rv-choice-label { font-weight: 700; }
+
+/* The spoils panel sits in the bottom-right corner. Next to an event or outcome screen, the screen makes room for it:
+   side by side when the room is wide enough, the screen on top and the cards under it when it isn't. */
+#canvas-wrap { container: canvas / inline-size; }
+#canvas-wrap:has(#levelup:not([hidden]):not(.collapsed)) #event-view { padding-right: 340px; }
+@container canvas (max-width: 880px) {
+  #canvas-wrap:has(#levelup:not([hidden]):not(.collapsed)) #event-view { padding: 8px 8px 0; align-items: flex-start; }
+  #canvas-wrap:has(#levelup:not([hidden]):not(.collapsed)) .rv-event-panel { max-height: 44%; padding: 14px 16px; --pad-b: 14px; }
+  #canvas-wrap:has(#event-view:not([hidden])) #levelup:not(.collapsed) { max-height: calc(56% - 16px); }
+}
 .rv-choice {
   display: flex;
   align-items: center;
@@ -433,7 +473,7 @@
   .rv-notice-glyph { font-size: 22px; }
   .rv-body { padding: 8px 6px 24px; }
   .rv-map { border-radius: 12px; }
-  .rv-event-panel { padding: 18px 14px; }
+  .rv-event-panel { padding: 18px 14px; --pad-b: 18px; }
   .rv-event-panel.sh-panel { padding: 12px; }
   #shop-view { padding: 8px; }
   .sh-titles .muted { display: none; }

@@ -200,6 +200,12 @@ const manual = (s: GameState) => {
   return !!info && !info.auto && !info.bot;
 };
 
+/** How many picks wait in the corner panel for you (0 when auto-play makes them): the outcome screens point at it. */
+export function picksWaiting(s: GameState): number {
+  const m = me();
+  return m && wanted(s, m) ? picksLeft(m) : 0;
+}
+
 /** Should the panel be shown at all? Not for auto-play heroes or outside a run. */
 function wanted(s: GameState, m: PlayerEntity): boolean {
   if (picksLeft(m) <= 0 || !m.offer?.length) return false;
@@ -211,9 +217,9 @@ export function renderLevelUp(s: GameState) {
   const el = $('#levelup');
   const m = me();
   if (m && manual(s)) {
-    if (lastElite >= 0 && m.elitePicks > lastElite) toast('💀 Elite spoils! Pick a reward in the corner of the map (L).');
-    else if (lastUps >= 0 && m.levelUps > lastUps) toast('⬆️ Level up! Pick a card in the corner of the map (L).');
-    else if (lastReward >= 0 && (m.rewardPicks ?? 0) > lastReward) toast('🏆 Victory! Pick your spoils in the corner of the map (L).');
+    if (lastElite >= 0 && m.elitePicks > lastElite) toast('💀 Elite spoils! Pick a reward in the corner (L).');
+    else if (lastUps >= 0 && m.levelUps > lastUps) toast('⬆️ Level up! Pick a card in the corner (L).');
+    else if (lastReward >= 0 && (m.rewardPicks ?? 0) > lastReward) toast('🏆 Victory! Pick your spoils in the corner (L).');
   }
   lastUps = m ? m.levelUps : -1;
   lastElite = m ? m.elitePicks : -1;

@@ -42,6 +42,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - 💰 **Treasure:** gold and a relic (the party votes on one of three).
   - 🛒 **Shop:** spend the party's gold (see below).
   - 👑 **Boss:** ends the act. Beat all 3 acts to win.
+- **After a room:** a won fight, an event, a treasure or a rest ends on its own screen (over the battlefield, after a fight) that says what happened: the gold, the healing, the loot, the level-ups, the damage everyone dealt, or what your choice did. Pick your spoils there; the map comes when everyone has clicked Continue (or a minute after the first person did). Spoils you don't pick wait for you on the map.
 - **Fights:**
   - On your turn you get movement (the blue tiles) and **⚡ 3 AP**. Attacks and most spells cost 2 AP, quick skills 1, the biggest spells (Fireball, Shatter...) 3. AP you don't spend carries over, but a turn starts with at most 5. Walking is free; **👟 Dash** (everyone, 1 AP) adds 3 tiles.
   - **🤝 Shared turns:** heroes next to each other in the turn order play at the same time (like Baldur's Gate 3). Each of you moves and acts with your own movement and AP, in any order, and ends your own turn; the monsters wait until all of you have. A monster or an NPC ally always acts alone.

@@ -105,6 +105,9 @@ test('an event fight can be an ambush: the party starts surrounded and surprised
   p.event = getEvent('bone_organ', 2);
   p.eventCheck = () => ({ ok: false, heroId: heroes[0].id, heroName: 'Ann', text: '🎲 Ann (WIS +0): 2+0=2 vs DC 14, failure' });
   seeded(3, () => p.chooseEventOption('play'));
+  assert.equal(p.phase, 'event', 'the outcome first');
+  assert.equal(p.vote.kind, 'continue');
+  seeded(3, () => p.moveOn());
   assert.equal(p.phase, 'combat');
   assert.ok(logged(p, /Surrounded!/));
   assert.ok(heroes.every((h) => h.statuses.some((s) => s.id === 'surprised')), 'the heroes are caught by surprise');

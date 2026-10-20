@@ -1,11 +1,13 @@
 // The run screens over the canvas: the act map the party votes its path on, the ❓ event panel, the 🔥 rest site,
-// and the 🤫 Sneak-or-Charge card that sits over the room before a fight.
+// and the 🤫 Sneak-or-Charge card that sits over the room before a fight. The event panel also shows what happened in a
+// room (a won fight, an event's outcome, a treasure, a rest) until everyone clicks Continue: the map comes after.
 
 import './runview.css';
 import { CLASSES, DIFFICULTIES, NODE_INFO, REST_HEAL, stealthBonus } from '../shared/rules.ts';
 import { SKILLS, TIER_LABEL, describeSkill, ownedSkill, skillTitle, statsAt, trainOptions, type SkillId } from '../shared/skills.ts';
 import type { ActMap, EventView, GameState, MapNode, Notice, PlayerEntity, RestPick, RestState, RunInfo, VoteState } from '../shared/types.ts';
 import { blessingsHtml, relicsHtml } from './inventory.ts';
+import { picksWaiting } from './levelup.ts';
 import { send } from './net.ts';
 import { NODE_SPRITES, SPRITE_PX, artKey, iconHtml, spriteHtml, spritesOn } from './sprites.ts';
 import { isAuto, me, store } from './store.ts';
@@ -139,6 +141,22 @@ function progressHtml(s: GameState, vote: VoteState | null): string {
   return `<span class="rv-progress"${title}>${voted}/${total} voted</span>`;
 }
 
+/** An outcome screen: who is ready to move on, out of the people at the keyboard (bots don't wait). */
+function readyHtml(s: GameState, vote: VoteState): string {
+  const people = s.players.filter((p) => p.connected && !p.bot && !p.auto);
+  const ready = people.filter((p) => vote.votes[p.id] !== undefined).length;
+  const waiting = people.filter((p) => vote.votes[p.id] === undefined).map((p) => p.name);
+  const title = waiting.length ? ` title="${esc(`Waiting for ${waiting.join(', ')}`)}"` : '';
+  return `<span class="rv-progress"${title}>${ready}/${people.length} ready</span>`;
+}
+
+function outcomeStatusHtml(s: GameState, vote: VoteState | null, picks: number): string {
+  if (!vote) return '<span class="rv-status">The party is on the move…</span>';
+  if (myVote(vote) === undefined) return `<span class="rv-status go">${picks ? 'Pick your spoils, then continue' : 'Continue when you are ready'}</span>`;
+  const waiting = s.players.filter((p) => p.connected && !p.bot && !p.auto && vote.votes[p.id] === undefined).map((p) => esc(p.name));
+  return `<span class="rv-status">${waiting.length ? `Waiting for ${waiting.join(' and ')}…` : 'Moving on…'}</span>`;
+}
+
 function statusHtml(vote: VoteState | null, ask: string): string {
   if (!vote) return '<span class="rv-status">The party is on the move…</span>';
   return myVote(vote) !== undefined
@@ -199,7 +217,7 @@ export function initRunView(): void {
   eventView.addEventListener('click', (e) => {
     const b = (e.target as Element).closest<HTMLButtonElement>('button[data-vote]');
     const opt = b?.getAttribute('data-vote');
-    if (b && !b.disabled && opt != null) castVote('event', opt);
+    if (b && !b.disabled && opt != null) castVote(store.state?.vote?.kind === 'continue' ? 'continue' : 'event', opt);
   });
 
   $('#approach-view').addEventListener('click', (e) => {
@@ -486,13 +504,14 @@ function dotsSvg(voters: Voter[], r: number): string {
 
 function renderEvent(view: HTMLElement, s: GameState, ev: EventView) {
   view.hidden = false;
-  const vote = s.vote?.kind === 'event' ? s.vote : null;
+  const vote = s.vote?.kind === 'event' || s.vote?.kind === 'continue' ? s.vote : null;
   const key = JSON.stringify([
     store.playerId,
     ev,
-    vote && [vote.options, vote.votes, vote.endsInMs === null],
+    vote && [vote.kind, vote.options, vote.votes, vote.endsInMs === null],
     s.run?.gold,
-    s.players.map((p) => [p.id, p.name, p.color, p.connected]),
+    picksWaiting(s),
+    s.players.map((p) => [p.id, p.name, p.color, p.connected, p.auto]),
   ]);
   if (key === eventKey) return;
   eventKey = key;
@@ -508,6 +527,8 @@ function eventHtml(s: GameState, ev: EventView, vote: VoteState | null): string 
   const options = new Set(vote?.options ?? []);
   const voters = votersByOption(s, vote);
   const mine = myVote(vote);
+  const outcome = vote ? vote.kind === 'continue' : ev.choices.length === 1 && ev.choices[0].id === 'continue';
+  const picks = picksWaiting(s);
   const choices = ev.choices
     .map((c) => {
       const ok = options.has(c.id);
@@ -520,19 +541,28 @@ function eventHtml(s: GameState, ev: EventView, vote: VoteState | null): string 
           <span class="rv-choice-label">${esc(c.label)}</span>
           ${c.hint ? `<span class="rv-choice-hint">${esc(c.hint)}</span>` : ''}
         </span>
-        <span class="rv-voters">${isMine ? '<span class="rv-mine-tag">Your vote</span>' : ''}${dots}</span>
+        <span class="rv-voters">${isMine ? `<span class="rv-mine-tag">${outcome ? '✓ Ready' : 'Your vote'}</span>` : ''}${dots}</span>
       </button>`;
     })
     .join('');
 
-  return `<div class="rv-event-panel" role="dialog" aria-labelledby="rv-event-title">
+  const lines = ev.lines?.length ? `<ul class="rv-event-lines">${ev.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '';
+  const spoils = picks
+    ? `<p class="rv-event-picks">🏆 You have ${picks === 1 ? 'a pick' : `${picks} picks`} waiting in the corner (<kbd>L</kbd>).${outcome ? " Whatever you don't pick now waits for you on the map." : ''}</p>`
+    : '';
+  return `<div class="rv-event-panel${outcome ? ' rv-outcome' : ''}" role="dialog" aria-labelledby="rv-event-title">
     <div class="rv-event-glyph">${esc(ev.glyph)}</div>
     <h2 id="rv-event-title" class="rv-event-title">${esc(ev.title)}</h2>
+    ${ev.chosen ? `<p class="rv-event-chosen">You chose: <b>${esc(ev.chosen)}</b></p>` : ''}
     <p class="rv-event-text">${esc(ev.text)}</p>
-    <div class="rv-choices">${choices}</div>
-    <div class="rv-event-foot">
-      <span class="rv-sub">${statusHtml(vote, 'Vote on what to do')}${progressHtml(s, vote)}</span>
-      <span class="rv-stats">${timerHtml(vote)}${s.run ? `<span class="rv-pill gold" title="Party gold">💰 ${s.run.gold}</span>` : ''}</span>
+    ${lines}
+    ${spoils}
+    <div class="rv-event-end">
+      <div class="rv-choices">${choices}</div>
+      <div class="rv-event-foot">
+        <span class="rv-sub">${outcome ? `${outcomeStatusHtml(s, vote, picks)}${vote ? readyHtml(s, vote) : ''}` : `${statusHtml(vote, 'Vote on what to do')}${progressHtml(s, vote)}`}</span>
+        <span class="rv-stats">${timerHtml(vote, outcome ? 'Moving on in' : undefined)}${s.run ? `<span class="rv-pill gold" title="Party gold">💰 ${s.run.gold}</span>` : ''}</span>
+      </div>
     </div>
   </div>`;
 }

@@ -960,6 +960,9 @@ test('winning the fight wipes the battlefield and the statuses it caused', () =>
     a.hero.statuses.push({ id: 'burning', turns: 2 }, { id: 'chilled', turns: 2 });
     a.p.damage(a.sentinel, 99999, a.hero);
     a.p.checkEnd();
+    assert.deepEqual(a.hero.statuses, []);
+    assert.equal(a.g.phase, 'event', 'the victory screen, over the battlefield');
+    a.p.moveOn();
     assert.equal(a.g.phase, 'map');
     assert.deepEqual([a.g.width, a.g.height, a.g.tiles], [0, 0, '']);
     assert.deepEqual(a.g.ground, {});

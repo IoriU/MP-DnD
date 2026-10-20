@@ -41,6 +41,7 @@ import {
   REST_HEAL,
   REST_MS,
   STEAL_SHARE,
+  CONTINUE_MS,
   VOTE_MS,
   XP_BUFF,
   XP_CATCH_UP,
@@ -184,6 +185,7 @@ import type {
   MapNode,
   MonsterEntity,
   NodeType,
+  EventView,
   Notice,
   OfferCard,
   OwnedSkill,
@@ -293,7 +295,7 @@ interface Walk {
 }
 
 interface Vote {
-  kind: 'path' | 'event' | 'approach';
+  kind: 'path' | 'event' | 'approach' | 'continue';
   options: string[];
   votes: Record<string, string>;
   deadline: number | null;
@@ -337,7 +339,9 @@ export class Game {
   private restTimer: ReturnType<typeof setTimeout> | null = null;
   private approachDc: number | null = null; // the Sneak-or-Charge vote before a fight
   private heroTurns = new Map<string, number>(); // hero id -> the turn their auto-play is playing
-  private event: EventDef | null = null;
+  private event: (EventDef & Pick<EventView, 'chosen' | 'lines'>) | null = null;
+  private onContinue: (() => void) | null = null; // where an outcome screen's Continue leads
+  private told: string[] | null = null; // collecting what gets logged, for an outcome screen's lines
   private seenEvents: string[] = [];
   private notice: Notice | null = null;
   private roomKind: NodeType | null = null;
@@ -644,6 +648,7 @@ export class Game {
     this.autoVoteTimer = null;
     this.restTimer = null;
     this.vote = null;
+    this.onContinue = null;
     this.restPicks = null;
     this.restDeadline = null;
     this.approachDc = null;
@@ -730,7 +735,7 @@ export class Game {
     this.notice = save.notice;
     this.addLog('system', '📜 The party picks up right where they left off.');
     if (save.at.kind === 'node' && this.node(save.at.nodeId)) this.enterNode(save.at.nodeId, save.at.eventId);
-    else if (save.at.kind === 'reward') this.eliteReward(save.at.text, save.at.choices);
+    else if (save.at.kind === 'reward') this.eliteReward(save.at.text, save.at.choices, save.at.lines);
     else this.toMap();
     this.scheduleAutoPicks();
   }
@@ -840,7 +845,9 @@ export class Game {
         const choice =
           vote.kind === 'path'
             ? autoPathChoice(vote.options.map((id) => ({ id, type: this.node(id)?.type ?? 'combat' })), heroes, this.run?.gold ?? 0)
-            : vote.kind === 'approach'
+            : vote.kind === 'continue'
+              ? 'continue'
+              : vote.kind === 'approach'
               ? autoApproachChoice(heroes, this.approachDc ?? 99)
               : autoEventChoice(vote.options, heroes);
         this.handleVote(p.id, choice);
@@ -871,11 +878,13 @@ export class Game {
     if (!v || typeof option !== 'string' || !v.options.includes(option)) return;
     if (!this.players.some((p) => p.id === playerId)) return;
     v.votes[playerId] = option;
-    if (v.deadline === null && v.options.length > 1) {
-      v.deadline = Date.now() + VOTE_MS;
-      this.voteTimer = setTimeout(() => this.resolveVote(), VOTE_MS);
+    // Continue waits for everyone (with a longer clock), so nobody is pulled away from their spoils or the story.
+    const wait = v.kind === 'continue' ? CONTINUE_MS : VOTE_MS;
+    if (v.deadline === null && (v.options.length > 1 || v.kind === 'continue')) {
+      v.deadline = Date.now() + wait;
+      this.voteTimer = setTimeout(() => this.resolveVote(), wait);
     }
-    if (v.options.length === 1) this.resolveVote();
+    if (v.options.length === 1 && v.kind !== 'continue') this.resolveVote();
     else this.maybeResolveVote();
     this.broadcast();
   }
@@ -903,8 +912,47 @@ export class Game {
     const winner = pick(winners);
     if (v.kind === 'path') this.enterNode(winner);
     else if (v.kind === 'approach') this.resolveApproach(winner);
+    else if (v.kind === 'continue') this.moveOn();
     else this.chooseEventOption(winner);
     this.broadcast();
+  }
+
+  /**
+   * What happened in a room, on its own screen before the party moves on: a won fight, an event's outcome, a treasure,
+   * a rest. Everyone reads it and picks their spoils; the party moves on once every person has clicked Continue (or
+   * CONTINUE_MS after the first did). `save`: the run is saved here as the map (the room is done); an event that
+   * starts a fight keeps the save from before the event, so a restart replays the event.
+   */
+  private showOutcome(scene: Pick<EventView, 'glyph' | 'title' | 'text' | 'chosen' | 'lines'>, label: string, next: () => void, save = true) {
+    this.event = { id: 'outcome', ...scene, choices: [{ id: 'continue', label, resolve: () => ({ text: '', effects: [] }) }] };
+    this.phase = 'event';
+    this.onContinue = next;
+    if (save) {
+      this.savePoint = { kind: 'map' };
+      this.checkpoint();
+    }
+    this.openVote('continue', ['continue']);
+    this.broadcast();
+  }
+
+  private moveOn() {
+    const next = this.onContinue;
+    this.onContinue = null;
+    (next ?? (() => this.toMap()))();
+  }
+
+  /** Runs fn and returns what it logged (not chatter or system lines): an outcome screen's lines. */
+  private collect(fn: () => void): string[] {
+    const outer = this.told;
+    const lines: string[] = [];
+    this.told = lines;
+    try {
+      fn();
+    } finally {
+      this.told = outer;
+    }
+    outer?.push(...lines);
+    return lines;
   }
 
   private enterNode(id: string, eventId?: string) {
@@ -1117,7 +1165,8 @@ export class Game {
     return got;
   }
 
-  private finishAct() {
+  /** The act boss is down: the next act's map, after the victory screen (the last act's boss wins the run). */
+  private finishAct(text = 'The act boss falls.', lines: string[] = []) {
     const run = this.run!;
     if (run.act >= MAX_ACT) return this.endRun(true);
     run.act++;
@@ -1126,24 +1175,27 @@ export class Game {
     run.map = generateActMap(run.act, run.seed, ROWS);
     run.currentId = null;
     run.visited = [];
-    // The act boss leaves a relic behind, and the act's blessings fade.
-    const boss = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity === 'boss' && !run.relics.includes(id)))[0];
-    if (boss) this.grantRelic(boss);
     const faded = run.blessings.length > 0;
-    run.blessings = [];
-    this.syncPerks();
-    for (const p of this.heroes()) {
-      this.healInjuries(p, 'on the way up');
-      p.hp = p.maxHp;
-      p.slots = p.maxSlots;
-    }
+    lines.push(
+      ...this.collect(() => {
+        // The act boss leaves a relic behind, and the act's blessings fade.
+        const boss = shuffle(RELIC_IDS.filter((id) => RELICS[id].rarity === 'boss' && !run.relics.includes(id)))[0];
+        if (boss) this.grantRelic(boss);
+        run.blessings = [];
+        this.syncPerks();
+        for (const p of this.heroes()) {
+          this.healInjuries(p, 'on the way up');
+          p.hp = p.maxHp;
+          p.slots = p.maxSlots;
+        }
+      }),
+    );
+    lines.push('❤️ Everyone is fully healed and every slot is restored.');
+    if (faded) lines.push("✨ This act's blessings fade.");
+    lines.push('🏆 Every hero picks their spoils before the climb.');
     this.addLog('system', `🏆 Act ${run.act - 1} complete! The party recovers fully (HP and every slot) and presses on to Act ${run.act}: ${def.name}.`);
-    this.notice = {
-      glyph: def.glyph,
-      title: `Act ${run.act}: ${def.name}`,
-      text: `Everyone is fully healed and every slot is restored.${boss ? ` The boss dropped the ${RELICS[boss].icon} ${RELICS[boss].name}: ${RELICS[boss].desc}` : ''}${faded ? " The last act's blessings fade." : ''} The ${MONSTERS[def.boss].name} waits at the top of the map.`,
-    };
-    this.toMap();
+    this.notice = { glyph: def.glyph, title: `Act ${run.act}: ${def.name}`, text: `The ${MONSTERS[def.boss].name} waits at the top of the map.` };
+    this.showOutcome({ glyph: '👑', title: `Act ${run.act - 1} complete!`, text, lines }, `🗺️ On to Act ${run.act}: ${def.name}`, () => this.toMap());
   }
 
   // ------------------------------------------------------------ rest sites
@@ -1192,26 +1244,28 @@ export class Game {
   private resolveRest() {
     const picks = this.restPicks;
     if (this.phase !== 'rest' || !picks) return;
-    const lines: string[] = [];
-    for (const p of this.heroes()) this.healInjuries(p, 'by the fire');
-    for (const p of this.heroes()) {
-      const choice = picks[p.playerId] ?? { kind: 'long' };
-      if (choice.kind === 'train') {
-        const tier = nextTier(p, choice.skill);
-        const res = tier ? upgrade(p, choice.skill, tier, choice.branch) : null;
-        if (res?.ok) {
-          this.addLog('level', `🏋️ ${p.name} trains by the fire and ${res.text}.`);
-          lines.push(`${p.name} trained and ${res.text}`);
-          continue;
+    if (this.restTimer) clearTimeout(this.restTimer);
+    this.restTimer = null;
+    this.restPicks = null;
+    this.restDeadline = null;
+    const lines = this.collect(() => {
+      for (const p of this.heroes()) this.healInjuries(p, 'by the fire');
+      for (const p of this.heroes()) {
+        const choice = picks[p.playerId] ?? { kind: 'long' };
+        if (choice.kind === 'train') {
+          const tier = nextTier(p, choice.skill);
+          const res = tier ? upgrade(p, choice.skill, tier, choice.branch) : null;
+          if (res?.ok) {
+            this.addLog('level', `🏋️ ${p.name} trains by the fire and ${res.text}.`);
+            continue;
+          }
         }
+        p.hp = Math.min(p.maxHp, p.hp + Math.ceil(p.maxHp * REST_HEAL));
+        p.slots = p.maxSlots;
+        this.addLog('heal', `🔥 ${p.name} takes a Long Rest: +${Math.round(REST_HEAL * 100)}% HP and every slot restored.`);
       }
-      p.hp = Math.min(p.maxHp, p.hp + Math.ceil(p.maxHp * REST_HEAL));
-      p.slots = p.maxSlots;
-      this.addLog('heal', `🔥 ${p.name} takes a Long Rest: +${Math.round(REST_HEAL * 100)}% HP and every slot restored.`);
-      lines.push(`${p.name} took a Long Rest`);
-    }
-    this.notice = { glyph: '🔥', title: 'Rest site', text: `${lines.join('. ')}.` };
-    this.toMap();
+    });
+    this.showOutcome({ glyph: '🔥', title: 'Rest site', text: 'The fire burns low. The party packs up, a little stronger than before.', lines }, '🗺️ Back to the map', () => this.toMap());
   }
 
   /** 🩹 An Injury (an event's price): less max HP until the next rest site or act, like dying in a fight. */
@@ -1295,7 +1349,7 @@ export class Game {
   // ------------------------------------------------------------ events
 
   /** Opens an event: a fresh one, or the same one again when a save is resumed mid-event. */
-  private startEvent(eventId?: string, scene?: EventDef) {
+  private startEvent(eventId?: string, scene?: EventDef & Pick<EventView, 'lines'>) {
     const run = this.run!;
     const def = scene ?? ((eventId && getEvent(eventId, run.act)) || pickEvent(run.act, this.seenEvents, rng));
     if (!scene && !this.seenEvents.includes(def.id)) this.seenEvents.push(def.id);
@@ -1324,14 +1378,19 @@ export class Game {
     });
     this.addLog('info', `${def.glyph} ${choice.label}: ${outcome.text}`);
     let fight: Extract<EventEffect, { kind: 'fight' }> | null = null;
-    for (const effect of outcome.effects) {
-      if (effect.kind === 'fight') fight = effect;
-      else this.applyEffect(effect);
-    }
-    this.event = null;
-    this.notice = { glyph: def.glyph, title: def.title, text: outcome.text };
-    if (fight) this.startRoom(fight.elite ? 'elite' : 'combat', fight.monsters.filter((m) => Object.hasOwn(MONSTERS, m)), def.title, fight.ambush ? 'ambush' : 'charge');
-    else this.toMap();
+    const lines = this.collect(() => {
+      for (const effect of outcome.effects) {
+        if (effect.kind === 'fight') fight = effect;
+        else this.applyEffect(effect);
+      }
+    });
+    // The outcome on its own screen; a fight starts when the party is ready.
+    const scene = { glyph: def.glyph, title: def.title, text: outcome.text, chosen: choice.label, lines };
+    const f = fight as Extract<EventEffect, { kind: 'fight' }> | null;
+    if (f) {
+      const monsters = f.monsters.filter((m) => Object.hasOwn(MONSTERS, m));
+      this.showOutcome(scene, f.ambush ? '⚔️ Ambush! Fight!' : '⚔️ Fight!', () => this.startRoom(f.elite ? 'elite' : 'combat', monsters, def.title, f.ambush ? 'ambush' : 'charge'), false);
+    } else this.showOutcome(scene, '🗺️ Back to the map', () => this.toMap());
   }
 
   /** d20 + the best modifier in the party for that stat. */
@@ -1357,6 +1416,7 @@ export class Game {
     switch (effect.kind) {
       case 'heal':
         for (const p of heroes) p.hp = Math.min(p.maxHp, p.hp + Math.ceil(p.maxHp * effect.pct));
+        this.addLog('heal', `❤️ Everyone heals ${Math.round(effect.pct * 100)}% of their max HP.`);
         break;
       case 'damage': {
         const targets = effect.who === 'checker' ? heroes.filter((p) => p.id === this.lastChecker) : heroes;
@@ -1367,12 +1427,18 @@ export class Game {
         }
         break;
       }
-      case 'gold':
+      case 'gold': {
+        const before = run.gold;
         run.gold = Math.max(0, run.gold + effect.amount);
+        const d = run.gold - before;
+        if (d) this.addLog('loot', `💰 ${d > 0 ? `+${d}` : `−${-d}`} gold (the party has ${run.gold}).`);
         break;
-      case 'potions':
-        this.giveSharedPotions(effect.amount);
+      }
+      case 'potions': {
+        const got = this.giveSharedPotions(effect.amount);
+        if (got.length) this.addLog('loot', `🧪 ${got.length === 1 ? 'A healing potion' : `${got.length} healing potions`}: ${[...new Set(got)].join(', ')}.`);
         break;
+      }
       case 'relic': {
         const id = effect.id ?? this.rollRelics(1)[0]; // random if the event doesn't say
         if (id && isRelicId(id)) this.grantRelic(id);
@@ -1407,9 +1473,11 @@ export class Game {
           recalcHero(p);
           p.hp = Math.max(1, p.hp);
         }
+        this.addLog(effect.amount > 0 ? 'heal' : 'hit', `${effect.amount > 0 ? '💪' : '🩸'} Everyone ${effect.amount > 0 ? 'gains' : 'loses'} ${Math.abs(effect.amount)} max HP for the rest of the run.`);
         break;
       case 'restoreSlots':
         for (const p of heroes) p.slots = p.maxSlots;
+        this.addLog('heal', '🔮 Every spell slot is restored.');
         break;
       case 'blessing': {
         const open = BLESSING_IDS.filter((b) => !run.blessings.includes(b));
@@ -2307,17 +2375,40 @@ export class Game {
     return false;
   }
 
+  /** A won fight: everyone gets up and catches their breath, then the victory screen (the room stays behind it). */
   private endCombat() {
+    const rounds = this.turn?.round ?? 1;
+    const dealt = { ...this.fightStats?.dmg };
+    const name = this.fightMeta?.name || 'The fight';
+    const kind = this.roomKind ?? 'combat';
+    let leveled: string[] = [];
+    const lines = this.collect(() => (leveled = this.afterFight(kind)));
+    const damage = this.heroes()
+      .map((h) => [h.name, Math.round(dealt[h.name] ?? 0)] as const)
+      .sort((a, b) => b[1] - a[1])
+      .map(([n, d]) => `${n} ${d}`);
+    lines.push(`⚔️ Damage dealt: ${damage.join(' · ')}.`);
+    const text = `${name}: won in ${rounds} round${rounds === 1 ? '' : 's'}.`;
+    if (kind === 'boss') return this.finishAct(text, lines);
+    if (kind === 'elite') return this.eliteSpoils(text, lines);
+    lines.push(`🏆 Every hero picks their spoils: two skill cards and an item card${leveled.length ? ', plus the level-up cards' : ''}.`);
+    this.showOutcome({ glyph: '✅', title: 'Victory!', text, lines }, '🗺️ Back to the map', () => this.toMap());
+  }
+
+  /** What a won fight hands out: healing, gold, loot, potions, level-ups and spoils. Returns who leveled up. */
+  private afterFight(kind: NodeType): string[] {
     this.journalFightEnd(true);
     this.traps.clear();
     this.raised.clear();
-    const kind = this.roomKind ?? 'combat';
     const run = this.run!;
     // Song of Rest: the best Bard's song adds its share on top.
     const song = Math.max(0, ...this.heroes().map((h) => passiveOf(h, 'song_of_rest')?.value ?? 0)) / 100;
     const breather = BREATHER.heal + (this.hasRelic('rations') ? 0.1 : 0) + song;
     for (const h of this.heroes()) if (hasBranch(h, 'song_of_rest', 'B') && h.slots < h.maxSlots) h.slots++; // Encore
     this.dispose();
+    const gold = this.goldFound(roomGold(run.act, kind));
+    run.gold += gold;
+    this.addLog('loot', `✅ Room cleared! The party loots ${gold} gold.`);
     // NPC allies have one fight fewer to go.
     for (const a of run.allies) a.fights--;
     for (const a of run.allies) if (a.fights <= 0) this.addLog('info', `👋 ${a.name} has fought the agreed fights and heads home. Good luck!`);
@@ -2347,34 +2438,27 @@ export class Game {
       p.hp = Math.min(p.maxHp, Math.max(1, p.hp) + Math.ceil(p.maxHp * breather - 1e-9)); // (0.2 + 0.1 isn't quite 0.3)
     }
     this.addLog('heal', `🫁 The party catches its breath: everyone heals ${Math.round(breather * 100)}% of their max HP.`);
-    const gold = this.goldFound(roomGold(run.act, kind));
-    run.gold += gold;
-    this.addLog('loot', `✅ Room cleared! The party loots ${gold} gold.`);
     this.callout(this.randomBot(), 'won', {}, 'after');
-    const loot = kind === 'elite' ? this.fightLoot(kind) : null;
-    const potion = this.potionDrop();
+    if (kind === 'elite') this.fightLoot(kind);
+    this.potionDrop();
     if (kind === 'elite') for (const p of this.heroes()) p.elitePicks++; // dealt first (dealOffer), before the spoils below
     const leveled = this.checkLevelUps();
     this.victorySpoils();
-    if (kind === 'boss') return this.finishAct();
-    const text = `+${gold} gold.${loot ? ` ${loot}` : ''}${potion ? ` ${potion}` : ''} 🏆 Everyone picks their spoils.${leveled.length ? ` ⬆️ Level up: ${leveled.join(', ')}!` : ''}`;
-    if (kind === 'elite') return this.eliteSpoils(text);
-    this.notice = { glyph: '✅', title: 'Room cleared', text };
-    this.toMap();
+    return leveled;
   }
 
   /**
    * After an elite (every hero's elite-spoils pick, an upgrade, gear or a boon, was dealt in endCombat): the party votes
    * on a blessing for the rest of the act or an NPC ally for the next few fights.
    */
-  private eliteSpoils(text: string) {
+  private eliteSpoils(text: string, lines: string[]) {
     const run = this.run!;
     const blessings = shuffle(BLESSING_IDS.filter((b) => !run.blessings.includes(b))).slice(0, 2);
-    this.eliteReward(text, [...blessings.map((b) => `blessing:${b}`), `ally:${pick(ALLY_IDS)}`]);
+    this.eliteReward(text, [...blessings.map((b) => `blessing:${b}`), `ally:${pick(ALLY_IDS)}`], lines);
   }
 
   /** The party's vote after an elite. A save made during it reopens the same vote. */
-  private eliteReward(text: string, choices: string[]) {
+  private eliteReward(text: string, choices: string[], lines: string[] = []) {
     const run = this.run!;
     const choice = (c: string): EventChoiceDef | null => {
       const [kind, id] = c.split(':');
@@ -2382,7 +2466,7 @@ export class Game {
         const b = BLESSINGS[id];
         return {
           id: c, label: `${b.icon} ${b.name}`, hint: `${b.desc} Until the end of the act.`,
-          resolve: () => ({ text: `${text} The party takes the ${b.name}.`, effects: [{ kind: 'blessing', id }] }),
+          resolve: () => ({ text: `The party takes the ${b.name}.`, effects: [{ kind: 'blessing', id }] }),
         };
       }
       if (kind === 'ally' && isAllyId(id)) {
@@ -2390,19 +2474,20 @@ export class Game {
         const m = MONSTERS[a.monster];
         return {
           id: c, label: `${m.glyph} Free their captive ${m.name}`, hint: `${a.desc} Fights with you for the next ${ALLY_FIGHTS} fights.`,
-          resolve: () => ({ text: `${text} A grateful ${m.name} joins the party.`, effects: [{ kind: 'ally', id }] }),
+          resolve: () => ({ text: `A grateful ${m.name} joins the party.`, effects: [{ kind: 'ally', id }] }),
         };
       }
       return null;
     };
     const options = choices.map(choice).filter((c): c is EventChoiceDef => !!c);
-    this.savePoint = { kind: 'reward', nodeId: run.currentId ?? '', choices: options.map((o) => o.id), text };
+    this.savePoint = { kind: 'reward', nodeId: run.currentId ?? '', choices: options.map((o) => o.id), text, lines };
     this.startEvent(undefined, {
       id: 'spoils',
       title: 'Elite defeated!',
       glyph: '💀',
       text: `${text} Every hero picks their spoils. Then choose together: a blessing for the rest of the act, or the captive they were holding, who fights with you for the next ${ALLY_FIGHTS} fights.`,
       choices: options,
+      lines,
     });
   }
 
@@ -4939,8 +5024,7 @@ export class Game {
       }
       if (!bought) break;
     }
-    const bought = this.shopReceipts.length ? `Bought: ${this.shopReceipts.join(', ')}. ` : 'Nobody bought anything. ';
-    this.notice = { glyph: '🛒', title: 'Shop', text: `${bought}The party moves on with ${run.gold} gold.` };
+    this.addLog('system', `🛒 ${this.shopReceipts.length ? `Bought: ${this.shopReceipts.join(', ')}.` : 'Nobody bought anything.'} The party moves on with ${run.gold} gold.`);
     this.toMap();
   }
 
@@ -5062,6 +5146,7 @@ export class Game {
   }
 
   private addLog(kind: LogKind, text: string) {
+    if (this.told && kind !== 'chat' && kind !== 'say' && kind !== 'system') this.told.push(text);
     this.log.push({ id: ++this.logId, kind, text });
     if (this.log.length > LOG_LIMIT) this.log.shift();
     this.journal?.write({ k: 'log', kind, text, act: this.run?.act, round: this.phase === 'combat' ? this.turn?.round : undefined });
@@ -5153,6 +5238,8 @@ export class Game {
         glyph: e.glyph,
         text: e.text,
         choices: e.choices.map((c) => ({ id: c.id, label: c.label, hint: c.hint ?? (c.cost ? `Costs ${c.cost} gold` : undefined) })),
+        ...(e.chosen ? { chosen: e.chosen } : {}),
+        ...(e.lines ? { lines: e.lines } : {}),
       },
       rest: this.restPicks && {
         picks: this.restPicks,

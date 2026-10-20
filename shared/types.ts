@@ -218,7 +218,7 @@ export interface AllyState {
 }
 
 export interface VoteState {
-  kind: 'path' | 'event' | 'approach'; // approach: 'sneak' or 'charge', before a fight starts
+  kind: 'path' | 'event' | 'approach' | 'continue'; // approach: 'sneak' or 'charge', before a fight starts; continue: an outcome screen
   options: string[]; // node ids or event choice ids that can be picked
   votes: Record<string, string>; // playerId -> option
   endsInMs: number | null; // countdown after the first vote, as of when the state was sent
@@ -267,6 +267,8 @@ export interface EventView {
   glyph: string;
   text: string;
   choices: { id: string; label: string; hint?: string }[];
+  chosen?: string; // an outcome screen: the choice the party made
+  lines?: string[]; // an outcome screen: what it did (gold, healing, relics, level-ups...)
 }
 
 export interface Notice {
@@ -308,7 +310,7 @@ export interface GameState {
   rest: RestState | null;
   shop: ShopView | null;
   approach: { dc: number } | null; // the Sneak-or-Charge vote before a fight: the group Stealth DC
-  notice: Notice | null; // result of the last rest/treasure/event, shown on the map
+  notice: Notice | null; // the act's introduction, shown on the map (what happened in a room has its own screen)
   roomKind: NodeType | null; // combat, elite or boss while a fight is on
   width: number; // current room; 0 when not in a room
   height: number;
