@@ -10,6 +10,7 @@ import { canStep, dist, findPath, hasLOS, isBlocked } from '../shared/grid.ts';
 import {
   ACTS,
   ACT_ROWS,
+  type EncounterDef,
   AMBUSH_CHANCE,
   BREATH_DC,
   CLASSES,
@@ -280,6 +281,9 @@ const ELEMENT_COLOR: Record<Element, string> = {
 const isWarmup = (act: number, node: MapNode) => act === 1 && node.row === 0 && node.type === 'combat';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms / SPEED));
+
+/** What makes an encounter template's fight different: how it starts, and its own ground (shared/rules.ts EncounterDef). */
+type Twist = Pick<EncounterDef, 'deploy' | 'terrain'>;
 
 interface Walk {
   path: Pos[];
@@ -917,7 +921,7 @@ export class Game {
         const fight = this.encounterFor(node);
         // Regular fights past the first rows are sometimes ambushes; bosses are expecting you.
         const ambush = node.type === 'combat' && node.row >= 2 && rng.chance(AMBUSH_CHANCE);
-        this.startRoom(node.type, fight.monsters, fight.name, node.type === 'boss' ? 'charge' : ambush ? 'ambush' : 'vote', isWarmup(run.act, node));
+        this.startRoom(node.type, fight.monsters, fight.name, node.type === 'boss' ? 'charge' : ambush ? 'ambush' : 'vote', isWarmup(run.act, node), fight.twist);
         break;
       }
       case 'rest':
@@ -936,7 +940,7 @@ export class Game {
   }
 
   /** Builds a fight from the act's handwritten templates, filled up to a threat budget. */
-  private encounterFor(node: MapNode): { name: string; monsters: string[] } {
+  private encounterFor(node: MapNode): { name: string; monsters: string[]; twist?: Twist } {
     const run = this.run!;
     const act = ACTS[run.act - 1];
     const size = this.heroes().length;
@@ -946,6 +950,7 @@ export class Game {
     let budget = encounterBudget(run.act, node.row, size) * DIFFICULTIES[this.diff].budget * (isWarmup(run.act, node) ? WARMUP_BUDGET : 1);
     let name: string;
     let draw: string[];
+    let twist: Twist | undefined;
     const monsters: string[] = [];
     if (node.type === 'elite') {
       const leader = pick(act.elites);
@@ -957,6 +962,7 @@ export class Game {
       const template = pick(act.encounters.filter((e) => (e.minRow ?? 0) <= node.row));
       name = template.name;
       draw = template.monsters;
+      if (template.deploy || template.terrain) twist = { deploy: template.deploy, terrain: template.terrain };
     }
     while (monsters.length < MAX_ROOM_MONSTERS) {
       const fits = draw.filter((t) => MONSTERS[t].threat <= budget);
@@ -967,7 +973,7 @@ export class Game {
     }
     // Always at least one monster: the cheapest one in the template.
     if (!monsters.length) monsters.push([...draw].sort((a, b) => MONSTERS[a].threat - MONSTERS[b].threat)[0]);
-    return { name, monsters };
+    return { name, monsters, twist };
   }
 
   /** Gold, and the party votes on one of three relics. The gold comes with the choice, so a restart can't pay out twice. */
@@ -1204,6 +1210,15 @@ export class Game {
     this.toMap();
   }
 
+  /** 🩹 An Injury (an event's price): less max HP until the next rest site or act, like dying in a fight. */
+  private injure(p: PlayerEntity) {
+    p.injuries = Math.min(MAX_INJURIES, (p.injuries ?? 0) + 1);
+    const hp = p.hp;
+    recalcHero(p);
+    p.hp = Math.max(1, Math.min(hp, p.maxHp));
+    this.addLog('death', `🩹 ${p.name} is injured: -${Math.round(INJURY_PCT * 100 * p.injuries)}% max HP until the next rest site.`);
+  }
+
   /** 🩹 Rest sites and new acts heal Injuries: the max HP comes back (and the HP with it). */
   private healInjuries(p: PlayerEntity, where: string) {
     if (!p.injuries) return;
@@ -1311,7 +1326,7 @@ export class Game {
     }
     this.event = null;
     this.notice = { glyph: def.glyph, title: def.title, text: outcome.text };
-    if (fight) this.startRoom(fight.elite ? 'elite' : 'combat', fight.monsters.filter((m) => Object.hasOwn(MONSTERS, m)), def.title);
+    if (fight) this.startRoom(fight.elite ? 'elite' : 'combat', fight.monsters.filter((m) => Object.hasOwn(MONSTERS, m)), def.title, fight.ambush ? 'ambush' : 'charge');
     else this.toMap();
   }
 
@@ -1354,8 +1369,27 @@ export class Game {
       case 'potions':
         this.giveSharedPotions(effect.amount);
         break;
-      case 'relic':
-        if (isRelicId(effect.id)) this.grantRelic(effect.id);
+      case 'relic': {
+        const id = effect.id ?? this.rollRelics(1)[0]; // random if the event doesn't say
+        if (id && isRelicId(id)) this.grantRelic(id);
+        break;
+      }
+      case 'spoils':
+        // A spoils pick, as after a won fight: two skill cards and an item card.
+        for (const p of effect.who === 'checker' ? heroes.filter((h) => h.id === this.lastChecker) : heroes) {
+          p.rewardPicks = (p.rewardPicks ?? 0) + 1;
+          if (!p.offer) dealOffer(p, rng, run.act);
+          this.addLog('level', `🏆 ${p.name} gets a spoils pick.`);
+        }
+        this.scheduleAutoPicks();
+        break;
+      case 'injury':
+        for (const p of effect.who === 'checker' ? heroes.filter((h) => h.id === this.lastChecker) : heroes) this.injure(p);
+        break;
+      case 'xp':
+        for (const p of heroes) this.grantXp(p, effect.amount);
+        this.addLog('level', `📖 Everyone gains ${effect.amount} XP.`);
+        this.checkLevelUps();
         break;
       case 'item': {
         const id = effect.id && isItemId(effect.id) ? effect.id : this.randomItem(effect.gear ? 'gear' : 'consumable', effect.rarity ?? 'common');
@@ -1391,10 +1425,10 @@ export class Game {
    * Builds the room and starts the fight. 'vote': the party first votes Sneak or Charge;
    * 'ambush': the heroes start surprised; 'charge': a straight fight.
    */
-  private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge', warmup = false) {
+  private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge', warmup = false, twist?: Twist) {
     this.dispose();
-    const deployment = pickDeployment(kind, start, rng, warmup);
-    const layout = generateRoom(kind, rng, this.run?.act ?? 1, deployment);
+    const deployment = pickDeployment(kind, start, rng, warmup, twist?.deploy);
+    const layout = generateRoom(kind, rng, this.run?.act ?? 1, deployment, twist?.terrain);
     this.width = layout.width;
     this.height = layout.height;
     this.tiles = layout.tiles;

@@ -1,6 +1,6 @@
 // Acts & encounters: per act, the regular pool, encounter templates, elites with their escorts, and the boss with its minions.
 
-import { ACTS, ACT_ROWS, MONSTERS, type ActDef } from '../../../shared/rules.ts';
+import { ACTS, ACT_ROWS, MONSTERS, type ActDef, type EncounterDef } from '../../../shared/rules.ts';
 import { DATA } from '../model.ts';
 import { srcTag } from '../sources.ts';
 import { esc, monsterChip, q, td, th, wrapTable, type TabDef } from '../ui.ts';
@@ -8,13 +8,20 @@ import { esc, monsterChip, q, td, th, wrapTable, type TabDef } from '../ui.ts';
 /** Monster ids as chips, a repeated id once with its count ("goblin" twice -> Goblin ×2). */
 const chips = (ids: string[]) => [...new Set(ids)].map((id) => monsterChip(id, ids.filter((x) => x === id).length)).join('');
 
+const STARTS: Record<NonNullable<EncounterDef['deploy']>, string> = { line: '⚔️ a line', scattered: '🔀 scattered', pincer: '🦀 a pincer', camp: '🏕️ their camp' };
+const GROUND: Record<string, string> = { oil: '🛢️ oil', water: '💧 water', poison: '☠️ poison', lava: '🌋 lava', fire: '🔥 fire', ice: '🧊 ice' };
+
+/** What makes a template's fight different: how it starts, and its extra ground. */
+const twist = (e: EncounterDef) =>
+  [e.deploy ? `starts as ${STARTS[e.deploy]}` : '', ...(e.terrain ?? []).map(([g]) => `extra ${GROUND[g] ?? g}`)].filter(Boolean).join(', ') || '<span class="muted">-</span>';
+
 function encounters(act: ActDef, n: number): string {
   const rows = act.encounters.map((e) => {
     const threat = e.monsters.reduce((s, id) => s + (MONSTERS[id]?.threat ?? 0), 0);
     const names = e.monsters.map((id) => MONSTERS[id]?.name ?? id).join(' ');
-    return `<tr data-act="${n}" data-q="${q(e.name, names, e.monsters.join(' '))}">${td(`<b>${esc(e.name)}</b>`)}${td(`<div class="chips">${chips(e.monsters)}</div>`)}${td(e.minRow ? `row ${e.minRow}+` : 'any row', e.minRow ?? 0)}${td(threat, threat)}${td(srcTag('encounter', e.name))}</tr>`;
+    return `<tr data-act="${n}" data-q="${q(e.name, names, e.monsters.join(' '))}">${td(`<b>${esc(e.name)}</b>`)}${td(`<div class="chips">${chips(e.monsters)}</div>`)}${td(e.minRow ? `row ${e.minRow}+` : 'any row', e.minRow ?? 0)}${td(threat, threat)}${td(twist(e))}${td(srcTag('encounter', e.name))}</tr>`;
   }).join('');
-  return wrapTable([th('Template'), th('Monsters'), th('From', 'num'), th('Threat', 'num'), th('Source')].join(''), rows, 'sortable');
+  return wrapTable([th('Template'), th('Monsters'), th('From', 'num'), th('Threat', 'num'), th('Twist'), th('Source')].join(''), rows, 'sortable');
 }
 
 function card(act: ActDef, i: number): string {

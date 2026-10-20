@@ -61,11 +61,14 @@ const weighted = <T>(r: Rng, list: [T, number][]): T => {
   return list[list.length - 1][0];
 };
 
-/** Where a fight starts: an ambush surrounds you, a boss waits at the far end, the rest is a mix. */
-export function pickDeployment(kind: NodeType, start: 'vote' | 'ambush' | 'charge', r: Rng = rng, warmup = false): Deployment {
+/**
+ * Where a fight starts: an ambush surrounds you, a boss waits at the far end, an encounter may have its own (`own`: their
+ * camp, a pincer), the rest is a mix.
+ */
+export function pickDeployment(kind: NodeType, start: 'vote' | 'ambush' | 'charge', r: Rng = rng, warmup = false, own?: Deployment): Deployment {
   if (kind === 'boss' || warmup) return 'line';
   if (start === 'ambush') return 'surrounded';
-  return weighted(r, DEPLOYMENTS[kind === 'elite' ? 'elite' : 'combat']);
+  return own ?? weighted(r, DEPLOYMENTS[kind === 'elite' ? 'elite' : 'combat']);
 }
 
 function emptyRoom(width: number, height: number): string[] {
@@ -202,14 +205,16 @@ function blob(width: number, height: number, tiles: string[], size: number, r: R
 }
 
 /** Puddles, slicks and props for the act. Props are walls you can blow up, so they must not cut the room in two. */
-function dress(width: number, height: number, tiles: string[], act: number, kind: NodeType, r: Rng): { ground: GroundMap; props: PropMap } {
+function dress(
+  width: number, height: number, tiles: string[], act: number, kind: NodeType, r: Rng, terrain: Theme['patches'] = [],
+): { ground: GroundMap; props: PropMap } {
   const ground: GroundMap = {};
   const props: PropMap = {};
   const theme = THEMES[act];
   if (!theme) return { ground, props };
   const scale = kind === 'boss' ? 0.5 : 1;
   const taken = new Set<number>();
-  for (const [id, count, size] of theme.patches) {
+  for (const [id, count, size] of [...theme.patches, ...terrain]) { // an encounter's own terrain on top of the act's
     const n = Math.round(r.int(count[0], count[1]) * scale);
     for (let k = 0; k < n; k++) {
       for (const i of blob(width, height, tiles, r.int(size[0], size[1]), r, taken)) {
@@ -342,7 +347,7 @@ function deploy(d: Deployment, width: number, height: number, tiles: string, gro
  * `act` 1-3 dresses the room for that act and uses the act's plans (0 = a bare room of rocks, for tests).
  * `deployment` is where everyone starts (default: the classic line).
  */
-export function generateRoom(kind: NodeType, r: Rng = rng, act = 0, deployment: Deployment = 'line'): RoomLayout {
+export function generateRoom(kind: NodeType, r: Rng = rng, act = 0, deployment: Deployment = 'line', terrain: Theme['patches'] = []): RoomLayout {
   const { width, height } = roomSpec(kind);
   const mirror = kind === 'boss';
   const plan: Plan = act ? weighted(r, PLANS[mirror ? 'boss' : 'fight']) : 'rocks';
@@ -360,7 +365,7 @@ export function generateRoom(kind: NodeType, r: Rng = rng, act = 0, deployment: 
   }
 
   const grid = tiles.split('');
-  const { ground, props } = dress(width, height, grid, act, kind, r);
+  const { ground, props } = dress(width, height, grid, act, kind, r, terrain);
   tiles = grid.join('');
   const { party, enemies } = deploy(deployment, width, height, tiles, ground, r);
   return { width, height, tiles, ground, props, plan, deployment, partySpawns: party, enemySpawns: enemies };

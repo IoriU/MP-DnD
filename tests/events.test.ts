@@ -157,7 +157,15 @@ test('every choice resolves to text and valid effects', () => {
         case 'restoreSlots':
           break;
         case 'relic':
-          assert.ok(isRelicId(e.id), `unknown relic ${e.id}`);
+          assert.ok(e.id === undefined || isRelicId(e.id), `unknown relic ${e.id}`);
+          break;
+        case 'spoils':
+        case 'injury':
+          assert.ok(e.who === 'all' || e.who === 'checker', `who ${e.who}`);
+          if (e.who === 'checker') assert.ok(r.checks.length > 0, `checker ${e.kind} without a check`);
+          break;
+        case 'xp':
+          assert.ok(Number.isInteger(e.amount) && e.amount > 0 && e.amount <= 30 * act, `xp ${e.amount} for act ${act}`);
           break;
         case 'blessing':
           assert.ok(e.id === undefined || isBlessingId(e.id), `unknown blessing ${e.id}`);
@@ -173,6 +181,7 @@ test('every choice resolves to text and valid effects', () => {
           assert.ok(Array.isArray(e.monsters) && e.monsters.length > 0, 'empty fight');
           for (const id of e.monsters) assert.ok(id in MONSTERS, `unknown monster ${id}`);
           assert.ok(e.elite === undefined || typeof e.elite === 'boolean', 'elite flag');
+          assert.ok(e.ambush === undefined || typeof e.ambush === 'boolean', 'ambush flag');
           break;
         default:
           assert.fail(`unknown effect kind ${(e as { kind: string }).kind}`);

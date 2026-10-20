@@ -816,7 +816,11 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)
 - [ ] Traps and interactive room props (doors, levers, collapsing floors)
-- [ ] More events and encounter templates (aim for ~15 events and ~8 encounter templates per act)
+- [x] **More events and encounter templates** (2026-10-20; the goal was ~15 events and ~8 encounter templates per act)
+  - [x] 14 new events (25 in all): 16 in act 1, 17 in act 2, 18 in act 3. Four for every act are Slay the Spire-style trades: the Old Training Hall (2d6 damage for a spoils pick each), the Blood Tailor (gold or gear for an Injury), the Drowned Library (XP, or a spoils pick and an item on an INT check), the Altar of Pacts (a relic for an Injury each). Act 1: the Goblin Toll Bridge, the Goblin Cook, the Kobold Tinkerer (also act 3). Act 2: the Bone Organ, the Grave Robbers, the Ghostly Duelist, the Soul Mirror (also act 3). Act 3: the Spilled Hoard, the Dragon Egg, the Orc Deserter.
+  - [x] New event effects: a spoils pick (`spoils`, for everyone or the hero who made the check), an Injury until the next rest site (`injury`), XP (`xp`, levels come at once), a random relic (`relic` without an id), and fights that start as an ambush (`fight.ambush`)
+  - [x] 9 new encounter templates (9 per act). Templates can have a twist (`EncounterDef.deploy`, `terrain`): their own start (🏕️ their camp, 🦀 a pincer; an ambush still surrounds you) and extra ground on top of the act's. Act 1: Tunnel Pincer, Oil Cellar, Goblin Campfire. Act 2: Flooded Ossuary, Ghoul Feast, Webbed Corridor. Act 3: Magma Vents, Orc War Camp, Sermon of Flame. The codex shows the twist.
+  - Tests: `tests/content.test.ts` (9); the event tests check the new effects.
 - [ ] Sound effects and music (CC0)
 - [ ] Touch/mobile controls
 - [ ] Unlocks/meta-progression between runs (new classes, starting relics)

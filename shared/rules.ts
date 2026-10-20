@@ -417,6 +417,10 @@ export interface EncounterDef {
   name: string;
   monsters: string[];
   minRow?: number; // not used before this map row
+  /** How the fight starts, instead of the usual mix: walking into their camp, a pincer in a tunnel. An ambush still surrounds you. */
+  deploy?: 'line' | 'scattered' | 'pincer' | 'camp';
+  /** Extra ground on top of the act's: [what, how many patches, patch size], e.g. an oil-soaked cellar. */
+  terrain?: [GroundId, [number, number], [number, number]][];
 }
 
 export interface ActDef {
@@ -442,6 +446,9 @@ export const ACTS: ActDef[] = [
       { name: 'Archer Nest', monsters: ['archer', 'archer', 'goblin'], minRow: 3 },
       { name: "Shaman's Circle", monsters: ['shaman', 'goblin', 'goblin', 'kobold'], minRow: 2 },
       { name: 'Goblin Warband', monsters: ['goblin', 'goblin', 'archer', 'firebomber', 'kobold', 'rat', 'shaman'], minRow: 6 },
+      { name: 'Tunnel Pincer', monsters: ['goblin', 'goblin', 'rat', 'kobold'], minRow: 1, deploy: 'pincer' },
+      { name: 'Oil Cellar', monsters: ['firebomber', 'goblin', 'kobold', 'kobold'], minRow: 3, terrain: [['oil', [3, 4], [5, 8]]] },
+      { name: 'Goblin Campfire', monsters: ['goblin', 'archer', 'shaman', 'rat'], minRow: 4, deploy: 'camp' },
     ],
     elites: ['hobgoblin', 'mimic'],
     escorts: { hobgoblin: ['goblin', 'archer', 'firebomber', 'shaman'], mimic: ['rat'] },
@@ -458,6 +465,9 @@ export const ACTS: ActDef[] = [
       { name: 'Spider Lair', monsters: ['spider', 'spider', 'wolf'], minRow: 3 },
       { name: "Necromancer's Vigil", monsters: ['necromancer', 'skeleton', 'zombie', 'zombie'], minRow: 2 },
       { name: 'Bone Legion', monsters: ['skeleton', 'skeleton', 'zombie', 'bloated', 'spider', 'necromancer'], minRow: 6 },
+      { name: 'Flooded Ossuary', monsters: ['skeleton', 'zombie', 'necromancer', 'zombie'], minRow: 2, terrain: [['water', [3, 4], [6, 10]]] },
+      { name: 'Ghoul Feast', monsters: ['zombie', 'zombie', 'bloated', 'wolf'], minRow: 1, deploy: 'camp' },
+      { name: 'Webbed Corridor', monsters: ['spider', 'wolf', 'wolf', 'skeleton'], minRow: 4, deploy: 'pincer', terrain: [['poison', [1, 2], [2, 4]]] },
     ],
     elites: ['wight', 'broodmother'],
     escorts: { wight: ['skeleton', 'zombie', 'bloated', 'necromancer'], broodmother: ['spider', 'wolf'] },
@@ -473,6 +483,9 @@ export const ACTS: ActDef[] = [
       { name: 'Kobold Swarm', monsters: ['kobold', 'kobold', 'kobold', 'cultist'] },
       { name: 'Ogre Brutes', monsters: ['ogre', 'kobold', 'kobold'], minRow: 4 },
       { name: "Dragon's Guard", monsters: ['orc', 'cultist', 'imp', 'ogre', 'kobold', 'priest'], minRow: 6 },
+      { name: 'Magma Vents', monsters: ['imp', 'imp', 'cultist', 'kobold'], minRow: 2, terrain: [['lava', [2, 3], [2, 4]], ['fire', [1, 2], [2, 3]]] },
+      { name: 'Orc War Camp', monsters: ['orc', 'orc', 'ogre', 'kobold'], minRow: 4, deploy: 'camp' },
+      { name: 'Sermon of Flame', monsters: ['cultist', 'cultist', 'priest', 'kobold', 'imp'], minRow: 3, deploy: 'pincer', terrain: [['oil', [2, 3], [3, 5]]] },
     ],
     elites: ['warchief', 'drake'],
     escorts: { warchief: ['orc', 'kobold', 'priest'], drake: ['cultist', 'imp', 'kobold', 'priest'] },

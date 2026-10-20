@@ -35,9 +35,9 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 
 - **The map:** each act is a branching map. Click a glowing room to vote for it. When everyone has voted (or 20 seconds after the first vote) the majority wins; ties are rolled.
 - **Rooms:**
-  - ⚔️ **Combat:** a fight.
+  - ⚔️ **Combat:** a fight. Each act has 9 kinds of encounter, and some have a twist: you walk into their camp, they come at you from both ends of a tunnel, or the room is soaked in oil, flooded or full of magma.
   - 💀 **Elite:** a tough fight with special traits (see below), worth a lot of XP and a reward for everyone.
-  - ❓ **Event:** a scene with choices the party votes on.
+  - ❓ **Event:** a scene with choices the party votes on (16 to 18 per act). Some are trades: pay HP, gold or an 🩹 Injury for a spoils pick, a relic or XP.
   - 🔥 **Rest:** each hero picks **Long Rest** (heal 30% and restore every slot) or **Train** (upgrade a cantrip or spell).
   - 💰 **Treasure:** gold and a relic (the party votes on one of three).
   - 🛒 **Shop:** spend the party's gold (see below).
