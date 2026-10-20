@@ -378,12 +378,12 @@ export async function playRun(opts: RunOptions): Promise<RunResult> {
     }
     const t = s?.turn;
     if (s?.phase !== 'combat' || !t || !turnKey || now - turnSince <= TURN_STUCK_MS || reportedTurns.has(turnKey)) return;
-    const cur = s.entities.find((e) => e.id === t.order[t.index]);
-    if (cur?.kind !== 'player') return;
+    const stuck = s.entities.filter((e): e is PlayerEntity => e.kind === 'player' && t.group.includes(e.id)); // a shared turn: maybe several
+    if (!stuck.length) return;
     reportedTurns.add(turnKey);
     r.anomalies.push(
-      `${cur.name} (${cur.classId}) stuck on their turn for ${Math.round((now - turnSince) / 1000)}s: round ${t.round}, ` +
-        `moves left ${t.movesLeft}, ${t.ap} AP left, hp ${cur.hp}/${cur.maxHp}`,
+      `${stuck.map((e) => `${e.name} (${e.classId})`).join(', ')} stuck on their turn for ${Math.round((now - turnSince) / 1000)}s: round ${t.round}, ` +
+        stuck.map((e) => `${e.name}: moves left ${t.acts[e.id]?.moves}, ${t.acts[e.id]?.ap} AP left, hp ${e.hp}/${e.maxHp}`).join('; '),
     );
   }, 1000);
 

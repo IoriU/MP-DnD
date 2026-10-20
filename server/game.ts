@@ -192,7 +192,9 @@ import type {
   Pos,
   RestPick,
   RunInfo,
+  TurnActs,
   TurnState,
+  TurnView,
 } from '../shared/types.ts';
 import { attackAdvantage, canReact, coverFrom, coverWord, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import { LOW_COVER } from '../shared/grid.ts';
@@ -281,6 +283,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 interface Walk {
   path: Pos[];
+  hazards: Pos[]; // the dangerous tiles the plan knowingly crosses
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -328,7 +331,7 @@ export class Game {
   private restDeadline: number | null = null;
   private restTimer: ReturnType<typeof setTimeout> | null = null;
   private approachDc: number | null = null; // the Sneak-or-Charge vote before a fight
-  private heroTurnToken = -1; // the turn an auto hero is currently playing
+  private heroTurns = new Map<string, number>(); // hero id -> the turn their auto-play is playing
   private event: EventDef | null = null;
   private seenEvents: string[] = [];
   private notice: Notice | null = null;
@@ -336,8 +339,6 @@ export class Game {
   private lastChecker: string | null = null; // hero who made the last event check
   private entities: Entity[] = [];
   private turn: TurnState | null = null;
-  private turnOwner: string | null = null; // whose turn it is (stays set even if they're removed mid-turn)
-  private heldMoves = 0; // the turn's movement, held back while it's stuck in a net or a web (Cut Free gives it back)
   private log: LogLine[] = [];
   private logId = 0;
   private idSeq = 0;
@@ -418,7 +419,7 @@ export class Game {
     info.auto = !!on;
     this.addLog('system', `🤖 ${info.name} turned auto-play ${info.auto ? 'on' : 'off'}.`);
     const e = this.hero(playerId);
-    if (info.auto && e && this.current()?.id === e.id) this.runHero(e, this.turnToken);
+    if (info.auto && e && this.acting(e)) this.runHero(e, this.turnToken);
     if (info.auto && this.phase === 'map') this.scheduleUpkeep();
     this.onHumansChanged();
     this.broadcast();
@@ -521,7 +522,7 @@ export class Game {
       if (e) {
         this.cancelWalk(e.id);
         // Give them a moment to come back (a page reload, a wifi blip) before auto-play takes their turn.
-        if (this.current()?.id === e.id) {
+        if (this.acting(e)) {
           this.later(this.turnToken, 3000, () => {
             if (!info.connected) this.runHero(e, this.turnToken);
           });
@@ -624,7 +625,6 @@ export class Game {
     this.cancelAllWalks();
     this.turnToken++;
     this.turn = null;
-    this.turnOwner = null;
     if (this.voteTimer) clearTimeout(this.voteTimer);
     if (this.autoVoteTimer) clearTimeout(this.autoVoteTimer);
     if (this.restTimer) clearTimeout(this.restTimer);
@@ -1559,34 +1559,38 @@ export class Game {
   handleMove(playerId: string, target: Pos) {
     const p = this.hero(playerId);
     if (!p || !this.canMove(p) || !Number.isInteger(target?.x) || !Number.isInteger(target?.y)) return;
-    if (!this.turn) return;
-    if (this.turn.movesLeft <= 0) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
+    const moves = this.acts(p)?.moves ?? 0;
+    if (moves <= 0) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
     // Around fire, poison and the like when that still gets there; the client warns before walking through.
-    const plan = planWalk(this, p, target, this.turn.movesLeft, (x, y) => this.occupied(x, y, p.id), p);
+    const plan = planWalk(this, p, target, moves, (x, y) => this.occupied(x, y, p.id), p);
     if (!plan?.path.length) return;
-    this.startWalk(p, plan.path);
+    this.startWalk(p, plan.path, plan.hazards);
   }
 
   handleStep(playerId: string, dx: number, dy: number) {
     const p = this.hero(playerId);
     if (!p || !this.canMove(p) || ![-1, 0, 1].includes(dx) || ![-1, 0, 1].includes(dy) || (dx === 0 && dy === 0)) return;
     this.cancelWalk(p.id);
-    if (this.turn && this.turn.movesLeft <= 0) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
+    if ((this.acts(p)?.moves ?? 0) <= 0) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
     this.tryMove(p, { x: p.x + dx, y: p.y + dy });
   }
 
   private canMove(p: PlayerEntity): boolean {
-    return this.standing(p) && this.phase === 'combat' && this.current()?.id === p.id && !hasStatus(p, 'stunned') && !hasStatus(p, 'frozen');
+    return this.standing(p) && this.phase === 'combat' && this.acting(p) && !hasStatus(p, 'stunned') && !hasStatus(p, 'frozen');
   }
 
-  private startWalk(p: PlayerEntity, path: Pos[]) {
+  private startWalk(p: PlayerEntity, path: Pos[], hazards: Pos[] = []) {
     this.cancelWalk(p.id);
-    const walk: Walk = { path: [...path], timer: null };
+    const walk: Walk = { path: [...path], hazards, timer: null };
     this.walks.set(p.id, walk);
     const step = () => {
       walk.timer = null;
       if (this.walks.get(p.id) !== walk) return;
       const next = walk.path.shift();
+      if (next && this.turnedDangerous(p, next, walk.hazards)) {
+        this.walks.delete(p.id);
+        return this.whisper(p.playerId, '⚠️ The way ahead just turned dangerous, so you stopped. Click again to go on.');
+      }
       const moved = next ? this.tryMove(p, next) : false;
       if (!moved || !walk.path.length || this.walks.get(p.id) !== walk) {
         if (this.walks.get(p.id) === walk) this.walks.delete(p.id);
@@ -1595,6 +1599,14 @@ export class Game {
       walk.timer = setTimeout(step, STEP_MS);
     };
     step();
+  }
+
+  /**
+   * A tile on a walk that turned dangerous after the walk was planned: a friend in the same turn set it on fire, iced it or
+   * electrified it. Walks stop there instead of marching on into it.
+   */
+  private turnedDangerous(p: PlayerEntity, next: Pos, known: Pos[]): boolean {
+    return hazardAt(this, next.y * this.width + next.x, p) > 0 && !known.some((h) => h.x === next.x && h.y === next.y);
   }
 
   private cancelWalk(entityId: string) {
@@ -1609,17 +1621,18 @@ export class Game {
 
   /** Moves one tile on your turn. Returns false if it couldn't. */
   private tryMove(p: PlayerEntity, next: Pos): boolean {
-    if (!this.canMove(p) || !this.turn || this.turn.movesLeft <= 0 || ROOTED.some((id) => hasStatus(p, id))) return false;
+    const a = this.acts(p);
+    if (!this.canMove(p) || !a || a.moves <= 0 || ROOTED.some((id) => hasStatus(p, id))) return false;
     const dx = next.x - p.x;
     const dy = next.y - p.y;
     if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1 || !canStep(this, p, dx, dy) || this.occupied(next.x, next.y, p.id)) return false;
-    this.turn.movesLeft--;
+    a.moves--;
     p.facing = { x: dx, y: dy };
     if (!p.used.includes('turn:moved')) p.used.push('turn:moved'); // Patience
     p.x = next.x;
     p.y = next.y;
     this.watch(p);
-    if (this.standIn(p, 'step') && this.turn) this.turn.movesLeft = 0; // slipped on ice, stunned, or down
+    if (this.standIn(p, 'step')) a.moves = 0; // slipped on ice, stunned, or down
     if (!this.standing(p)) this.cancelWalk(p.id);
     this.checkEnd();
     this.broadcast();
@@ -1667,7 +1680,7 @@ export class Game {
     const init: Record<string, number> = {};
     for (const e of fighters) init[e.id] = rollDie(20) + this.initBonus(e);
     const order = fighters.map((e) => e.id).sort((a, b) => init[b] - init[a]); // stable: players win ties
-    this.turn = { order, init, index: 0, round: 1, movesLeft: 0, ap: 0 };
+    this.turn = { order, init, index: 0, round: 1, group: [], acts: {} };
     const node = this.run?.currentId ? this.node(this.run.currentId) : undefined;
     this.journal?.write({
       k: 'fight', act: this.run?.act ?? 1, row: node?.row ?? -1, kind: this.fightMeta?.kind ?? this.roomKind ?? 'combat', name: this.fightMeta?.name ?? '',
@@ -1701,42 +1714,115 @@ export class Game {
     const t = this.turn;
     if (!t) return;
     this.dropBlock(id); // nobody's turn will end it now
+    t.group = t.group.filter((x) => x !== id);
+    delete t.acts[id];
     const i = t.order.indexOf(id);
     if (i < 0) return;
     t.order.splice(i, 1);
     if (i <= t.index) t.index--;
   }
 
-  private current(): Entity | undefined {
+  /** Is it this creature's turn? Heroes side by side in the order share one (BG3 style). */
+  private acting(e: Entity): boolean {
     const t = this.turn;
-    return t ? this.entity(t.order[t.index]) : undefined;
+    return !!t && t.group.includes(e.id) && !t.acts[e.id]?.lost;
   }
 
-  private beginTurn() {
+  /** Is anyone in the current turn still playing (not just losing their turn)? */
+  private anyActing(except?: Entity): boolean {
+    const t = this.turn;
+    return !!t && t.group.some((id) => id !== except?.id && !t.acts[id]?.lost);
+  }
+
+  /** The movement and AP a creature has left, while it's their turn. */
+  private acts(e: Entity): TurnActs | undefined {
+    return this.acting(e) ? this.turn!.acts[e.id] : undefined;
+  }
+
+  /** The turn as this hero sees it (the hero AI). */
+  private view(p: PlayerEntity): TurnView {
+    const a = this.acts(p);
+    return { ...this.turn!, movesLeft: a?.moves ?? 0, ap: a?.ap ?? 0 };
+  }
+
+  /** Who acts from this spot in the order: a monster or an NPC ally alone, or every hero side by side from here on. */
+  private groupAt(i: number): string[] {
+    const t = this.turn!;
+    const first = this.entity(t.order[i]);
+    if (!first) return [];
+    if (first.kind !== 'player') return [first.id];
+    const ids: string[] = [];
+    for (let j = i; j < t.order.length; j++) {
+      const e = this.entity(t.order[j]);
+      if (e?.kind !== 'player') break;
+      ids.push(e.id);
+    }
+    return ids;
+  }
+
+  /**
+   * Starts the next turn: a monster or an NPC ally alone, or every hero side by side in the order at once. Those heroes move
+   * and act in any order, each ends their own turn, and the turn moves on when the last of them has. `only` starts just
+   * those creatures (tests).
+   */
+  private beginTurn(only?: string[]) {
     const t = this.turn;
     if (!t || this.phase !== 'combat') return;
     const token = ++this.turnToken;
-    const e = this.current();
-    if (!e) return this.advanceTurn();
-    this.turnOwner = e.id;
-    t.movesLeft = (SLOWED.some((id) => hasStatus(e, id)) ? Math.floor(e.speed / 2) : e.speed) + (hasStatus(e, 'charging') ? CHARGE_MOVES : 0);
-    t.ap = 0; // heroes get theirs below, once it's clear they get to act
+    const ids = only ?? this.groupAt(t.index);
+    if (!ids.length) return this.advanceTurn();
+    if (!only) t.index += ids.length - 1;
+    t.group = [...ids];
+    t.acts = {};
+    if (this.fightStats) this.fightStats.minHp = Math.min(this.fightStats.minHp, this.partyHp());
+    const ready: Entity[] = [];
+    let pause = 0;
+    for (const id of ids) {
+      const e = this.entity(id);
+      const how = e ? this.startTurn(e) : 'gone';
+      if (how === 'over' || token !== this.turnToken || this.phase !== 'combat') return;
+      if (how === 'act') ready.push(e!);
+      else if (how === 'gone') {
+        if (e && t.group.includes(id)) this.endOfTurn(e);
+        t.group = t.group.filter((x) => x !== id);
+        delete t.acts[id];
+      } else {
+        Object.assign(t.acts[id], { moves: 0, ap: 0, lost: true }); // its turn ends with everyone's
+        pause = Math.max(pause, how === 'down' ? 1000 : 900);
+      }
+    }
+    if (!t.group.length) return this.advanceTurn();
+    if (!ready.length) this.later(token, pause, () => this.advanceTurn()); // a lost turn stays on screen a moment
+    for (const e of ready) {
+      if (e.kind === 'monster') this.runMonster(e, token).catch((err) => console.error('monster AI error', err));
+      else if (this.isAuto(e.playerId)) this.runHero(e, token);
+    }
+    this.broadcast();
+  }
+
+  /**
+   * One creature's start of turn: its Block runs out, statuses tick, the ground it stands on, a death save if it's down.
+   * Says whether it gets to act ('act'), loses the turn ('lost', 'down'), is gone ('gone'), or the fight just ended ('over').
+   */
+  private startTurn(e: Entity): 'act' | 'lost' | 'down' | 'gone' | 'over' {
+    const t = this.turn!;
+    // Heroes get their AP once it's clear they get to act.
+    const a: TurnActs = { moves: (SLOWED.some((id) => hasStatus(e, id)) ? Math.floor(e.speed / 2) : e.speed) + (hasStatus(e, 'charging') ? CHARGE_MOVES : 0), ap: 0 };
+    t.acts[e.id] = a;
     // The Block this creature gave runs out (on itself and on friends); then shields and gear put up this turn's.
     this.expireBlock(e);
-    if (this.fightStats) this.fightStats.minHp = Math.min(this.fightStats.minHp, this.partyHp());
-    if (e.kind === 'player' && e.dead) return this.advanceTurn();
+    if (e.kind === 'player' && e.dead) return 'gone';
     const wall = e.kind === 'player' ? (this.standing(e) ? gearBonus(e, 'block') : 0) : (MONSTERS[e.type]?.block ?? 0);
     if (wall > 0) this.addBlock(e, e, wall, false);
     if (hasStatus(e, 'prone')) {
       // Getting back up costs half its movement.
       e.statuses = e.statuses.filter((s) => s.id !== 'prone');
       if (!(e.kind === 'player' && e.downed)) {
-        t.movesLeft = Math.floor(t.movesLeft / 2);
+        a.moves = Math.floor(a.moves / 2);
         this.addLog('info', `🤕 ${e.name} gets back up.`);
       }
     }
-    this.heldMoves = 0;
-    if (ROOTED.some((id) => hasStatus(e, id))) [this.heldMoves, t.movesLeft] = [t.movesLeft, 0];
+    if (ROOTED.some((id) => hasStatus(e, id))) [a.held, a.moves] = [a.moves, 0];
     if (e.kind === 'monster') {
       if (e.trickCd) e.trickCd--;
       if (e.orderCd) e.orderCd--;
@@ -1745,46 +1831,37 @@ export class Game {
     if (e.kind === 'player' && !e.downed) this.heroTurnStart(e);
     this.tickStatuses(e);
     this.standIn(e, 'start'); // still in the fire, the poison, the water...
-    if (this.checkEnd()) return;
-    if (!this.entities.includes(e)) return this.advanceTurn(); // burned to death
-    if (e.kind === 'player' && e.dead) return this.advanceTurn();
+    if (this.checkEnd()) return 'over';
+    if (!this.entities.includes(e)) return 'gone'; // burned to death
+    if (e.kind === 'player' && e.dead) return 'gone';
     if (e.kind === 'monster' && e.traits?.length) {
       this.eliteTurnStart(e);
-      if (this.checkEnd()) return;
-      if (!this.entities.includes(e)) return this.advanceTurn();
+      if (this.checkEnd()) return 'over';
+      if (!this.entities.includes(e)) return 'gone';
     }
 
     if (e.kind === 'player' && e.downed) {
       this.deathSave(e);
-      if (e.downed) this.later(token, 1000, () => this.advanceTurn());
-      // A great death save gets them back up mid-turn: auto heroes still need someone to play it.
-      else if (!e.dead) {
-        this.grantAp(e);
-        if (this.isAuto(e.playerId)) this.runHero(e, token);
-      }
-    } else if (hasStatus(e, 'surprised')) {
-      this.addLog('info', `😱 ${e.name} is caught by surprise and loses the turn.`);
-      this.float(e, 'surprised!', '#ffd84d');
-      this.later(token, 900, () => this.advanceTurn());
-    } else if (hasStatus(e, 'stunned')) {
-      this.addLog('info', `💫 ${e.name} is stunned and loses the turn.`);
-      this.float(e, 'stunned', '#ffd84d');
-      this.later(token, 900, () => this.advanceTurn());
-    } else if (hasStatus(e, 'frozen')) {
-      this.addLog('info', `🧊 ${e.name} is frozen solid and loses the turn.`);
-      this.float(e, 'frozen', '#cdefff');
-      this.later(token, 900, () => this.advanceTurn());
-    } else if (hasStatus(e, 'groggy')) {
-      this.addLog('info', `🥴 ${e.name} is still groggy from going down and loses the turn.`);
-      this.float(e, 'groggy', '#ffd84d');
-      this.later(token, 900, () => this.advanceTurn());
-    } else if (e.kind === 'monster') {
-      this.runMonster(e, token).catch((err) => console.error('monster AI error', err));
-    } else {
-      this.grantAp(e);
-      if (this.isAuto(e.playerId)) this.runHero(e, token);
+      if (e.dead) return 'gone';
+      if (e.downed) return 'down';
+      this.grantAp(e); // a great death save gets them back up mid-turn
+      return 'act';
     }
-    this.broadcast();
+    const lost: [StatusId, string, string, string][] = [
+      ['surprised', '😱', 'is caught by surprise and loses the turn', '#ffd84d'],
+      ['stunned', '💫', 'is stunned and loses the turn', '#ffd84d'],
+      ['frozen', '🧊', 'is frozen solid and loses the turn', '#cdefff'],
+      ['groggy', '🥴', 'is still groggy from going down and loses the turn', '#ffd84d'],
+    ];
+    const skip = lost.find(([id]) => hasStatus(e, id));
+    if (skip) {
+      const [id, icon, text, color] = skip;
+      this.addLog('info', `${icon} ${e.name} ${text}.`);
+      this.float(e, id === 'surprised' ? 'surprised!' : id, color);
+      return 'lost';
+    }
+    if (e.kind === 'player') this.grantAp(e);
+    return 'act';
   }
 
   /** The hero skill being resolved right now (Empowered Evocation, Sculpt Spells, Blessed Smites read it). */
@@ -1877,7 +1954,8 @@ export class Game {
   /** Gives a hero AP: now, if it's their turn, else on their next one (Emboldened). */
   private giveAp(t: PlayerEntity, n: number, by: Entity) {
     if (n <= 0 || !this.standing(t)) return;
-    if (this.turn && this.current()?.id === t.id) this.turn.ap += n;
+    const a = this.acts(t);
+    if (a) a.ap += n;
     else {
       const had = t.statuses.find((x) => x.id === 'emboldened');
       if (had) had.power = (had.power ?? 0) + n;
@@ -1890,7 +1968,7 @@ export class Game {
   private grantAp(p: PlayerEntity) {
     const bold = p.statuses.find((x) => x.id === 'emboldened')?.power ?? 0; // Voice of Authority, Rousing Inspiration
     p.statuses = p.statuses.filter((x) => x.id !== 'emboldened');
-    this.turn!.ap = Math.min(AP_MAX, (p.savedAp ?? 0) + AP_GAIN) + bold;
+    this.turn!.acts[p.id].ap = Math.min(AP_MAX, (p.savedAp ?? 0) + AP_GAIN) + bold;
     p.savedAp = 0;
   }
 
@@ -1922,7 +2000,7 @@ export class Game {
       this.healBy(null, p, vital.value);
       if (hasBranch(p, 'divine_vitality', 'B')) for (const h of this.heroes()) if (h !== p && this.standing(h) && dist(h, p) <= 1) this.healBy(null, h, 1);
     }
-    if (hasBranch(p, 'unstoppable', 'B') && hasStatus(p, 'raging') && this.turn) this.turn.movesLeft += 2; // Rampaging
+    if (hasBranch(p, 'unstoppable', 'B') && hasStatus(p, 'raging')) this.addMoves(p, 2); // Rampaging
     // Noxious Fumes: the enemies around you choke on it.
     const fumes = passiveOf(p, 'noxious_fumes');
     if (fumes) {
@@ -2053,7 +2131,7 @@ export class Game {
 
   /** End of a creature's turn: statuses count down, and a hero's unspent AP is saved for the next turn. */
   private endOfTurn(e: Entity) {
-    if (e.kind === 'player' && this.turn) e.savedAp = e.downed || e.dead ? 0 : Math.max(e.savedAp ?? 0, this.turn.ap);
+    if (e.kind === 'player') e.savedAp = e.downed || e.dead ? 0 : Math.max(e.savedAp ?? 0, this.turn?.acts[e.id]?.ap ?? 0);
     // Patience: a turn without moving builds Focus.
     const calm = e.kind === 'player' ? passiveOf(e, 'patience') : null;
     if (calm && e.kind === 'player' && this.standing(e) && !e.used.includes('turn:moved')) {
@@ -2073,23 +2151,25 @@ export class Game {
 
   /** Plays an auto hero's turn, one decision at a time, through the same checks as a human. */
   private runHero(p: PlayerEntity, token: number) {
-    if (this.heroTurnToken === token) return; // already playing this turn
-    this.heroTurnToken = token;
+    if (this.heroTurns.get(p.id) === token) return; // already playing this turn
+    this.heroTurns.set(p.id, token);
     this.playHeroTurn(p, token)
       .catch((err) => console.error('hero AI error', err))
       .finally(() => {
-        if (this.heroTurnToken === token) this.heroTurnToken = -1; // allow a restart if Auto is toggled off and on again
+        if (this.heroTurns.get(p.id) === token) this.heroTurns.delete(p.id); // allow a restart if Auto is toggled off and on again
       });
   }
 
   private async playHeroTurn(p: PlayerEntity, token: number) {
     // Stops as soon as the turn changes, the fight ends, or the player takes back control.
-    const ok = () => token === this.turnToken && this.phase === 'combat' && this.current()?.id === p.id && this.isAuto(p.playerId);
+    const ok = () => token === this.turnToken && this.phase === 'combat' && this.acting(p) && this.isAuto(p.playerId);
     await sleep(350);
+    // Bots in a shared turn take theirs one after another, in turn order, so each plans with the moves before it done (all
+    // at once, they ran to the same downed friend or at a monster another was about to kill). The people play any time.
+    while (ok() && this.botAhead(p, token)) await sleep(100);
     for (let i = 0; i < 16 && ok(); i++) {
-      const t = this.turn!;
       const intent = nextHeroIntent({
-        map: this, hero: p, heroes: this.heroes(), monsters: this.monsters(), allies: this.allies(), turn: t,
+        map: this, hero: p, heroes: this.heroes(), monsters: this.monsters(), allies: this.allies(), turn: this.view(p),
         occupied: (x, y, exceptId) => this.occupied(x, y, exceptId),
       });
       if (intent.kind === 'end') break;
@@ -2099,24 +2179,50 @@ export class Game {
         if (!used) break; // rejected: don't loop on it
         await sleep(450);
       } else {
-        const path = planWalk(this, p, intent.to, t.movesLeft, (x, y) => this.occupied(x, y, p.id), p)?.path;
-        if (!path?.length) break;
-        for (const step of path) {
-          if (!this.tryMove(p, step)) break;
+        const plan = planWalk(this, p, intent.to, this.acts(p)?.moves ?? 0, (x, y) => this.occupied(x, y, p.id), p);
+        if (!plan?.path.length) break;
+        for (const step of plan.path) {
+          if (this.turnedDangerous(p, step, plan.hazards) || !this.tryMove(p, step)) break; // the next decision plans again
           await sleep(MONSTER_STEP_MS);
           if (!ok()) return;
         }
       }
     }
-    if (ok()) this.advanceTurn();
+    if (ok()) this.finishTurn(p);
   }
 
+  /** Is another bot of this shared turn, ahead of this one in the turn order, still playing? */
+  private botAhead(p: PlayerEntity, token: number): boolean {
+    const t = this.turn!;
+    const mine = t.group.indexOf(p.id);
+    return t.group.some((id, i) => i < mine && this.heroTurns.get(id) === token);
+  }
+
+  /** A hero is done for this turn (or can't go on). Once everyone acting is, the turn moves on. */
+  private finishTurn(e: Entity) {
+    const t = this.turn;
+    if (!t || this.phase !== 'combat') return;
+    if (this.anyActing(e)) {
+      if (!t.group.includes(e.id)) return;
+      this.endOfTurn(e);
+      this.cancelWalk(e.id);
+      t.group = t.group.filter((id) => id !== e.id);
+      delete t.acts[e.id];
+      this.broadcast();
+    } else this.advanceTurn(); // the last one playing: the turn ends for everyone in it
+  }
+
+  /** Everyone still acting is done: their turns end, and the next creature (or group of heroes) begins. */
   private advanceTurn() {
     const t = this.turn;
     if (!t || this.phase !== 'combat') return;
-    const owner = this.entity(this.turnOwner ?? undefined);
-    this.turnOwner = null;
-    if (owner) this.endOfTurn(owner);
+    for (const id of t.group) {
+      const e = this.entity(id);
+      if (e) this.endOfTurn(e);
+      this.cancelWalk(id);
+    }
+    t.group = [];
+    t.acts = {};
     if (this.checkEnd() || !t.order.length) return;
     t.index++;
     if (t.index >= t.order.length) {
@@ -2130,9 +2236,8 @@ export class Game {
 
   handleEndTurn(playerId: string) {
     const p = this.hero(playerId);
-    if (!p || this.phase !== 'combat' || this.current()?.id !== p.id) return;
-    this.cancelWalk(p.id);
-    this.advanceTurn();
+    if (!p || this.phase !== 'combat' || !this.acting(p)) return;
+    this.finishTurn(p);
   }
 
   /** Ends the fight or the run if appropriate. Returns true if the current flow should stop. */
@@ -2396,7 +2501,7 @@ export class Game {
 
     {
       const path = plan.path;
-      for (const step of path.slice(0, this.turn?.movesLeft ?? m.speed)) {
+      for (const step of path.slice(0, this.acts(m)?.moves ?? m.speed)) {
         if (this.occupied(step.x, step.y, m.id)) break;
         const stopped = !ally && this.provokeSentinels(m, step);
         if (!this.entities.includes(m)) return diedMidTurn();
@@ -2697,7 +2802,7 @@ export class Game {
     }
     const i = Math.max(0, t.order.indexOf(m.id));
     const order = [...t.order.slice(i), ...t.order.slice(0, i)];
-    return { me: m, map: this, entities: this.entities, moves: t.movesLeft, difficulty: this.diff, focus, rand: () => rng.next(), round: t.round, order, assign };
+    return { me: m, map: this, entities: this.entities, moves: this.acts(m)?.moves ?? m.speed, difficulty: this.diff, focus, rand: () => rng.next(), round: t.round, order, assign };
   }
 
   private async monsterPlan(m: MonsterEntity, view = this.monsterView(m)): Promise<MonsterPlan> {
@@ -2852,17 +2957,19 @@ export class Game {
 
   /** Extra movement this turn (a dash). Stuck in a net or a web, it's held back until it gets free. */
   private addMoves(e: Entity, n: number) {
-    if (!this.turn) return;
-    if (ROOTED.some((id) => hasStatus(e, id))) this.heldMoves += n;
-    else this.turn.movesLeft += n;
+    const a = this.acts(e);
+    if (!a) return;
+    if (ROOTED.some((id) => hasStatus(e, id))) a.held = (a.held ?? 0) + n;
+    else a.moves += n;
   }
 
   /** Out of a net or a web: on its own turn it gets its held-back movement. */
   private unrooted(e: Entity) {
     if (ROOTED.some((id) => hasStatus(e, id))) return;
-    if (this.turn && this.current()?.id === e.id && this.heldMoves) {
-      this.turn.movesLeft += this.heldMoves;
-      this.heldMoves = 0;
+    const a = this.acts(e);
+    if (a?.held) {
+      a.moves += a.held;
+      a.held = 0;
     }
   }
 
@@ -2965,7 +3072,7 @@ export class Game {
     if (!p || !isSkillId(skillId)) return false;
     if (!['map', 'event', 'rest', 'shop', 'combat'].includes(this.phase)) return false;
     const inCombat = this.phase === 'combat';
-    const reason = skillBlockReason(p, skillId, inCombat, this.turn, this.current()?.id === p.id);
+    const reason = skillBlockReason(p, skillId, inCombat, this.turn ? this.view(p) : null, this.acting(p));
     if (reason) {
       this.whisper(playerId, reason);
       return false;
@@ -2984,9 +3091,10 @@ export class Game {
     const kind = SKILLS[skillId].kind;
     // Before anything changes: who was low (Saint) and who still had your Inspiration (Standing Ovation).
     const lowBefore = res.friends.map((f) => f.hp / f.maxHp);
-    if (inCombat && this.turn) {
+    const acts = inCombat ? this.acts(p) : undefined;
+    if (acts) {
       const ap = apOf(p, skillId, s);
-      this.turn.ap -= ap;
+      acts.ap -= ap;
       if (skillId === 'shove' && ap === 0) p.used.push('turn:free-shove'); // Pile Driver
       if (s.oncePerTurn) p.used.push(`turn:${skillId}`);
       const blood = hpCostOf(p, s);
@@ -3125,10 +3233,11 @@ export class Game {
       for (const m of taunted) this.applyStatus(m, { id: 'taunted', turns: s.taunt.turns }, p);
       if (taunted.length) this.addLog('info', `😤 ${taunted.map((m) => m.name).join(', ')} can't take their eyes off ${p.name}.`);
     }
-    if (this.turn && this.phase === 'combat' && this.current()?.id === p.id) {
+    const mine = this.phase === 'combat' ? this.acts(p) : undefined;
+    if (mine) {
       if (s.dash) this.addMoves(p, s.dash);
       if (s.gainAp) {
-        this.turn.ap += s.gainAp;
+        mine.ap += s.gainAp;
         p.used.push('turn:surge');
       }
     }
@@ -3564,7 +3673,7 @@ export class Game {
       if (refrain && t.kind === 'monster' && !STATUSES[a.id].good) a = { ...a, turns: a.turns + refrain.value };
       if (hasBranch(by, 'inspiring_presence', 'B') && t.kind === 'player' && STATUSES[a.id].good && a.turns < 50) a = { ...a, turns: a.turns + 1 };
     }
-    const turns = a.turns + (t.id === this.turnOwner ? 1 : 0);
+    const turns = a.turns + (this.acting(t) ? 1 : 0);
     const have = t.statuses.find((x) => x.id === a.id);
     if (have) {
       have.turns = Math.max(have.turns, turns);
@@ -3781,9 +3890,10 @@ export class Game {
   /** Momentum: a crit (or, from tier II, a kill) gives 1 AP back, once (or twice) a turn. */
   private momentum(p: PlayerEntity) {
     const m = passiveOf(p, 'momentum');
-    if (!m || !this.turn || this.current()?.id !== p.id || p.used.filter((u) => u === 'turn:momentum').length >= m.value) return;
+    const a = this.acts(p);
+    if (!m || !a || p.used.filter((u) => u === 'turn:momentum').length >= m.value) return;
     p.used.push('turn:momentum');
-    this.turn.ap++;
+    a.ap++;
     this.float(p, '⚡+1 AP', '#f6cf7a');
     if (hasBranch(p, 'momentum', 'B')) this.addMoves(p, 2);
   }
@@ -3838,7 +3948,7 @@ export class Game {
     if (dist(a, t) > 1 && a.kind === 'monster') this.shot(a, t, ELEMENT_COLOR[o.element]);
     // Strike and Fade: the first attack on your own turn, hit or miss, frees up some movement.
     const fade = hero ? passiveOf(hero, 'strike_and_fade') : null;
-    if (hero && fade && this.turn && this.current()?.id === hero.id && !hero.used.includes('turn:fade')) {
+    if (hero && fade && this.acting(hero) && !hero.used.includes('turn:fade')) {
       hero.used.push('turn:fade');
       this.addMoves(hero, fade.value);
       if (hasBranch(hero, 'strike_and_fade', 'B')) this.applyStatus(hero, { id: 'shielded', turns: 1, power: 2 }, hero);
@@ -3857,7 +3967,7 @@ export class Game {
     const notes: string[] = [];
     if (hero && crit) total += this.critExtra(hero, t, o.dmg, forced);
     // Hits this turn (Flurry, Knife Juggler): only your own attacks on your own turn count.
-    const mine = hero && this.turn && this.current()?.id === hero.id;
+    const mine = hero && this.acting(hero);
     if (hero && mine) {
       hero.used.push('turn:hit');
       const n = hero.used.filter((u) => u === 'turn:hit').length;
@@ -3982,22 +4092,22 @@ export class Game {
 
   /** A hero's killing blow: the engines that pay off on a kill. */
   private engineKill(p: PlayerEntity, t: MonsterEntity) {
-    const myTurn = !!this.turn && this.current()?.id === p.id;
+    const acts = this.acts(p); // on their own turn
     const melt = passiveOf(p, 'melt_away');
     if (melt && this.standing(p)) {
       this.applyStatus(p, { id: 'hidden', turns: 2 }, p);
       if (melt.value) this.addMoves(p, melt.value);
-      if (hasBranch(p, 'melt_away', 'A') && myTurn && !p.used.includes('turn:ghost') && this.turn) {
+      if (hasBranch(p, 'melt_away', 'A') && acts && !p.used.includes('turn:ghost')) {
         p.used.push('turn:ghost');
-        this.turn.ap++;
+        acts.ap++;
       }
     }
     if ((passiveOf(p, 'momentum')?.tier ?? 0) >= 2) this.momentum(p);
     const form = passiveOf(p, 'perfect_form');
     if (form && hasBranch(p, 'perfect_form', 'B') && p.used.filter((u) => u === 'turn:perfect').length < form.value) p.used.push('turn:perfect', 'turn:perfect-ready');
-    if (hasBranch(p, 'hunters_snare', 'B') && myTurn && this.turn && !p.used.includes('turn:trophy') && ['netted', 'webbed', 'prone'].some((id) => hasStatus(t, id as StatusId))) {
+    if (hasBranch(p, 'hunters_snare', 'B') && acts && !p.used.includes('turn:trophy') && ['netted', 'webbed', 'prone'].some((id) => hasStatus(t, id as StatusId))) {
       p.used.push('turn:trophy');
-      this.turn.ap++;
+      acts.ap++;
     }
     const angel = passiveOf(p, 'avenging_angel');
     const id = this.casting?.id;
@@ -4006,7 +4116,7 @@ export class Game {
       if (id === 'divine_smite' || any) {
         p.used.push('turn:angel');
         if (id === 'divine_smite') p.slots = Math.min(p.maxSlots, p.slots + 1);
-        if ((angel.tier >= 2 || any) && myTurn && this.turn) this.turn.ap++;
+        if ((angel.tier >= 2 || any) && acts) acts.ap++;
         if (hasBranch(p, 'avenging_angel', 'B')) this.addMoves(p, 3);
         this.addLog('level', `👼 ${p.name}'s vengeance is answered.`);
       }
@@ -4230,13 +4340,11 @@ export class Game {
       if (!again) this.addLog('death', `🩸 ${t.name} falls unconscious! Heal them to get them back up.`);
       else if (again < MAX_DOWNS - 1) this.addLog('death', `🩸 ${t.name} falls unconscious again! Worn down: their death saves start with ${again} failure${again > 1 ? 's' : ''}.`);
       else this.addLog('death', `🩸 ${t.name} falls unconscious again, the ${MAX_DOWNS}th time this fight. It's too much.`);
+      const mine = this.acting(t);
       if (again >= MAX_DOWNS - 1) this.die(t);
       else this.callout(this.randomBot(t), 'down', { ally: t.name });
-      // Went down on their own turn (walked into the fire): the turn is over.
-      if (this.turnOwner === t.id && this.phase === 'combat') {
-        const token = this.turnToken;
-        this.later(token, 800, () => this.advanceTurn());
-      }
+      // Went down on their own turn (walked into the fire): their turn is over.
+      if (mine && this.phase === 'combat') this.later(this.turnToken, 800, () => this.finishTurn(t));
     }
   }
 
@@ -4284,10 +4392,11 @@ export class Game {
   /** Convergence: setting off a combo on your own turn gives AP back, a few times a turn. */
   private combo(p: PlayerEntity) {
     const c = passiveOf(p, 'convergence');
-    if (!c || !this.turn || this.current()?.id !== p.id || p.used.filter((u) => u === 'turn:combo').length >= c.value) return;
+    const a = this.acts(p);
+    if (!c || !a || p.used.filter((u) => u === 'turn:combo').length >= c.value) return;
     p.used.push('turn:combo');
     const n = hasBranch(p, 'convergence', 'B') ? 2 : 1;
-    this.turn.ap += n;
+    a.ap += n;
     this.float(p, `🌈+${n} AP`, '#f6cf7a');
   }
 
@@ -4453,13 +4562,13 @@ export class Game {
     if (thirst) {
       const healed = this.healBy(null, p, thirst.value);
       if (healed) this.addLog('heal', `🩸 ${p.name} drinks in the victory: +${healed} HP.`);
-      if (hasBranch(p, 'bloodthirsty', 'A') && this.turn && this.current()?.id === p.id) this.addMoves(p, 3);
+      if (hasBranch(p, 'bloodthirsty', 'A')) this.addMoves(p, 3);
       if (hasBranch(p, 'bloodthirsty', 'B')) for (const h of this.heroes()) if (h !== p && this.standing(h)) this.healBy(null, h, 2);
     }
-    const myTurn = this.turn && this.current()?.id === p.id;
-    if (myTurn && hasBranch(p, 'opportunist', 'A') && !p.used.includes('turn:executioner')) {
+    const acts = this.acts(p);
+    if (acts && hasBranch(p, 'opportunist', 'A') && !p.used.includes('turn:executioner')) {
       p.used.push('turn:executioner');
-      this.turn!.ap += 2;
+      acts.ap += 2;
       this.addLog('info', `🦊 Executioner! ${p.name} gets 2 AP back.`);
     }
     if (hasBranch(p, 'sentinel', 'B') && !p.used.includes('turn:cleave')) {
@@ -4604,10 +4713,7 @@ export class Game {
     }
     p.saves.fail += r === 1 ? 2 : 1;
     this.addLog('death', `${p.name} death save: ${shown}, failure (${Math.min(3, p.saves.fail)}/3)`);
-    if (p.saves.fail >= 3) {
-      this.die(p);
-      this.advanceTurn();
-    }
+    if (p.saves.fail >= 3) this.die(p);
   }
 
   /** Three failed death saves (or going down a fourth time in one fight): out until the fight is won, then an Injury. */

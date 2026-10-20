@@ -1,7 +1,7 @@
 // Client-side state: the latest snapshot from the server plus local UI state.
 
 import { hotbar, ownedSkill, resolveAim, skillBlockReason, statsOf, SKILLS, type AimResult, type SkillId, type SkillStats } from '../shared/skills.ts';
-import type { Entity, Fx, GameState, PlayerEntity, Pos } from '../shared/types.ts';
+import type { Entity, Fx, GameState, PlayerEntity, Pos, TurnActs } from '../shared/types.ts';
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -52,14 +52,38 @@ export function me(): PlayerEntity | undefined {
   return store.state?.entities.find((e): e is PlayerEntity => e.kind === 'player' && e.playerId === store.playerId);
 }
 
+/**
+ * Who is acting now: a monster or an NPC ally, or the heroes side by side in the order, who play at the same time. Those
+ * losing their turn (down, stunned...) only count while nobody else in it plays.
+ */
+export function actingNow(s: GameState | null = store.state): Entity[] {
+  const t = s?.phase === 'combat' ? s.turn : null;
+  if (!t) return [];
+  const playing = t.group.filter((id) => !t.acts[id]?.lost);
+  return (playing.length ? playing : t.group).map((id) => s!.entities.find((e) => e.id === id)).filter((e): e is Entity => !!e);
+}
+
+/** The first of them (the turn order's highlight, "Waiting for..."). */
 export function currentEntity(): Entity | undefined {
-  const t = store.state?.turn;
-  return t ? store.state?.entities.find((e) => e.id === t.order[t.index]) : undefined;
+  return actingNow()[0];
 }
 
 export function isMyTurn(): boolean {
   const m = me();
-  return !!m && store.state?.phase === 'combat' && currentEntity()?.id === m.id;
+  const t = store.state?.turn;
+  return !!m && store.state?.phase === 'combat' && !!t?.group.includes(m.id) && !t.acts[m.id]?.lost;
+}
+
+/** My movement and AP left this turn. */
+export function myActs(): TurnActs | undefined {
+  const m = me();
+  return m && isMyTurn() ? store.state?.turn?.acts[m.id] : undefined;
+}
+
+/** Changes when a new turn begins (a toast, a cleared walk preview); stays put while the heroes of one turn finish theirs. */
+export function turnKey(s: GameState | null = store.state): string {
+  const t = s?.turn;
+  return t ? `${t.round}:${t.order[t.index]}` : '';
 }
 
 /** The heroes the monsters are hunting (turn.focus: one per pack of monsters), as entity ids. None outside a fight. */
@@ -89,7 +113,7 @@ export function blockReason(id: SkillId): string | null {
   const s = store.state;
   const m = me();
   if (!s || !m) return 'Not in the game';
-  const reason = skillBlockReason(m, id, s.phase === 'combat', s.turn, isMyTurn());
+  const reason = skillBlockReason(m, id, s.phase === 'combat', myActs() ?? null, isMyTurn());
   if (reason) return reason;
   // Hide can't be used with an enemy next to you. resolveAim knows, so the button greys out and says why.
   if (s.phase === 'combat' && mySkillStats(m, id)?.stealth) {

@@ -27,6 +27,9 @@ import {
 import { SKILLS, hotbar, isSkillId, skillBlockReason } from '../shared/skills.ts';
 import type { ClassId, PlayerEntity, PlayerInfo, ShopOffer } from '../shared/types.ts';
 
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
+
 // Phase 6: equipment, consumables, relics, the shop and treasure, through the real Game class. Private members are
 // reached with `any`, the same way tests/elements.test.ts does it. Checkpoints write saves, so they go to a temp folder.
 
@@ -88,8 +91,7 @@ function fight(classes: ClassId[] = ['wizard', 'fighter']) {
   });
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 3 } } };
   const monster = (type: string, x: number, y: number, hp = 100) => {
     p.spawnMonster(type, { x, y }, 1);
     const m = p.entities.at(-1);
@@ -355,7 +357,7 @@ test('with no fire bombs left, the skill is blocked with None left', () => {
   const goblin = c.monster('goblin', 5, 3);
   withRandom(MID, () => c.g.handleSkill(c.pid, 'fire_bomb', { x: goblin.x, y: goblin.y }));
   assert.deepEqual(hero.bag, []);
-  assert.equal(skillBlockReason(hero, 'fire_bomb', true, c.p.turn, true), 'None left');
+  assert.equal(skillBlockReason(hero, 'fire_bomb', true, mine(c.p), true), 'None left');
 });
 
 test('an ether restores one slot outside a fight and is used up', () => {

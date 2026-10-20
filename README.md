@@ -44,6 +44,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - 👑 **Boss:** ends the act. Beat all 3 acts to win.
 - **Fights:**
   - On your turn you get movement (the blue tiles) and **⚡ 3 AP**. Attacks and most spells cost 2 AP, quick skills 1, the biggest spells (Fireball, Shatter...) 3. AP you don't spend carries over, but a turn starts with at most 5. Walking is free; **👟 Dash** (everyone, 1 AP) adds 3 tiles.
+  - **🤝 Shared turns:** heroes next to each other in the turn order play at the same time (like Baldur's Gate 3). Each of you moves and acts with your own movement and AP, in any order, and ends your own turn; the monsters wait until all of you have. A monster or an NPC ally always acts alone.
   - **🧱 Block** soaks damage before HP and temporary HP, until the start of the turn of whoever gave it. **Brace** (everyone, 1 AP, once per turn) gives 1d6; Fighter and Paladin skills, some gear and shield-carrying monsters have more.
   - Click a tile to walk, or use WASD / arrow keys (Q E Z C for diagonals). Press **Space** to end your turn.
   - **Attack:** click a monster; your basic weapon attack in range is picked for you.

@@ -15,7 +15,10 @@ import { CHARGE_MOVES, CLASSES, MONSTERS, ORDER_EVERY, ORDER_RANGE, maxHpFor } f
 import { CLEANSED, ROOTED, ownedSkill, resolveAim, skillBlockReason, statsAt, statsOf, type StatusId } from '../shared/skills.ts';
 import { attackAdvantage } from '../shared/tactics.ts';
 import type { FieldLike } from '../shared/surfaces.ts';
-import type { ClassId, Entity, MonsterEntity, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
+import type { ClassId, Entity, MonsterEntity, PlayerEntity, PlayerInfo, TurnView } from '../shared/types.ts';
+
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
 
 // Phase 12: monster abilities. The advantage rules and the monster and hero AI are tested on hand-made boards, the fight
 // effects through the real Game class (private members are reached with `any`, as in tests/elites.test.ts). Dice are
@@ -35,7 +38,7 @@ const status = (id: StatusId, turns = 2) => ({ id, turns });
 const has = (e: Entity, id: StatusId) => e.statuses.some((s) => s.id === id);
 const powerOf = (e: Entity, id: StatusId) => e.statuses.find((s) => s.id === id)?.power;
 const ids = (...es: Entity[]) => es.map((e) => e.id);
-const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
+const freshTurn = (): TurnView => ({ order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 6, ap: 3 });
 
 /** A hero of a class at a tile, level 1 (override with `extra`). */
 function hero(classId: ClassId, x: number, y: number, extra: Partial<PlayerEntity> = {}): PlayerEntity {
@@ -106,8 +109,7 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 3 } } };
   p.runMonster = async () => {}; // a monster's turn would be played on real timers: the tests drive the rules themselves
   const foe = (type: string, x: number, y: number): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
@@ -123,11 +125,11 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
 /** Starts this creature's turn (the way advanceTurn would). */
 function startTurn(p: any, e: Entity) {
   p.turn.index = p.turn.order.indexOf(e.id);
-  p.beginTurn();
+  p.beginTurn([e.id]);
 }
 
 const logged = (p: any, re: RegExp) => p.log.some((l: { text: string }) => re.test(l.text));
-const movesLeft = (p: any): number => p.turn.movesLeft;
+const movesLeft = (p: any): number => mine(p).moves;
 /** A hero with plenty of HP, so a few Wight hits cannot take them down. */
 function sturdy(h: PlayerEntity) {
   h.bonusHp = 100;
@@ -153,12 +155,12 @@ test('netted: it cannot move on its turn, and Cut Free on itself gives the movem
   ann.statuses.push(status('netted'));
   startTurn(p, ann);
   assert.equal(movesLeft(p), 0);
-  assert.equal(p.heldMoves, ann.speed, "the turn's movement is held back, not lost");
+  assert.equal((mine(p).held ?? 0), ann.speed, "the turn's movement is held back, not lost");
   assert.equal(p.handleSkill(ann.playerId, 'cut_free', ann.id), true);
   assert.ok(!has(ann, 'netted'));
   assert.equal(movesLeft(p), ann.speed);
-  assert.equal(p.turn.ap, 2, 'Cut Free costs 1 AP');
-  assert.equal(p.heldMoves, 0);
+  assert.equal(mine(p).ap, 2, 'Cut Free costs 1 AP');
+  assert.equal((mine(p).held ?? 0), 0);
 });
 
 test('Cut Free is refused on someone who is not stuck, and works on a net or a web', () => {
@@ -228,7 +230,7 @@ test('webbed and netted are cleansed by Purifying Touch, and a hero who cleanses
   assert.equal(p.handleSkill(bob.playerId, 'healing_touch', ann.id), true);
   assert.deepEqual(ann.statuses, []);
   assert.equal(movesLeft(p), 0, 'cleansing a friend does not free the caster');
-  p.turn.ap = 3;
+  mine(p).ap = 3;
   bob.skills[0].cd = 0;
   assert.equal(p.handleSkill(bob.playerId, 'healing_touch', bob.id), true);
   assert.ok(!has(bob, 'netted'));
@@ -422,7 +424,7 @@ test('Hold the line! shields the friends within ORDER_RANGE and nobody farther, 
   const near = foe('goblin', 1 + ORDER_RANGE, 1);
   const far = foe('goblin', 2 + ORDER_RANGE, 1);
   assert.equal(dist(leader, near), ORDER_RANGE);
-  p.turnOwner = leader.id;
+  p.turn.group = [leader.id];
   p.giveOrder(leader, { id: 'hold' });
   for (const f of [leader, near]) assert.equal(powerOf(f, 'shielded'), 2, `${f.name} is shielded`);
   assert.ok(!has(far, 'shielded'), 'one tile too far');
@@ -441,7 +443,7 @@ test('Kill that one! marks the target (advantage for everyone) and starts the co
   const [ann, bob] = heroes;
   const leader = foe('hobgoblin', 1, 1);
   const goblin = foe('goblin', 6, 3);
-  p.turnOwner = leader.id;
+  p.turn.group = [leader.id];
   p.giveOrder(leader, { id: 'kill', target: ann.id });
   assert.equal(ann.statuses.find((s) => s.id === 'marked')?.turns, 2);
   assert.ok(!has(bob, 'marked'));
@@ -454,7 +456,7 @@ test('Charge! gives friends in range +3 movement and a stack of Rallied, and sta
   const { p, foe } = battle();
   const leader = foe('hobgoblin', 1, 1);
   const goblin = foe('goblin', 4, 1);
-  p.turnOwner = leader.id;
+  p.turn.group = [leader.id];
   p.giveOrder(leader, { id: 'charge' });
   for (const f of [leader, goblin]) assert.ok(has(f, 'charging') && powerOf(f, 'rallied') === 1);
   p.giveOrder(leader, { id: 'charge' });

@@ -11,7 +11,10 @@ import { startingSkills } from '../server/progression.ts';
 import { describeStats } from '../shared/items.ts';
 import { MONSTERS } from '../shared/rules.ts';
 import { blockOf, describeSkill, skillBlockReason, statsAt } from '../shared/skills.ts';
-import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
+import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnView } from '../shared/types.ts';
+
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
 
 // 🧱 Block (decided 2026-10-19, Slay the Spire style): skills, gear and shields put up Block; it soaks damage before
 // temporary HP and runs out at the start of the turn of whoever gave it. Rules run through the real Game class (private
@@ -56,8 +59,7 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 0 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 0 } } };
   p.runMonster = async () => {};
   const foe = (type: string, x: number, y: number, hp = 100): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
@@ -72,8 +74,7 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
 
 function startTurn(p: any, e: Entity) {
   p.turn.index = p.turn.order.indexOf(e.id);
-  p.turnOwner = e.id;
-  p.beginTurn();
+  p.beginTurn([e.id]);
 }
 
 // ---------------------------------------------------------------- data
@@ -113,13 +114,13 @@ test('Brace: 1d6 Block until your next turn, once per turn', () => {
   startTurn(p, ann);
   assert.equal(middle(() => p.handleSkill(ann.playerId, 'brace')), true);
   assert.equal(blockOf(ann), 4);
-  assert.equal(p.turn.ap, 2);
-  assert.equal(skillBlockReason(ann, 'brace', true, p.turn, true), 'Only once per turn');
+  assert.equal(mine(p).ap, 2);
+  assert.equal(skillBlockReason(ann, 'brace', true, mine(p), true), 'Only once per turn');
   startTurn(p, heroes[1]); // other turns come and go: it holds
   assert.equal(blockOf(ann), 4);
   startTurn(p, ann);
   assert.equal(blockOf(ann), 0, 'gone at the start of your next turn');
-  assert.equal(skillBlockReason(ann, 'brace', true, p.turn, true), null, 'and Brace is ready again');
+  assert.equal(skillBlockReason(ann, 'brace', true, mine(p), true), null, 'and Brace is ready again');
 });
 
 test("a Paladin's Bulwark on a friend lasts until the Paladin's next turn, not the friend's", () => {
@@ -176,7 +177,7 @@ test('going down, a new fight, or the giver leaving the fight clears Block', () 
 
 // ---------------------------------------------------------------- the hero AI
 
-function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn: TurnState): HeroView {
+function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn: TurnView): HeroView {
   const tiles = ['#'.repeat(12), ...Array.from({ length: 6 }, () => `#${'.'.repeat(10)}#`), '#'.repeat(12)].join('');
   const all = [...heroes, ...monsters];
   return {
@@ -184,7 +185,7 @@ function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[]
     occupied: (x, y, exceptId) => all.some((e) => e.x === x && e.y === y && e.id !== exceptId && !(e.kind === 'player' && e.dead)),
   };
 }
-const turn = (ap: number): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 0, ap });
+const turn = (ap: number): TurnView => ({ order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 0, ap });
 
 test("a Paladin with 1 AP left Bulwarks the hurt friend an ogre is about to hit, not a healthy one out of reach", () => {
   const { heroes, foe } = battle();

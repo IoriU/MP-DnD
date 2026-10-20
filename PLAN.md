@@ -806,6 +806,13 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
     - Bot runs (12, all difficulties, 3-6 heroes): 12/12 won, 0 anomalies, 0 rejected actions, 0 server errors. Main engines at the end: fighters Guardian 8 / Weapon Master 4, wizards Elementalist 5 / Geomancer 2 / Evoker 1, bards Crescendo 5, clerics Order 4, paladins Protection 4, rogues Shadow 4... Engines at work: 9 Finales, 7 raised covers, 6 crushed against walls, 5 shattered ice, 4 knockdown hits, 2 Unleashes.
     - **For Phase 13:** no Duelist build came out (counters rarely fire on bots), and some payoffs never showed in 12 runs (Toxic Catalyst, Knife Juggler, Conductor's arcs, Madness, Split Shot, Unkillable): check the bots pick and use them. Hard is still won every time.
   - [x] **Step 4: Phase 13 balance** on the finished design (2026-10-20): see Phase 13 below. All that's left is your playtest.
+- [x] **🤝 Shared hero turns** (your call, 2026-10-20, BG3 style, built before the playtest): heroes side by side in the turn order play at the same time. Each moves and acts with their own movement and AP, in any order, and ends their own turn; the turn moves on once all of them have. Monsters and NPC allies still act one by one. The point is pace: two people no longer wait for each other when they roll next to each other (about 3 fights in 10 with random initiative). The other option, the whole party acting as one block every round, is kept in reserve in case the pace is still slow.
+  - Server: `TurnState.group` (who is acting now) and `TurnState.acts` (each one's movement and AP) replace the single `movesLeft` / `ap`. A hero who loses their turn (down, stunned, groggy) stays part of it without acting and their turn ends with everyone's, so a friend in the same turn who helps them up spends the Groggy on this turn (as when a friend got to them first before).
+  - Bots in a shared turn take theirs one after another, in turn order; the people in it play whenever they like. All at once, the bots ran to the same downed friend and at monsters another was about to kill: Hard fell from 50% to about 30% in two batches.
+  - A walk stops, with a warning, at a tile that turned dangerous after it was planned (a friend's fire, ice or lightning in the same turn); bots plan again. Without it the first batch had 79% more shock hits.
+  - Client: everyone in the shared turn is highlighted in the turn order, ringed on the board and marked on the party cards; "🎲 Your turn, together with Bob!", "👣 6 moves ⚡ 3 AP together with Bob", "Waiting for Ann and Bob". Checked with two players in two browser tabs.
+  - Tests: `tests/turns.test.ts` (11); the older tests start one creature's turn at a time (`beginTurn([id])`).
+  - Bot runs on the final version: 144 runs, 📖 Story 100%, ⚔️ Normal 79%, 💀 Hard 40% (before shared turns: 96 / 85 / 50%), 0 anomalies, no stuck fights. With the two batches just before the Groggy fix (432 runs): Normal 80%, Hard 45%. Normal may sit a few points lower than before (a downed hero now makes the death save as the shared turn starts, before a friend in it can heal them); one batch of 48 runs swings ±8 points, so this waits for the playtest.
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)
 - [ ] Traps and interactive room props (doors, levers, collapsing floors)
@@ -896,4 +903,5 @@ Started 2026-10-20, right after the playtest redesign (your call: balance first,
 ## Known issues / tech debt
 
 - Balance is tuned against bot runs (Phase 13); the playtest with real people is still to come.
+- Shared hero turns: two people walking at once can block each other's path (the walk just stops; click again).
 - `window.delvers` debug handle is exposed in the client (handy, harmless).

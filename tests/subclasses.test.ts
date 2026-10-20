@@ -11,7 +11,10 @@ import { applyPick, dealOffer, makeOffer, recalcHero, startingSkills } from '../
 import { makeRng } from '../server/rng.ts';
 import { AP_GAIN } from '../shared/rules.ts';
 import { SKILLS, blockOf, countKind, engineOf, hpCostOf, isSignature, limitFor, resolveAim, skillBlockReason, statsAt, type AimResult } from '../shared/skills.ts';
-import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
+import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnView } from '../shared/types.ts';
+
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
 
 // Subclasses, old style. Since 2026-10-19 there is no subclass pick (builds are engines, shared/engines.ts, tested in
 // tests/engines.test.ts): levels and victories give skill cards, and no offer has a subclass card. What's left here is
@@ -74,8 +77,7 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 0 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 0 } } };
   p.runMonster = async () => {};
   const foe = (type: string, x: number, y: number, hp = 100): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
@@ -90,8 +92,7 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
 
 function startTurn(p: any, e: Entity) {
   p.turn.index = p.turn.order.indexOf(e.id);
-  p.turnOwner = e.id;
-  p.beginTurn();
+  p.beginTurn([e.id]);
 }
 
 /** A hand-made hero for the level-up picks (no Game needed), built the way tests/progression.test.ts does it. */
@@ -106,7 +107,7 @@ function progHero(classId: ClassId, level = 1): PlayerEntity {
   return p;
 }
 
-function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn: TurnState): HeroView {
+function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn: TurnView): HeroView {
   const tiles = ['#'.repeat(12), ...Array.from({ length: 6 }, () => `#${'.'.repeat(10)}#`), '#'.repeat(12)].join('');
   const all = [...heroes, ...monsters];
   return {
@@ -114,7 +115,7 @@ function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[]
     occupied: (x, y, exceptId) => all.some((e) => e.x === x && e.y === y && e.id !== exceptId && !(e.kind === 'player' && e.dead)),
   };
 }
-const turn = (ap: number): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 0, ap });
+const turn = (ap: number): TurnView => ({ order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 0, ap });
 
 // ---------------------------------------------------------------- picking a subclass
 
@@ -195,15 +196,15 @@ test('Blood Price (Berserker): costs HP for 1 AP back, and only once per turn', 
   const cost = hpCostOf(ann, statsAt('blood_price'));
   assert.ok(cost > 0);
   startTurn(p, ann);
-  assert.equal(p.turn.ap, AP_GAIN);
+  assert.equal(mine(p).ap, AP_GAIN);
   const hp = ann.hp;
   assert.equal(p.handleSkill(ann.playerId, 'blood_price'), true);
   assert.equal(ann.hp, hp - cost, 'pays hpCostOf HP');
-  assert.equal(p.turn.ap, 4, 'no AP spent, and 1 AP back');
+  assert.equal(mine(p).ap, 4, 'no AP spent, and 1 AP back');
   assert.equal(p.handleSkill(ann.playerId, 'blood_price'), false, 'a second use is refused');
-  assert.equal(skillBlockReason(ann, 'blood_price', true, p.turn, true), 'Only once per turn');
+  assert.equal(skillBlockReason(ann, 'blood_price', true, mine(p), true), 'Only once per turn');
   assert.equal(ann.hp, hp - cost, 'and it does not charge again');
-  assert.equal(p.turn.ap, 4);
+  assert.equal(mine(p).ap, 4);
 });
 
 // ---------------------------------------------------------------- Order: Voice of Authority
@@ -220,7 +221,7 @@ test('Voice of Authority (Order cleric): a friend the cleric buffs starts their 
   assert.ok(bold, 'the friend is Emboldened');
   assert.equal(bold.power, 1);
   startTurn(p, ann);
-  assert.equal(p.turn.ap, AP_GAIN + 1, '3 + 1');
+  assert.equal(mine(p).ap, AP_GAIN + 1, '3 + 1');
   assert.equal(ann.statuses.some((s: { id: string }) => s.id === 'emboldened'), false, 'used up');
 });
 

@@ -16,7 +16,10 @@ import {
   type SkillId, type SkillKind, type StatusId,
 } from '../shared/skills.ts';
 import { damageFactor, type FieldLike } from '../shared/surfaces.ts';
-import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
+import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnView } from '../shared/types.ts';
+
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
 
 // Phase 12: the Barbarian, Ranger, Paladin and Bard, and the passive perk system. Class data and perks are plain data checks,
 // fight effects run through the real Game class (private members reached with `any`, as in tests/abilities.test.ts) with
@@ -220,8 +223,7 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 3 } } };
   p.runMonster = async () => {}; // a monster's turn would be played on real timers: the tests drive the rules themselves
   const foe = (type: string, x: number, y: number, hp?: number): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
@@ -238,15 +240,15 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
 /** Starts this creature's turn (the way advanceTurn would). */
 function startTurn(p: any, e: Entity) {
   p.turn.index = p.turn.order.indexOf(e.id);
-  p.beginTurn();
+  p.beginTurn([e.id]);
 }
 
 /** It is the hero's turn with 3 AP, the skill ready: they use it on a target with these dice (d20, d20,
  * then the damage dice). Returns the HP the target lost. */
 function use(p: any, h: PlayerEntity, skill: SkillId, target: Entity | undefined, rolls: number[] = []): number {
   p.turn.index = p.turn.order.indexOf(h.id);
-  p.turnOwner = h.id;
-  p.turn.ap = 3;
+  p.turn.group = [h.id];
+  p.turn.acts[h.id] = { moves: p.turn.acts[h.id]?.moves ?? 6, ap: 3 };
   h.skills.forEach((s) => s.id === skill && (s.cd = 0));
   const hp = target?.hp ?? 0;
   const said: string[] = [];
@@ -269,7 +271,7 @@ test('Rage: a Raging hero (power 2, 3 with tier II) adds the power to melee hits
   const [ann] = heroes;
   assert.equal(use(p, ann, 'rage', undefined), 0);
   assert.equal(ann.statuses.find((s) => s.id === 'raging')?.power, 2);
-  assert.equal(p.turn.ap, 2, 'Rage costs 1 AP');
+  assert.equal(mine(p).ap, 2, 'Rage costs 1 AP');
   ann.statuses = [];
   ann.skills.find((s) => s.id === 'rage')!.tier = 2;
   use(p, ann, 'rage', undefined);
@@ -439,12 +441,12 @@ test('a monster hit by Ensnaring Shot cannot move on its turn, and a miss leaves
   const ogre = foe('ogre', 8, 3, 200);
   assert.equal(use(p, ann, 'ensnaring_shot', ogre, [showing(1), showing(1)]), 0, 'a natural 1');
   startTurn(p, ogre);
-  assert.equal(p.turn.movesLeft, ogre.speed, 'free to walk');
+  assert.equal(mine(p).moves, ogre.speed, 'free to walk');
   assert.ok(use(p, ann, 'ensnaring_shot', ogre, [...HIT, showing(3, 8)]) > 0);
   assert.ok(has(ogre, 'netted'));
   startTurn(p, ogre);
-  assert.equal(p.turn.movesLeft, 0, 'netted: no movement');
-  assert.equal(p.heldMoves, ogre.speed, 'the movement is held back, not lost (Cut Free gives it back)');
+  assert.equal(mine(p).moves, 0, 'netted: no movement');
+  assert.equal((mine(p).held ?? 0), ogre.speed, 'the movement is held back, not lost (Cut Free gives it back)');
   assert.equal(p.tryMove(ogre, { x: ogre.x + 1, y: ogre.y }), false);
 });
 
@@ -457,7 +459,7 @@ test('Trip Attack knocks a monster Prone, and it spends half its movement gettin
   assert.ok(has(ogre, 'prone'));
   startTurn(p, ogre);
   assert.ok(!has(ogre, 'prone'));
-  assert.equal(p.turn.movesLeft, Math.floor(ogre.speed / 2));
+  assert.equal(mine(p).moves, Math.floor(ogre.speed / 2));
   assert.ok(p.log.some((l: { text: string }) => /gets back up/.test(l.text)));
   use(p, ann, 'trip_attack', ogre, [showing(1), showing(1)]);
   assert.ok(!has(ogre, 'prone'), 'a miss trips nobody');
@@ -469,9 +471,9 @@ const map = ((): FieldLike => {
   const tiles = Array.from({ length: 12 * 8 }, (_, i) => (i % 12 === 0 || i < 12 || i % 12 === 11 || i >= 84 ? '#' : '.')).join('');
   return { width: 12, height: 8, tiles, ground: {}, clouds: {}, props: {} };
 })();
-const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
+const freshTurn = (): TurnView => ({ order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 6, ap: 3 });
 /** The turn after the hero's action is spent (so only the bonus action is left). */
-const acted = (): TurnState => ({ ...freshTurn(), ap: 1 });
+const acted = (): TurnView => ({ ...freshTurn(), ap: 1 });
 
 function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn = freshTurn()): HeroView {
   const all = [...heroes, ...monsters];

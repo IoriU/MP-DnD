@@ -138,13 +138,33 @@ export interface PlayerInfo {
 export interface TurnState {
   order: string[]; // entity ids, highest initiative first
   init: Record<string, number>;
-  index: number;
+  index: number; // the last of the creatures acting now (the turn moves on from there)
   round: number;
-  movesLeft: number;
-  ap: number; // action points the current hero has left (0 on monster turns; shared/rules.ts AP_GAIN, AP_MAX)
+  /**
+   * Who is acting now: a monster or an NPC ally alone, or the heroes side by side in the order, who play at the same time
+   * (BG3 style). A hero leaves the list when they end their turn; the turn moves on when it's empty.
+   */
+  group: string[];
+  /** The movement and AP each of them has left. */
+  acts: Record<string, TurnActs>;
   focus?: string[]; // the heroes the monsters hunt (entity ids): one per pack, more in bigger parties (server/monsterai.ts)
   allyFocus?: string | null; // the NPC allies' target
 }
+
+/** One creature's share of the turn. */
+export interface TurnActs {
+  moves: number;
+  ap: number; // action points left (0 for monsters; shared/rules.ts AP_GAIN, AP_MAX)
+  held?: number; // movement held back while stuck in a net or a web (Cut Free gives it back)
+  /**
+   * Loses this turn (down, stunned, frozen, surprised, groggy): it stays part of the turn without acting, and its turn ends
+   * with everyone's. Helped up meanwhile, the Groggy is spent on this turn, as if a friend had got to them first.
+   */
+  lost?: boolean;
+}
+
+/** The turn as one hero sees it (the hero AI): the shared turn plus their own movement and AP. */
+export type TurnView = TurnState & { movesLeft: number; ap: number };
 
 export type LogKind = 'info' | 'hit' | 'miss' | 'crit' | 'heal' | 'death' | 'chat' | 'system' | 'loot' | 'level' | 'say'; // say: a monster bark
 

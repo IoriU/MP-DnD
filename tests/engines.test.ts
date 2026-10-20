@@ -18,6 +18,9 @@ import { CARD_RARITIES, ENGINES, ENGINE_IDS, enginesOf, type EngineId } from '..
 import { apOf, blockOf, cardRarity, countKind, engineOf, isSkillId, limitFor, SKILLS, stacksOf, statsAt, type SkillId } from '../shared/skills.ts';
 import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo } from '../shared/types.ts';
 
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
+
 const saves = fs.mkdtempSync(path.join(os.tmpdir(), 'delvers-engines-'));
 process.env.DELVERS_SAVES = saves;
 const games: Game[] = [];
@@ -87,8 +90,7 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 0 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 0 } } };
   p.runMonster = async () => {};
   const foe = (type: string, x: number, y: number, hp = 100): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
@@ -103,9 +105,8 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
 
 function startTurn(p: any, e: Entity) {
   p.turn.index = p.turn.order.indexOf(e.id);
-  p.turnOwner = e.id;
-  p.beginTurn();
-  p.turn.ap = Math.max(p.turn.ap, 9); // plenty of AP for the test's casts; the cost rules have their own tests
+  p.beginTurn([e.id]);
+  mine(p).ap = Math.max(mine(p).ap, 9); // plenty of AP for the test's casts; the cost rules have their own tests
 }
 
 /** Effects that wait on a timer (Crushing Force's hurt) are collected, and `flush()` runs them now. */

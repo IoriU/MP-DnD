@@ -55,8 +55,7 @@ function bossFight(act = 1, classes: ClassId[] = ['fighter', 'cleric', 'wizard']
   p.run = { act, maxAct: 3, actName: ACTS[act - 1].name, map: generateActMap(act, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'boss';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 0 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 0 } } };
   p.runMonster = async () => {};
   const spawn = (type: string, x: number, y: number): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);

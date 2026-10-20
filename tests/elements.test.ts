@@ -14,6 +14,9 @@ import { Game } from '../server/game.ts';
 import { makeRng } from '../server/rng.ts';
 import { generateRoom, type RoomLayout } from '../server/room.ts';
 
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
+
 // Scripted fights through the real Game class. The Game keeps its battlefield and turn state private, so the tests
 // reach in with `any` to set up a controlled room, then drive it through the same handlers the sockets use.
 
@@ -80,8 +83,7 @@ function arena(opts: { classes?: ClassId[]; rows?: string[] } = {}) {
   p.phase = 'combat';
   p.roomKind = 'combat';
   p.entities = [...heroes];
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 3 } } };
 
   const at = (x: number, y: number) => y * g.width + x;
   const monster = (type: string, x: number, y: number, o: { hp?: number; ac?: number } = {}): MonsterEntity => {
@@ -198,7 +200,7 @@ test('cold: dry creatures are Chilled then Frozen, Wet ones freeze at once, fire
   a.p.turn.order = [a.hero.id, a.sentinel.id];
   a.p.turn.index = 0;
   a.p.beginTurn();
-  assert.equal(a.p.turn.movesLeft, Math.floor(a.hero.speed / 2));
+  assert.equal(mine(a.p).moves, Math.floor(a.hero.speed / 2));
   a.g.dispose();
 });
 
@@ -209,7 +211,7 @@ test('a frozen hero cannot walk or cast', () => {
   a.g.handleStep(a.pid, 0, 1);
   assert.deepEqual([a.hero.x, a.hero.y], [2, 3]);
   assert.equal(a.g.handleSkill(a.pid, 'dagger', m.id), false);
-  assert.equal(a.p.turn.ap, 3);
+  assert.equal(mine(a.p).ap, 3);
   assert.equal(m.hp, 100);
 });
 
@@ -222,7 +224,7 @@ test('walking into fire hurts and sets you Burning', () => {
   assert.deepEqual([a.hero.x, a.hero.y], [3, 3]);
   assert.equal(a.hero.hp, 36, '1d4 fire (a 4)');
   assert.ok(has(a.hero, 'burning'));
-  assert.equal(a.p.turn.movesLeft, 5);
+  assert.equal(mine(a.p).moves, 5);
   assert.ok(logged(a, /caught in the flames/));
 });
 
@@ -254,7 +256,7 @@ test('click-to-walk goes around fire when the detour fits in the movement, and s
   around.hero.x = 1;
   around.hero.y = 3;
   fire(around);
-  around.p.turn.movesLeft = 14;
+  mine(around.p).moves = 14;
   around.g.handleMove(around.pid, { x: 10, y: 3 });
   const rest = plan(around);
   assert.ok(rest.length > 0 && rest.every((s) => !(s.x === 5 && s.y === 3)), 'it detours');
@@ -266,7 +268,7 @@ test('click-to-walk goes around fire when the detour fits in the movement, and s
   through.hero.x = 1;
   through.hero.y = 3;
   fire(through);
-  through.p.turn.movesLeft = 9;
+  mine(through.p).moves = 9;
   through.g.handleMove(through.pid, { x: 10, y: 3 });
   assert.ok(plan(through).some((s) => s.x === 5 && s.y === 3), 'no time for the detour: straight through the fire');
   through.g.dispose();
@@ -509,7 +511,7 @@ test('Grease then Fire Bolt: a combo across two actions', () => {
   assert.equal(gid(a, 9, 6), undefined);
   assert.equal(A.hp + B.hp + C.hp, 300, 'Grease hurts nobody');
   assert.equal(a.hero.slots, 4);
-  a.p.turn.ap = 3;
+  mine(a.p).ap = 3;
   withRandom(MID, () => a.g.handleSkill(a.pid, 'fire_bolt', A.id));
   assert.ok(has(A, 'burning') && has(B, 'burning'), 'everyone in the grease burns');
   assert.ok(!has(C, 'burning'));
@@ -571,7 +573,7 @@ test('Fire Bolt aimed at an oil barrel explodes it: the tile opens up, the barre
   assert.ok(has(next, 'burning'));
   assert.equal(far.hp, 100);
   assert.equal(a.hero.hp, 40);
-  assert.equal(a.p.turn.ap, 1);
+  assert.equal(mine(a.p).ap, 1);
   assert.ok(logged(a, /hits the Oil Barrel with Fire Bolt/));
   assert.ok(logged(a, /It explodes/));
 });
@@ -606,7 +608,7 @@ test('a barrel out of range, or behind smoke, cannot be targeted and costs nothi
   const a = arena();
   a.prop(9, 3, 'barrel');
   assert.equal(a.g.handleSkill(a.pid, 'dagger', { x: 9, y: 3 }), false, 'a dagger reaches 4 tiles');
-  assert.equal(a.p.turn.ap, 3);
+  assert.equal(mine(a.p).ap, 3);
   assert.equal(a.g.props[a.at(9, 3)], 'barrel');
   a.cloud(5, 3, 'smoke');
   assert.equal(a.g.handleSkill(a.pid, 'fire_bolt', { x: 9, y: 3 }), false, 'no line of sight through smoke');
@@ -621,7 +623,7 @@ test('smoke blocks targeting through the game too', () => {
   const m = a.monster('goblin', 7, 3);
   a.cloud(4, 3, 'smoke');
   assert.equal(a.g.handleSkill(a.pid, 'fire_bolt', m.id), false);
-  assert.equal(a.p.turn.ap, 3);
+  assert.equal(mine(a.p).ap, 3);
   assert.equal(m.hp, 100);
   delete a.g.clouds[a.at(4, 3)];
   assert.equal(withRandom(MID, () => a.g.handleSkill(a.pid, 'fire_bolt', m.id)), true);
@@ -780,11 +782,11 @@ test('the field ticks when the round turns over (not before): fire burns out, ic
   a.cloud(7, 5, 'smoke', 3);
   a.p.turn.order = [a.hero.id, a.ally.id, a.sentinel.id];
   a.p.turn.index = 2;
-  a.p.turnOwner = a.sentinel.id;
+  a.p.turn.group = [a.sentinel.id];
 
   withRandom(MID, () => a.p.advanceTurn());
   assert.equal(a.p.turn.round, 2);
-  assert.equal(a.p.turn.index, 0);
+  assert.deepEqual(a.p.turn.group, [a.hero.id, a.ally.id], 'a new round: Ann and Bob, side by side in the order, share the turn');
   assert.equal(gid(a, 2, 3), undefined, 'a fire with 1 turn is gone');
   assert.equal(a.hero.hp, 40, 'so Ann is not burned at the start of her turn');
   assert.equal(a.g.ground[a.at(2, 4)]!.turns, 1);
@@ -795,7 +797,7 @@ test('the field ticks when the round turns over (not before): fire burns out, ic
   assert.equal(a.g.clouds[a.at(6, 5)], undefined);
   assert.equal(a.g.clouds[a.at(7, 5)]!.turns, 2);
 
-  withRandom(MID, () => a.p.advanceTurn()); // Ann -> Bob, mid-round: no tick
+  withRandom(MID, () => a.p.advanceTurn()); // Ann and Bob -> the sentinel, mid-round: no tick
   assert.equal(a.p.turn.round, 2);
   assert.equal(a.g.ground[a.at(2, 4)]!.turns, 1, 'no tick mid-round');
   assert.equal(a.ally.hp, 37, 'Bob starts his turn in the flames');
@@ -811,7 +813,7 @@ test('stepping onto ice: a failed DEX save ends your movement, a good one keeps 
   slip.ground(3, 3, 'ice', 3);
   withRandom(LOW, () => slip.g.handleStep(slip.pid, 1, 0));
   assert.deepEqual([slip.hero.x, slip.hero.y], [3, 3], 'you do get onto the ice');
-  assert.equal(slip.p.turn.movesLeft, 0, 'but you fall and lose the rest of your movement');
+  assert.equal(mine(slip.p).moves, 0, 'but you fall and lose the rest of your movement');
   assert.ok(logged(slip, /slips on the ice/));
   slip.g.handleStep(slip.pid, 1, 0);
   assert.equal(slip.hero.x, 3, 'no more steps this turn');
@@ -819,7 +821,7 @@ test('stepping onto ice: a failed DEX save ends your movement, a good one keeps 
   const steady = arena();
   steady.ground(3, 3, 'ice', 3);
   withRandom(HIGH, () => steady.g.handleStep(steady.pid, 1, 0));
-  assert.equal(steady.p.turn.movesLeft, 5);
+  assert.equal(mine(steady.p).moves, 5);
   assert.ok(!logged(steady, /slips/));
 });
 
@@ -839,7 +841,7 @@ test('Smoke Bomb: you land next to the target in a cloud of smoke, hidden, with 
   }
   assert.equal(a.g.clouds[a.at(2, 3)], undefined, 'nothing where you started');
   assert.ok(has(a.hero, 'hidden'));
-  assert.equal(a.p.turn.movesLeft, 9);
+  assert.equal(mine(a.p).moves, 9);
 });
 
 test('a death burst waits for the spell that caused it: a Fire Bolt kill leaves the poison unlit, an Inferno kill sets it off', () => {

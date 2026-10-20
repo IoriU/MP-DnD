@@ -9,7 +9,7 @@ import { dist, hasLOS, type MapLike } from './grid.ts';
 import { CLASSES, HELP_UP_HP, MAX_CANTRIPS, MAX_SPELLS, TIER3_LEVEL, passiveSlots, profBonus, saveDc, sneakDice, statMod, type Dice, type Stat } from './rules.ts';
 import { ITEMS, describeStats, gearBonus, gearDef, isItemId, type GearStats, type ItemId, type Rarity, type Slot } from './items.ts';
 import type { CloudId, GroundId, PropMap } from './surfaces.ts';
-import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, Pos, TurnState } from './types.ts';
+import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, Pos } from './types.ts';
 import { SUBCLASSES, type SubclassId } from './subclasses.ts';
 import { ENGINES, ENGINE_IDS, type CardRarity, type EngineId } from './engines.ts';
 
@@ -1945,7 +1945,7 @@ export function itemInfo(id: ItemId): { name: string; icon: string; desc: string
 // ---------------------------------------------------------------- can I use it?
 
 /** Why a hero can't use a skill right now, or null if they can. The server and the client both use this. */
-export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean, turn: TurnState | null, isMyTurn: boolean): string | null {
+export function skillBlockReason(p: PlayerEntity, id: SkillId, inCombat: boolean, turn: { ap: number } | null, isMyTurn: boolean): string | null {
   const def = SKILLS[id];
   if (!def) return 'Unknown skill';
   if (def.kind === 'passive') return 'Passive: always on';

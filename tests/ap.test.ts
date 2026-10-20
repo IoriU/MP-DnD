@@ -11,7 +11,10 @@ import { startingSkills } from '../server/progression.ts';
 import { rng } from '../server/rng.ts';
 import { AP_GAIN, AP_MAX, ATTACK_AP } from '../shared/rules.ts';
 import { DASH_TILES, SKILLS, SKILL_IDS, describeSkill, skillBlockReason, statsAt, statsOf } from '../shared/skills.ts';
-import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
+import type { ClassId, Entity, MonsterEntity, OwnedSkill, PlayerEntity, PlayerInfo, TurnView } from '../shared/types.ts';
+
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
 
 // Action points (decided 2026-10-19): 3 AP a turn, unspent AP carries over (a turn starts with at most 5), bonus actions
 // became 1-AP skills, actions and basic attacks 2, the biggest spells 3. Rules run through the real Game class (private
@@ -61,8 +64,7 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 0 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 0 } } };
   p.runMonster = async () => {}; // the tests drive the rules themselves
   const foe = (type: string, x: number, y: number, hp = 100): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
@@ -78,8 +80,7 @@ function battle(classes: ClassId[] = ['fighter', 'cleric']) {
 /** Starts this creature's turn the way advanceTurn would. */
 function startTurn(p: any, e: Entity) {
   p.turn.index = p.turn.order.indexOf(e.id);
-  p.turnOwner = e.id;
-  p.beginTurn();
+  p.beginTurn([e.id]);
 }
 
 // ---------------------------------------------------------------- the skill data
@@ -112,20 +113,20 @@ test('a turn starts with 3 AP; AP left over carries into the next turn, which st
   const { p, heroes, goblin } = battle();
   const [ann] = heroes;
   startTurn(p, ann);
-  assert.equal(p.turn.ap, AP_GAIN);
+  assert.equal(mine(p).ap, AP_GAIN);
   assert.equal(dice([showing(15), showing(15), 0.5], () => p.handleSkill(ann.playerId, 'longsword', goblin.id)), true);
-  assert.equal(p.turn.ap, AP_GAIN - ATTACK_AP);
-  assert.match(skillBlockReason(ann, 'longsword', true, p.turn, true) ?? '', /Needs 2 AP \(1 left\)/);
+  assert.equal(mine(p).ap, AP_GAIN - ATTACK_AP);
+  assert.match(skillBlockReason(ann, 'longsword', true, mine(p), true) ?? '', /Needs 2 AP \(1 left\)/);
   assert.equal(p.handleSkill(ann.playerId, 'longsword', goblin.id), false, 'no AP for a second swing');
   p.endOfTurn(ann);
   assert.equal(ann.savedAp, 1);
   startTurn(p, ann);
-  assert.equal(p.turn.ap, 4, '1 saved + 3');
+  assert.equal(mine(p).ap, 4, '1 saved + 3');
   p.endOfTurn(ann); // saves all 4
   startTurn(p, ann);
-  assert.equal(p.turn.ap, AP_MAX, '4 saved + 3, capped at 5');
+  assert.equal(mine(p).ap, AP_MAX, '4 saved + 3, capped at 5');
   for (let i = 0; i < 2; i++) assert.equal(dice([showing(15), showing(15), 0.5], () => p.handleSkill(ann.playerId, 'longsword', goblin.id)), true);
-  assert.equal(p.turn.ap, 1, 'two swings in one turn');
+  assert.equal(mine(p).ap, 1, 'two swings in one turn');
 });
 
 test('the 3-AP spells need all of a fresh turn; Dash costs 1 AP for 3 more tiles', () => {
@@ -133,12 +134,12 @@ test('the 3-AP spells need all of a fresh turn; Dash costs 1 AP for 3 more tiles
   const [ann] = heroes;
   ann.skills.push(own('fireball'));
   startTurn(p, ann);
-  assert.equal(skillBlockReason(ann, 'fireball', true, { ...p.turn, ap: 2 } as TurnState, true), 'Needs 3 AP (2 left)');
-  assert.equal(skillBlockReason(ann, 'fireball', true, p.turn, true), null);
-  const moves = p.turn.movesLeft;
+  assert.equal(skillBlockReason(ann, 'fireball', true, { ...p.turn, ap: 2 } as TurnView, true), 'Needs 3 AP (2 left)');
+  assert.equal(skillBlockReason(ann, 'fireball', true, mine(p), true), null);
+  const moves = mine(p).moves;
   assert.equal(p.handleSkill(ann.playerId, 'dash'), true);
-  assert.equal(p.turn.movesLeft, moves + DASH_TILES);
-  assert.equal(p.turn.ap, 2);
+  assert.equal(mine(p).moves, moves + DASH_TILES);
+  assert.equal(mine(p).ap, 2);
   assert.equal(p.handleSkill(ann.playerId, 'fireball', { x: 8, y: 6 }), false, 'no longer 3 AP');
 });
 
@@ -149,13 +150,13 @@ test('Action Surge gives 2 AP back, once per turn (Battle Surge costs nothing)',
   ann.slots = ann.maxSlots = 3;
   startTurn(p, ann);
   assert.equal(p.handleSkill(ann.playerId, 'action_surge'), true);
-  assert.equal(p.turn.ap, AP_GAIN - 1 + 2);
-  assert.equal(skillBlockReason(ann, 'action_surge', true, p.turn, true), 'Only once per turn');
+  assert.equal(mine(p).ap, AP_GAIN - 1 + 2);
+  assert.equal(skillBlockReason(ann, 'action_surge', true, mine(p), true), 'Only once per turn');
   ann.skills = ann.skills.map((o) => (o.id === 'action_surge' ? own('action_surge', 3, 'A') : o));
   startTurn(p, ann);
-  const before = p.turn.ap;
+  const before = mine(p).ap;
   assert.equal(p.handleSkill(ann.playerId, 'action_surge'), true);
-  assert.equal(p.turn.ap, before + 2);
+  assert.equal(mine(p).ap, before + 2);
 });
 
 test('Executioner: a killing blow gives 2 AP back, once per turn', () => {
@@ -167,9 +168,9 @@ test('Executioner: a killing blow gives 2 AP back, once per turn', () => {
   startTurn(p, ann);
   assert.equal(dice([showing(15), showing(15), 0.5, 0.5], () => p.handleSkill(ann.playerId, 'rapier', weak.id)), true);
   assert.equal(weak.hp, 0);
-  assert.equal(p.turn.ap, AP_GAIN - ATTACK_AP + 2);
+  assert.equal(mine(p).ap, AP_GAIN - ATTACK_AP + 2);
   assert.equal(dice([showing(15), showing(15), 0.5, 0.5], () => p.handleSkill(ann.playerId, 'rapier', weak2.id)), true);
-  assert.equal(p.turn.ap, AP_GAIN - 2 * ATTACK_AP + 2, 'only once per turn');
+  assert.equal(mine(p).ap, AP_GAIN - 2 * ATTACK_AP + 2, 'only once per turn');
 });
 
 test('a lost turn (stunned) gains no AP but keeps what was saved; a fight starts from scratch', () => {
@@ -178,13 +179,13 @@ test('a lost turn (stunned) gains no AP but keeps what was saved; a fight starts
   ann.savedAp = 2;
   ann.statuses.push({ id: 'stunned', turns: 2 });
   startTurn(p, ann);
-  assert.equal(p.turn.ap, 0);
-  assert.equal(skillBlockReason(ann, 'shove', true, p.turn, true), 'You are stunned');
+  assert.equal(mine(p).ap, 0);
+  assert.equal(skillBlockReason(ann, 'shove', true, mine(p), true), 'You are stunned');
   p.endOfTurn(ann);
   assert.equal(ann.savedAp, 2, 'the savings are still there');
   ann.statuses = [];
   startTurn(p, ann);
-  assert.equal(p.turn.ap, AP_MAX);
+  assert.equal(mine(p).ap, AP_MAX);
   p.endOfTurn(ann);
   p.prepareForFight(ann);
   assert.equal(ann.savedAp, 0, 'AP never carries from one fight into the next');
@@ -208,7 +209,7 @@ test('going down costs the AP saved up, even mid-turn', () => {
 
 // ---------------------------------------------------------------- the hero AI
 
-function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn: TurnState): HeroView {
+function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn: TurnView): HeroView {
   const tiles = ['#'.repeat(12), ...Array.from({ length: 6 }, () => `#${'.'.repeat(10)}#`), '#'.repeat(12)].join('');
   const all = [...heroes, ...monsters];
   return {
@@ -221,7 +222,7 @@ test('a bot with 5 AP next to a monster swings twice, and keeps going until the 
   const { heroes, goblin } = battle();
   const [ann] = heroes;
   Object.assign(ann, { skills: startingSkills('fighter') });
-  const turn: TurnState = { order: [], init: {}, index: 0, round: 1, movesLeft: 0, ap: AP_MAX };
+  const turn: TurnView = { order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 0, ap: AP_MAX };
   const used: string[] = [];
   for (let i = 0; i < 6; i++) {
     const intent = nextHeroIntent(view(ann, heroes, [goblin], turn));

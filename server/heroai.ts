@@ -74,7 +74,7 @@ import {
 import { RELICS, bagRoom, gearDef, isItemId, itemPrice, type ItemId, type RelicId } from '../shared/items.ts';
 import { isFoe } from '../shared/elites.ts';
 import type {
-  Entity, ItemRequest, MonsterEntity, NodeType, OfferCard, OwnedSkill, PickRequest, PlayerEntity, Pos, RestPick, ShopRequest, ShopView, TurnState,
+  Entity, ItemRequest, MonsterEntity, NodeType, OfferCard, OwnedSkill, PickRequest, PlayerEntity, Pos, RestPick, ShopRequest, ShopView, TurnView,
 } from '../shared/types.ts';
 
 export interface HeroView {
@@ -83,7 +83,7 @@ export interface HeroView {
   heroes: PlayerEntity[];
   monsters: MonsterEntity[];
   allies?: MonsterEntity[]; // NPC allies: in the way, and not to be caught in your blasts
-  turn: TurnState;
+  turn: TurnView;
   occupied: (x: number, y: number, exceptId?: string) => boolean;
 }
 
@@ -166,7 +166,7 @@ interface Sim {
   me: PlayerEntity;
   heroes: PlayerEntity[];
   monsters: MonsterEntity[];
-  turn: TurnState;
+  turn: TurnView;
   ctx: AimCtx;
   spots: Pos[]; // centers worth trying for area skills
   price: number; // what a spell slot is worth right now
@@ -283,7 +283,7 @@ const aimCtx = (map: FieldLike, heroes: PlayerEntity[], monsters: MonsterEntity[
   entities: [...heroes, ...allies, ...monsters],
   inCombat: true,
 });
-const usable = (me: PlayerEntity, turn: TurnState) => hotbar(me).filter((id) => skillBlockReason(me, id, true, turn, true) === null);
+const usable = (me: PlayerEntity, turn: TurnView) => hotbar(me).filter((id) => skillBlockReason(me, id, true, turn, true) === null);
 
 function rootSim(v: HeroView): Sim {
   return {

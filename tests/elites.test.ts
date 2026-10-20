@@ -109,8 +109,7 @@ function battle(classes: ClassId[] = ['fighter', 'wizard']) {
   });
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 3 } } };
   const foe = (type: string, x: number, y: number, hp?: number): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
     const m = p.entities.at(-1) as MonsterEntity;

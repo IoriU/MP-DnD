@@ -19,7 +19,7 @@ import {
   floorFrame, markMissing, onGraphicsMode, platinoFor, sheetFiles, sheetKeys, sheetsReady, spritesOn, wallFrame, type SheetId,
 } from './sprites.ts';
 import {
-  aimAt, attackProblem, bestAttack, bestPropAttack, currentEntity, huntedIds, inApproach, isMyTurn, me, mySkillStats, occupied, onFx, refresh, select, store,
+  actingNow, aimAt, attackProblem, bestAttack, bestPropAttack, huntedIds, inApproach, isMyTurn, me, myActs, mySkillStats, occupied, onFx, refresh, select, store, turnKey,
   subscribe, validTarget,
 } from './store.ts';
 import { $, esc, stacksShown, toast } from './util.ts';
@@ -376,12 +376,11 @@ class DungeonScene extends Phaser.Scene {
   }
 
   update(time: number) {
-    // Pulsing ring around whoever's turn it is.
+    // Pulsing ring around whoever's turn it is (every hero of a shared turn).
     const g = this.turnG.clear();
-    const cur = currentEntity();
-    const sp = cur && this.sprites.get(cur.id);
-    if (sp && store.state?.phase === 'combat') {
-      g.lineStyle(3, 0xffd84d, 0.55 + 0.45 * Math.sin(time / 160)).strokeCircle(sp.c.x, sp.c.y, 17);
+    for (const cur of actingNow()) {
+      const sp = this.sprites.get(cur.id);
+      if (sp) g.lineStyle(3, 0xffd84d, 0.55 + 0.45 * Math.sin(time / 160)).strokeCircle(sp.c.x, sp.c.y, 17);
     }
     for (const t of this.sprites.values()) this.animate(t, time);
     this.drawField(time);
@@ -458,9 +457,9 @@ class DungeonScene extends Phaser.Scene {
     } else if (insetChanged && !this.userCam) {
       this.fitCamera(s, true); // the Sneak-or-Charge card came or went: slide the room into the free space
     }
-    const turnKey = s.turn ? `${s.turn.round}:${s.turn.index}` : '';
-    if (turnKey !== this.turnKey) {
-      this.turnKey = turnKey;
+    const key = turnKey(s);
+    if (key !== this.turnKey) {
+      this.turnKey = key;
       this.pendingWalk = null;
     }
     this.syncField(s);
@@ -1098,8 +1097,9 @@ class DungeonScene extends Phaser.Scene {
       }
       return;
     }
-    if (isMyTurn() && s.turn && s.turn.movesLeft > 0) {
-      const reach = reachable(s, m, s.turn.movesLeft, (x, y) => occupied(s, x, y, m.id));
+    const moves = myActs()?.moves ?? 0;
+    if (moves > 0) {
+      const reach = reachable(s, m, moves, (x, y) => occupied(s, x, y, m.id));
       g.fillStyle(0x4fb3ff, 0.12);
       for (const [idx, steps] of reach) {
         if (steps === 0) continue;
@@ -1178,9 +1178,10 @@ class DungeonScene extends Phaser.Scene {
 
   /** The walk a click would start (the same plan the server makes), on my turn. */
   private walkPlan(s: GameState, m: PlayerEntity, to: Pos): WalkPlan | null {
-    if (!isMyTurn() || !s.turn || s.turn.movesLeft <= 0 || hasStatus(m, 'stunned') || hasStatus(m, 'frozen')) return null;
+    const moves = myActs()?.moves ?? 0;
+    if (moves <= 0 || hasStatus(m, 'stunned') || hasStatus(m, 'frozen')) return null;
     if (occupied(s, to.x, to.y, m.id) || (to.x === m.x && to.y === m.y)) return null;
-    const plan = planWalk(s, m, to, s.turn.movesLeft, (x, y) => occupied(s, x, y, m.id), m);
+    const plan = planWalk(s, m, to, moves, (x, y) => occupied(s, x, y, m.id), m);
     return plan?.path.length ? { kind: 'walk', to, ...plan } : null;
   }
 

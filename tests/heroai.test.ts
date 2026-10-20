@@ -5,7 +5,7 @@ import { CLASSES, CLASS_IDS, MONSTERS, TIER3_LEVEL, maxHpFor, maxSlotsFor } from
 import { SKILLS, SKILL_IDS, canUpgrade, countKind, hpCostOf, limitFor, ownedSkill, resolveAim, skillBlockReason, slotCost, statsOf, type SkillId, type StatusId } from '../shared/skills.ts';
 import { aimFieldOps, applyField, hazardAt, planWalk, type CloudId, type FieldLike, type GroundId, type PropId } from '../shared/surfaces.ts';
 import { attackAdvantage, dirTo, isBehind, isFlanking, netAdvantage } from '../shared/tactics.ts';
-import type { ClassId, MonsterEntity, PlayerEntity, Pos, TurnState } from '../shared/types.ts';
+import type { ClassId, MonsterEntity, PlayerEntity, Pos, TurnView } from '../shared/types.ts';
 import { autoApproachChoice, autoEventChoice, autoPathChoice, nextHeroIntent, upkeepIntent, type HeroIntent, type HeroView } from '../server/heroai.ts';
 import { recalcHero, startingSkills } from '../server/progression.ts';
 import { makeRng, type Rng } from '../server/rng.ts';
@@ -55,7 +55,7 @@ function monster(type: string, x: number, y: number, extra: Partial<MonsterEntit
 }
 const goblin = (x: number, y: number, extra: Partial<MonsterEntity> = {}) => monster('goblin', x, y, extra);
 
-const freshTurn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
+const freshTurn = (): TurnView => ({ order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 6, ap: 3 });
 
 function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turn = freshTurn(), m = map): HeroView {
   const all = [...heroes, ...monsters];
@@ -768,7 +768,7 @@ function randomFight(seed: number) {
   // The hero whose turn it is takes every class in turn, so each class gets its share of the fights.
   const heroes = open.slice(0, nHeroes).map((p, i) => randomHero(r, p, i === 0 ? CLASS_IDS[seed % CLASS_IDS.length] : undefined));
   const monsters = open.slice(nHeroes, nHeroes + nMonsters).map((p) => randomMonster(r, p));
-  const turn: TurnState = { ...freshTurn(), movesLeft: r.int(0, 8), ap: r.int(0, 5) };
+  const turn: TurnView = { ...freshTurn(), movesLeft: r.int(0, 8), ap: r.int(0, 5) };
   return { r, map: m, heroes, monsters, turn, me: heroes[0] };
 }
 

@@ -11,7 +11,7 @@ import {
   skillTitle,
   statsAt,
 } from '../shared/skills.ts';
-import type { MonsterEntity, PlayerEntity, TurnState } from '../shared/types.ts';
+import type { MonsterEntity, PlayerEntity, TurnView } from '../shared/types.ts';
 import { recalcHero, startingSkills } from '../server/progression.ts';
 
 const W = 12;
@@ -38,7 +38,7 @@ const goblin = (id: string, x: number, y: number): MonsterEntity => ({
   id, kind: 'monster', type: 'goblin', name: 'Goblin', glyph: '', x, y, hp: 7, maxHp: 7, ac: 15, speed: 6, statuses: [], boss: false, elite: false, dmgBy: {}, facing: { x: -1, y: 0 },
 });
 
-const turn = (): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 6, ap: 3 });
+const turn = (): TurnView => ({ order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 6, ap: 3 });
 
 test('every class starts with a basic attack, a cantrip and a spell it owns', () => {
   for (const c of CLASS_IDS) {

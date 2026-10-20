@@ -14,11 +14,14 @@ import { alliesHtml, blessingsHtml, gearIconsHtml, itemIcon, relicsHtml, toggleI
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { classIcon, onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
-import { aimAt, blockReason, currentEntity, huntedIds, inApproach, isAuto, isMyTurn, me, mySkillStats, refresh, select, store, validTarget } from './store.ts';
+import { actingNow, aimAt, blockReason, huntedIds, inApproach, isAuto, isMyTurn, me, myActs, mySkillStats, refresh, select, store, turnKey, validTarget } from './store.ts';
 import { $, classLabel, esc, monsterAiTag, stacksShown, toast } from './util.ts';
 
 let lastLogId = -1;
 let lastTurnKey = '';
+
+/** "Ann", "Ann and Bob", "Ann, Bob and Pip". */
+const listNames = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`);
 
 /** Sets innerHTML only when it changed, so hover states and tooltips survive state updates. */
 const lastHtml = new WeakMap<HTMLElement, string>();
@@ -171,7 +174,8 @@ function title(s: GameState): string {
 export function renderHud(s: GameState) {
   const m = me();
   const myTurn = isMyTurn();
-  const cur = currentEntity();
+  const acting = actingNow(s);
+  const actingIds = acting.map((e) => e.id);
   const run = s.run;
 
   $('#hud-title').textContent = title(s);
@@ -208,7 +212,7 @@ export function renderHud(s: GameState) {
         const e = s.entities.find((x) => x.id === id);
         if (!e) return '';
         const ally = isAllyNpc(e);
-        const cls = [id === cur?.id ? 'current' : '', ally ? 'ally' : e.kind, e.kind === 'player' && e.playerId === store.playerId ? 'mine' : ''].join(' ');
+        const cls = [actingIds.includes(id) ? 'current' : '', ally ? 'ally' : e.kind, e.kind === 'player' && e.playerId === store.playerId ? 'mine' : ''].join(' ');
         const auto = e.kind === 'player' && isAuto(s, e.playerId) ? ' 🤖' : '';
         const surprised = hasStatus(e, 'surprised') ? ` ${STATUSES.surprised.icon}` : ''; // loses its first turn
         const sig = e.kind === 'monster' ? MONSTERS[e.type]?.signature : undefined;
@@ -219,11 +223,12 @@ export function renderHud(s: GameState) {
       .join('')}</div>${focusNote(s, t)}`;
   }
 
-  // Your turn banner
-  const turnKey = s.turn ? `${s.turn.round}:${s.turn.index}:${cur?.id}` : '';
-  if (turnKey !== lastTurnKey) {
-    lastTurnKey = turnKey;
-    if (myTurn) toast('🎲 Your turn!');
+  // Your turn banner (heroes side by side in the turn order play at the same time)
+  const key = turnKey(s);
+  if (key !== lastTurnKey) {
+    lastTurnKey = key;
+    const mates = acting.filter((e) => e.kind === 'player' && e.id !== m?.id).map((e) => e.name);
+    if (myTurn) toast(mates.length ? `🎲 Your turn, together with ${listNames(mates)}!` : '🎲 Your turn!');
   }
 
   // Party
@@ -232,7 +237,7 @@ export function renderHud(s: GameState) {
   const selStats = m && sel ? mySkillStats(m, sel) : null;
   setHtml(
     $('#party'),
-    party.map((p) => partyCard(s, p, p.id === cur?.id, !!(m && sel && selStats?.target === 'ally' && validTarget(s, m, p, sel)))).join(''),
+    party.map((p) => partyCard(s, p, actingIds.includes(p.id), !!(m && sel && selStats?.target === 'ally' && validTarget(s, m, p, sel)))).join(''),
   );
 
   // Skills and turn controls
@@ -254,9 +259,12 @@ export function renderHud(s: GameState) {
     } else if (s.phase === 'combat' && s.turn && myTurn && myInfo?.auto) {
       eco.innerHTML = '<span class="pill">🤖 Auto-play is taking your turn. Press P to take over.</span>';
     } else if (s.phase === 'combat' && s.turn) {
-      eco.innerHTML = myTurn
-        ? `<span class="pill">👣 ${s.turn.movesLeft} moves</span>${apPips(s.turn.ap)}`
-        : `<span class="muted">Waiting for ${cur ? esc(cur.name) : '...'}${isAllyNpc(cur) ? " (ally's turn)" : isFoe(cur) ? ' (monster turn)' : ''}</span>`;
+      const acts = myActs();
+      const cur = acting[0];
+      const mates = acting.filter((e) => e.kind === 'player' && e.id !== m.id).map((e) => esc(e.name));
+      eco.innerHTML = acts
+        ? `<span class="pill">👣 ${acts.moves} moves</span>${apPips(acts.ap)}${mates.length ? ` <span class="muted">together with ${listNames(mates)}</span>` : ''}`
+        : `<span class="muted">Waiting for ${cur ? listNames(acting.map((e) => esc(e.name))) : '...'}${isAllyNpc(cur) ? " (ally's turn)" : isFoe(cur) ? ' (monster turn)' : ''}</span>`;
     } else if (s.phase === 'shop') {
       eco.innerHTML = '<span class="muted">🛒 Shopping: press I for your bag (equip, give, drop). Potions and heals wait until you are back on the map.</span>';
     } else {

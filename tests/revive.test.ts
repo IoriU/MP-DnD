@@ -15,7 +15,10 @@ import {
 } from '../shared/items.ts';
 import { HELP_UP_HP, INJURY_PCT, MAX_DOWNS, MAX_INJURIES } from '../shared/rules.ts';
 import { COMMON_ACTIONS, atEdge, describeSkill, resolveAim, statsAt, type AimResult } from '../shared/skills.ts';
-import type { ClassId, Entity, MonsterEntity, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
+import type { ClassId, Entity, MonsterEntity, PlayerEntity, PlayerInfo, TurnView } from '../shared/types.ts';
+
+/** The acting creature's share of the turn (movement and AP left); the tests start one creature's turn at a time. */
+const mine = (p: any) => p.turn.acts[p.turn.group[0]];
 
 // Revive rules (decided 2026-10-19, see shared/rules.ts): Help Up gets a downed friend up at a quarter of their max HP (2 AP,
 // anyone). Healing spells, potions and scrolls revive too, cantrips don't, and every revive but your own death saves leaves
@@ -79,8 +82,7 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
   p.run = { act: 1, maxAct: 3, actName: 'Goblin Warrens', map: generateActMap(1, 1, 4), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed: 1 };
   p.phase = 'combat';
   p.roomKind = 'combat';
-  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, movesLeft: 6, ap: 0 };
-  p.turnOwner = heroes[0].id;
+  p.turn = { order: heroes.map((h) => h.id), init: {}, index: 0, round: 1, group: [heroes[0].id], acts: { [heroes[0].id]: { moves: 6, ap: 0 } } };
   p.runMonster = async () => {};
   const foe = (type: string, x: number, y: number, hp = 100): MonsterEntity => {
     p.spawnMonster(type, { x, y }, heroes.length);
@@ -95,8 +97,7 @@ function battle(classes: ClassId[] = ['fighter', 'paladin', 'cleric']) {
 
 function startTurn(p: any, e: Entity) {
   p.turn.index = p.turn.order.indexOf(e.id);
-  p.turnOwner = e.id;
-  p.beginTurn();
+  p.beginTurn([e.id]);
 }
 
 const hasGroggy = (e: Entity) => e.statuses.some((s) => s.id === 'groggy');
@@ -132,7 +133,7 @@ test('Help Up: an adjacent downed ally gets up at ceil(25% of max HP), Groggy, a
   assert.equal(cid.hp, Math.ceil(cid.maxHp * HELP_UP_HP));
   assert.equal(cid.hp, 3);
   assert.ok(hasGroggy(cid));
-  assert.equal(p.turn.ap, 1, 'three AP, two spent');
+  assert.equal(mine(p).ap, 1, 'three AP, two spent');
   assert.ok(logged(p, /Ann hauls Cid back to their feet \(3 HP\)/));
 });
 
@@ -147,7 +148,7 @@ test('Help Up is refused for a standing ally ("isn\'t down"), for yourself, and 
   assert.match(String(resolveAim(up, ann, cid.id, ctx)), /Out of range \(Help Up reaches 1 tile\)/);
   startTurn(p, ann);
   assert.equal(p.handleSkill(ann.playerId, 'help_up', cid.id), false, 'the game refuses it too');
-  assert.equal(p.turn.ap, 3, 'and nothing is spent');
+  assert.equal(mine(p).ap, 3, 'and nothing is spent');
   Object.assign(cid, { x: 5, y: 2 }); // now next to Ann
   const ok = resolveAim(up, ann, cid.id, ctx) as AimResult;
   assert.equal(ok.main, cid);
@@ -165,7 +166,7 @@ test('a Groggy hero loses their next turn ("still groggy" in the log), and Grogg
   assert.equal(ann.downed, false, 'Bob got her up');
   startTurn(p, ann); // her turn comes round
   assert.ok(logged(p, /Ann is still groggy from going down and loses the turn\./));
-  assert.equal(p.turn.ap, 0, 'no AP for a lost turn');
+  assert.equal(mine(p).ap, 0, 'no AP for a lost turn');
   assert.ok(hasGroggy(ann));
   p.advanceTurn(); // her turn ends: Groggy wears off (the timer that would skip her again finds the turn has moved on)
   assert.equal(hasGroggy(ann), false);
@@ -184,7 +185,7 @@ test('cantrips refuse a downed ally, even one next to them: Lay on Hands (paladi
   assert.equal(resolveAim(statsAt('healing_touch'), cid, ann.id, ctx), why);
   startTurn(p, bob);
   assert.equal(p.handleSkill(bob.playerId, 'lay_on_hands', ann.id), false, 'refused in the game too');
-  assert.equal(p.turn.ap, 3, 'nothing spent');
+  assert.equal(mine(p).ap, 3, 'nothing spent');
   assert.equal(ann.downed, true);
   Object.assign(ann, { downed: false, hp: 5 });
   assert.equal(typeof resolveAim(statsAt('lay_on_hands'), bob, ann.id, ctx), 'object', 'a standing ally is a fine target');
@@ -202,7 +203,7 @@ test('Healing Word, a spell, gets a downed ally up from five tiles away, Groggy,
   assert.ok(ann.hp > 0);
   assert.ok(hasGroggy(ann), 'a revive: Groggy');
   assert.equal(cid.slots, cid.maxSlots - 1);
-  assert.equal(p.turn.ap, 2, 'three AP, one spent');
+  assert.equal(mine(p).ap, 2, 'three AP, one spent');
 });
 
 test('a potion fed to a downed ally next to you gets them up, Groggy, and uses one of your potions', () => {
@@ -238,7 +239,7 @@ test('a natural 20 on a death save gets a hero up without Groggy, and they act t
   assert.equal(ann.downed, false);
   assert.equal(ann.hp, 1);
   assert.equal(hasGroggy(ann), false);
-  assert.equal(p.turn.ap, 3, 'a full turn, not a lost one');
+  assert.equal(mine(p).ap, 3, 'a full turn, not a lost one');
   assert.ok(logged(p, /rolls a natural 20 on a death save/));
 });
 
@@ -254,7 +255,7 @@ test('three death save successes stabilize at 1 HP, also without Groggy', () => 
   assert.equal(ann.downed, false);
   assert.equal(ann.hp, 1);
   assert.equal(hasGroggy(ann), false);
-  assert.equal(p.turn.ap, 3);
+  assert.equal(mine(p).ap, 3);
 });
 
 // ---------------------------------------------------------------- Injuries
@@ -479,7 +480,7 @@ test('a chest: common relics come up more often than rare ones (RELIC_ODDS 50 / 
 
 // ---------------------------------------------------------------- the hero AI
 
-function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turnState: TurnState): HeroView {
+function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[], turnState: TurnView): HeroView {
   const tiles = ['#'.repeat(12), ...Array.from({ length: 6 }, () => `#${'.'.repeat(10)}#`), '#'.repeat(12)].join('');
   const all: Entity[] = [...heroes, ...monsters];
   return {
@@ -487,7 +488,7 @@ function view(h: PlayerEntity, heroes: PlayerEntity[], monsters: MonsterEntity[]
     occupied: (x, y, exceptId) => all.some((e) => e.x === x && e.y === y && e.id !== exceptId && !(e.kind === 'player' && e.dead)),
   };
 }
-const turn = (ap: number): TurnState => ({ order: [], init: {}, index: 0, round: 1, movesLeft: 0, ap });
+const turn = (ap: number): TurnView => ({ order: [], init: {}, index: 0, round: 1, group: [], acts: {}, movesLeft: 0, ap });
 
 test('a bot next to a downed friend chooses Help Up (with no potions, the only way to get them up)', () => {
   const { heroes, foe } = battle(['fighter', 'cleric']);
