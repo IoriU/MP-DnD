@@ -434,6 +434,30 @@ test('addBot takes a class that fills a gap, and once every role is covered any 
   assert.deepEqual(barb.classes(), ['barbarian', 'rogue', 'cleric']);
 });
 
+test("the host picks a bot's class in the tavern; nobody else can, and a saved run's bots keep theirs", () => {
+  const { g, p, host, classes } = lobby('fighter');
+  g.addBot(host);
+  const bot = p.players[1] as PlayerInfo;
+  g.setBotClass(host, bot.id, 'bard');
+  assert.equal(bot.classId, 'bard');
+  const bob = g.join(undefined, 'Bob', 'rogue');
+  assert.ok(bob.ok);
+  g.setBotClass(bob.playerId, bot.id, 'wizard');
+  assert.equal(bot.classId, 'bard', 'only the host');
+  g.setBotClass(host, host, 'wizard');
+  assert.equal(classes()[0], 'fighter', 'a person picks their own class');
+  g.setBotClass(host, bot.id, 'necromancer');
+  assert.equal(bot.classId, 'bard', 'not a class');
+  assert.equal(p.makePlayer(bot, 1).classId, 'bard', 'its hero is built from it');
+  p.phase = 'map';
+  g.setBotClass(host, bot.id, 'cleric');
+  assert.equal(bot.classId, 'bard', 'not once the run has started');
+  p.savedHero = (id: string) => id === bot.id;
+  p.phase = 'lobby';
+  g.setBotClass(host, bot.id, 'cleric');
+  assert.equal(bot.classId, 'bard', "a saved run's bot keeps its hero");
+});
+
 test('a monster hit by Ensnaring Shot cannot move on its turn, and a miss leaves it free', () => {
   const { p, heroes, foe } = battle(['ranger', 'cleric']);
   const [ann] = heroes;

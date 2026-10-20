@@ -137,6 +137,7 @@ io.on('connection', (socket) => {
   on('setAuto', (g, pid, value: boolean) => g.handleSetAuto(pid, value === true));
   on('addBot', (g, pid) => g.addBot(pid));
   on('removeBot', (g, pid, botId: string) => g.removeBot(pid, String(botId)));
+  on('setBotClass', (g, pid, botId: string, classId: unknown) => g.setBotClass(pid, String(botId), classId));
   on('claimHero', (g, pid, heroPlayerId: string) => g.claimHero(pid, String(heroPlayerId)));
 
   socket.on('disconnect', () => {

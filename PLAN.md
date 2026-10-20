@@ -880,6 +880,7 @@ Started 2026-10-20, right after the playtest redesign (your call: balance first,
   - Tests: `tests/outcome.test.ts` (7).
 - [x] **🤖 Build and let the AI fight** (your ask, 2026-10-20): with auto-play on, the AI plays your turns, but each spoils or level-up pick waits 10 seconds for you (`PICK_WAIT_MS`), with a countdown on the pick panel, and so does your rest-site choice. Pick in time and it's your pick; the next pick gets its own 10 seconds. The victory screen waits until your picks are made, then moves on by itself. Bots and players who dropped out still pick at once (bot runs are as fast as before).
   - Tests: `tests/autopick.test.ts` (6, on mocked timers).
+- [x] **🤖 Pick a bot's class** (your ask, 2026-10-20): in the tavern, the host picks each added bot's class from a dropdown on its row (it starts with a class that fills a gap, as before). A saved run's bots keep their class. Test in `tests/classes.test.ts`.
 - [ ] Playtest with real people, then adjust (`node scripts/journal-report.ts --latest` afterwards)
 
 **Result (2026-10-20):** 144 runs on the final numbers, boss signatures included (in brackets: before the boss rework), 0 anomalies, 0 stuck fights:

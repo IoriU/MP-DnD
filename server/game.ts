@@ -479,6 +479,17 @@ export class Game {
     this.broadcast();
   }
 
+  /** The host picks a bot's class in the tavern. A saved run's bots keep theirs (their hero is already built). */
+  setBotClass(playerId: string, botId: string, classId: unknown) {
+    if (playerId !== this.hostId || this.phase !== 'lobby' || typeof classId !== 'string' || !Object.hasOwn(CLASSES, classId)) return;
+    const bot = this.players.find((p) => p.id === botId && p.bot);
+    if (!bot || bot.classId === classId) return;
+    if (this.savedHero(botId)) return this.whisper(playerId, `${bot.name} is a saved hero and keeps their class.`);
+    bot.classId = classId as ClassId;
+    this.addLog('system', `🤖 ${bot.name} will play the ${CLASSES[bot.classId].name}.`);
+    this.broadcast();
+  }
+
   /** In a resumed tavern, a newcomer takes over a saved hero whose player isn't here. */
   claimHero(playerId: string, heroPlayerId: string) {
     const me = this.players.find((p) => p.id === playerId);

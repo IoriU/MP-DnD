@@ -112,6 +112,11 @@ export function initLobby() {
   });
   $('#start-btn').addEventListener('click', () => send('start'));
   $('#add-bot').addEventListener('click', () => send('addBot'));
+  // The host picks each bot's class from the dropdown on its row.
+  $('#room-players').addEventListener('change', (e) => {
+    const pick = (e.target as HTMLElement).closest<HTMLSelectElement>('select[data-bot-class]');
+    if (pick) send('setBotClass', pick.dataset.botClass, pick.value);
+  });
   $('#room-players').addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
     const bot = target.closest<HTMLElement>('[data-remove-bot]');
@@ -135,6 +140,8 @@ export function initLobby() {
 
 type SavedHero = ResumeView['heroes'][number];
 
+let playersHtml = ''; // the party list as last drawn
+
 const tagList = (tags: string[]) =>
   tags
     .filter(Boolean)
@@ -144,11 +151,17 @@ const tagList = (tags: string[]) =>
 const removeBotBtn = (p: PlayerInfo | undefined, isHost: boolean) =>
   p?.bot && isHost ? `<button type="button" class="btn ghost small rp-remove" data-remove-bot="${p.id}" title="Remove bot">✕</button>` : '';
 
+/** A bot's class: the host can change it (a dropdown), everyone else just reads it. */
+function classLabel(p: PlayerInfo, isHost: boolean): string {
+  if (!p.bot || !isHost) return `<span class="muted">${CLASSES[p.classId].name}</span>`;
+  const options = CLASS_IDS.map((id) => `<option value="${id}"${id === p.classId ? ' selected' : ''}>${CLASSES[id].name}</option>`).join('');
+  return `<select class="rp-class" data-bot-class="${esc(p.id)}" aria-label="${esc(p.name)}'s class" title="Pick ${esc(p.name)}'s class">${options}</select>`;
+}
+
 function playerRow(s: GameState, p: PlayerInfo, isHost: boolean, extra: string[] = []): string {
-  const c = CLASSES[p.classId];
   const tags = [p.id === s.hostId ? 'host' : '', p.id === store.playerId ? 'you' : '', p.bot ? '🤖 bot' : '', ...extra];
   return `<li><span class="dot" style="background:${p.color}"></span><span class="rp-glyph">${classIcon(p.classId, 32)}</span>
-    <b>${esc(p.name)}</b><span class="muted">${c.name}</span>${tagList(tags)}${removeBotBtn(p, isHost)}</li>`;
+    <b>${esc(p.name)}</b>${classLabel(p, isHost)}${tagList(tags)}${removeBotBtn(p, isHost)}</li>`;
 }
 
 /** A hero from the saved party: you, here, away (claimable by an unassigned player) or a bot. */
@@ -188,19 +201,22 @@ export function renderRoom(s: GameState) {
 
   $('#resume-banner').hidden = !r;
   if (r) $('#resume-banner').innerHTML = resumeBanner(r, unassigned, awayHeroes(s, r), joinLevel);
-  $('#room-players').innerHTML = r
+  const rows = r
     ? [
         ...r.heroes.map((h) => heroRow(s, h, isHost, unassigned)),
         ...s.players.filter((p) => !heroIds.has(p.id)).map((p) => playerRow(s, p, isHost, [`new hero (joins at level ${joinLevel})`])),
       ].join('')
     : s.players.map((p) => playerRow(s, p, isHost)).join('');
+  if (rows !== playersHtml) $('#room-players').innerHTML = playersHtml = rows; // unchanged: an open class dropdown stays open
 
   // Every run has at least MIN_PARTY heroes: the server fills the empty seats with bots when it starts.
   const party = r ? r.heroes.length + s.players.filter((p) => !heroIds.has(p.id)).length : s.players.length;
   const fill = MIN_PARTY - party;
   $('#room-fill-hint').hidden = fill <= 0;
   $('#room-fill-hint').textContent =
-    fill > 0 ? `Every party has at least ${MIN_PARTY} heroes: ${fill === 1 ? 'a bot takes the empty seat' : `${fill} bots take the empty seats`} when the run starts.` : '';
+    fill > 0
+      ? `Every party has at least ${MIN_PARTY} heroes: ${fill === 1 ? 'a bot takes the empty seat' : `${fill} bots take the empty seats`} when the run starts.${isHost && !r ? ' Add them now with 🤖 Add bot to pick their classes.' : ''}`
+      : '';
 
   // Saved heroes keep their class; only players who join as a new hero choose one.
   $('#room-class-section').hidden = !!r && !unassigned;

@@ -175,6 +175,16 @@ body.resuming .resume-note { display: block; }
 }
 .dot { width: 10px; height: 10px; border-radius: 50%; }
 .rp-remove, .rp-claim { margin-left: auto; }
+.rp-class {
+  font: 13px var(--sans);
+  color: var(--text);
+  background: #0f0c0a;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.rp-class:hover, .rp-class:focus { border-color: var(--accent); outline: none; }
 .room-players li.away > :not(.rp-claim) { opacity: 0.65; } /* away heroes fade, but their Play as button stays bright */
 #auto-btn.on { background: #17324a; border-color: #4fb3ff; color: #9fd3ff; }
 .rp-glyph { font-size: 18px; }
