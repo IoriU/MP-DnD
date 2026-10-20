@@ -48,11 +48,18 @@ import {
   fmtMod,
   isDifficulty,
   isMonsterAi,
+  BOSS,
+  BREATHER,
+  ELITE,
+  MAX_DOWNS,
+  WARMUP_BUDGET,
+  actScaling,
   partyScaling,
   rollDice,
   rollDie,
   roomGold,
   scaledHp,
+  tune,
   sneakDice,
   statMod,
   stealthBonus,
@@ -234,12 +241,12 @@ export type MonsterBrain = (m: MonsterEntity, choices: MonsterChoices) => number
 // Dev knobs for bot testing: DELVERS_SPEED=10 makes monster turns 10x faster, DELVERS_ROWS=4 makes acts short.
 const SPEED = Math.max(0.1, Number(process.env.DELVERS_SPEED) || 1);
 const ROWS = Math.max(3, Number(process.env.DELVERS_ROWS) || ACT_ROWS);
+if (process.env.DELVERS_TUNE) tune(JSON.parse(process.env.DELVERS_TUNE)); // the balance pass's knobs (shared/rules.ts TUNABLES)
 
 const STEP_MS = 120 / SPEED; // player walking speed
 const MONSTER_STEP_MS = 170; // passed through sleep(), which applies SPEED
 const LOG_LIMIT = 80;
 const MAX_ROOM_MONSTERS = 6;
-const POST_FIGHT_HEAL = 0.2; // short rest after every won fight, so damage doesn't snowball into a wipe
 const AUTO_DELAY_MS = 700; // pause before auto heroes vote, pick or use potions between rooms
 const SHOP_MS = 90_000; // the shop closes this long after the first person is done shopping
 const AWAY_MS = 20_000; // ...or this long after everyone left is someone who dropped out (a reload shouldn't close it)
@@ -262,6 +269,9 @@ const PICK_ICON = { level: '⬆️', elite: '💀', reward: '🏆' } as const;
 const ELEMENT_COLOR: Record<Element, string> = {
   physical: '#ffe9a8', fire: '#ff8a3d', cold: '#8fd8ff', lightning: '#fff36b', poison: '#8fdc5a', radiant: '#ffe27a', force: '#c58bff',
 };
+
+/** The run's first fight: a smaller one, from the classic line (WARMUP_BUDGET). */
+const isWarmup = (act: number, node: MapNode) => act === 1 && node.row === 0 && node.type === 'combat';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms / SPEED));
 
@@ -809,7 +819,7 @@ export class Game {
         if (vote.votes[p.id]) continue;
         const choice =
           vote.kind === 'path'
-            ? autoPathChoice(vote.options.map((id) => ({ id, type: this.node(id)?.type ?? 'combat' })), heroes)
+            ? autoPathChoice(vote.options.map((id) => ({ id, type: this.node(id)?.type ?? 'combat' })), heroes, this.run?.gold ?? 0)
             : vote.kind === 'approach'
               ? autoApproachChoice(heroes, this.approachDc ?? 99)
               : autoEventChoice(vote.options, heroes);
@@ -894,7 +904,7 @@ export class Game {
         const fight = this.encounterFor(node);
         // Regular fights past the first rows are sometimes ambushes; bosses are expecting you.
         const ambush = node.type === 'combat' && node.row >= 2 && rng.chance(AMBUSH_CHANCE);
-        this.startRoom(node.type, fight.monsters, fight.name, node.type === 'boss' ? 'charge' : ambush ? 'ambush' : 'vote');
+        this.startRoom(node.type, fight.monsters, fight.name, node.type === 'boss' ? 'charge' : ambush ? 'ambush' : 'vote', isWarmup(run.act, node));
         break;
       }
       case 'rest':
@@ -918,9 +928,9 @@ export class Game {
     const act = ACTS[run.act - 1];
     const size = this.heroes().length;
     if (node.type === 'boss') {
-      return { name: MONSTERS[act.boss].name, monsters: [act.boss, ...Array.from({ length: Math.floor(size / 2) }, () => pick(act.minions))] };
+      return { name: MONSTERS[act.boss].name, monsters: [act.boss, ...Array.from({ length: Math.floor(size * BOSS.minions) }, () => pick(act.minions))] };
     }
-    let budget = encounterBudget(run.act, node.row, size) * DIFFICULTIES[this.diff].budget;
+    let budget = encounterBudget(run.act, node.row, size) * DIFFICULTIES[this.diff].budget * (isWarmup(run.act, node) ? WARMUP_BUDGET : 1);
     let name: string;
     let draw: string[];
     const monsters: string[] = [];
@@ -1363,9 +1373,9 @@ export class Game {
    * Builds the room and starts the fight. 'vote': the party first votes Sneak or Charge;
    * 'ambush': the heroes start surprised; 'charge': a straight fight.
    */
-  private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge') {
+  private startRoom(kind: NodeType, monsters: string[], name: string, start: 'vote' | 'ambush' | 'charge' = 'charge', warmup = false) {
     this.dispose();
-    const deployment = pickDeployment(kind, start, rng);
+    const deployment = pickDeployment(kind, start, rng, warmup);
     const layout = generateRoom(kind, rng, this.run?.act ?? 1, deployment);
     this.width = layout.width;
     this.height = layout.height;
@@ -1467,14 +1477,17 @@ export class Game {
     const boss = ACTS.some((a) => a.boss === type);
     const elite = !boss && (ACTS.some((a) => a.elites.includes(type)) || type === 'mimic');
     // Bigger parties: regular monsters get more HP (elites and bosses have their own curve), everyone hits harder.
+    // Later acts: everyone gets tougher (actScaling).
     const d = DIFFICULTIES[this.diff];
     const party = partyScaling(partySize);
-    const hp = Math.max(1, Math.round((boss || elite ? scaledHp(def.hp, partySize, boss) : def.hp * party.hp) * d.hp));
-    const dmg = d.dmg + Math.round(avgDice(def.dmg) * (party.dmg - 1));
+    const act = actScaling(this.run?.act ?? 1);
+    const hp = Math.max(1, Math.round((boss || elite ? scaledHp(def.hp, partySize, boss) * act.solo : def.hp * party.hp * act.hp) * d.hp));
+    const dmg = Math.round(avgDice(def.dmg) * (party.dmg * act.dmg * d.dmg * (boss ? BOSS.dmg : elite ? ELITE.dmg : 1) - 1));
+    const atk = d.atk + act.atk;
     const m: MonsterEntity = {
       id: this.newId(), kind: 'monster', type, name: def.name, glyph: def.glyph, x: pos.x, y: pos.y,
-      hp, maxHp: hp, ac: def.ac, speed: def.speed, boss, elite, statuses: [], dmgBy: {}, facing: { x: -1, y: 0 },
-      ...(d.atk ? { atkBonus: d.atk } : {}), ...(dmg ? { dmgBonus: dmg } : {}),
+      hp, maxHp: hp, ac: def.ac + act.ac, speed: def.speed, boss, elite, statuses: [], dmgBy: {}, facing: { x: -1, y: 0 },
+      ...(atk ? { atkBonus: atk } : {}), ...(dmg ? { dmgBonus: dmg } : {}),
     };
     this.entities.push(m);
     if (elite) this.giveTraits(m);
@@ -2115,7 +2128,7 @@ export class Game {
     const run = this.run!;
     // Song of Rest: the best Bard's song adds its share on top.
     const song = Math.max(0, ...this.heroes().map((h) => passiveOf(h, 'song_of_rest')?.value ?? 0)) / 100;
-    const breather = POST_FIGHT_HEAL + (this.hasRelic('rations') ? 0.1 : 0) + song;
+    const breather = BREATHER.heal + (this.hasRelic('rations') ? 0.1 : 0) + song;
     for (const h of this.heroes()) if (hasBranch(h, 'song_of_rest', 'B') && h.slots < h.maxSlots) h.slots++; // Encore
     this.dispose();
     // NPC allies have one fight fewer to go.
@@ -2503,15 +2516,16 @@ export class Game {
   }
 
   /**
-   * Elite traits at the start of its turn: the Shielded ward re-forms every 3rd round, and an aura hurts everyone on
+   * Elite traits at the start of its turn: the Shielded ward re-forms once (on a 3rd round), and an aura hurts everyone on
    * the party's side next to it (and touches the ground around it: a Burning elite lights the oil it stands near).
    */
   private eliteTurnStart(m: MonsterEntity) {
     const round = this.turn?.round ?? 1;
-    if (hasTrait(m, 'shielded') && round % WARD_EVERY === 0) {
+    if (hasTrait(m, 'shielded') && round % WARD_EVERY === 0 && !m.wardBack) {
       const full = Math.round(m.maxHp * WARD_SHARE);
-      if ((m.ward ?? 0) < full) {
+      if (!m.ward) {
         m.ward = full;
+        m.wardBack = true;
         this.addLog('info', `🔰 ${m.name}'s ward re-forms (${full}).`);
         this.float(m, `🔰 ${full}`, '#8fd8ff');
       }
@@ -4089,14 +4103,21 @@ export class Game {
     } else if (t.kind === 'monster') {
       this.monsterDies(t, by);
     } else if (!t.downed && !t.dead) {
+      // Worn down: going down again in the same fight starts the death saves one failure worse each time, and a fourth
+      // time is death. Hauled up groggy only to drop again (and again) used to loop forever.
+      const again = Math.min(MAX_DOWNS - 1, t.used.filter((u) => u === 'fight:down').length);
+      t.used.push('fight:down');
       t.downed = true;
-      t.saves = { ok: 0, fail: 0 };
+      t.saves = { ok: 0, fail: again };
       t.statuses = [];
       delete t.block;
       t.savedAp = 0; // going down costs the AP saved up
       this.cancelWalk(t.id);
-      this.addLog('death', `🩸 ${t.name} falls unconscious! Heal them to get them back up.`);
-      this.callout(this.randomBot(t), 'down', { ally: t.name });
+      if (!again) this.addLog('death', `🩸 ${t.name} falls unconscious! Heal them to get them back up.`);
+      else if (again < MAX_DOWNS - 1) this.addLog('death', `🩸 ${t.name} falls unconscious again! Worn down: their death saves start with ${again} failure${again > 1 ? 's' : ''}.`);
+      else this.addLog('death', `🩸 ${t.name} falls unconscious again, the ${MAX_DOWNS}th time this fight. It's too much.`);
+      if (again >= MAX_DOWNS - 1) this.die(t);
+      else this.callout(this.randomBot(t), 'down', { ally: t.name });
       // Went down on their own turn (walked into the fire): the turn is over.
       if (this.turnOwner === t.id && this.phase === 'combat') {
         const token = this.turnToken;
@@ -4457,12 +4478,17 @@ export class Game {
     p.saves.fail += r === 1 ? 2 : 1;
     this.addLog('death', `${p.name} death save: ${shown}, failure (${Math.min(3, p.saves.fail)}/3)`);
     if (p.saves.fail >= 3) {
-      p.downed = false;
-      p.dead = true;
-      this.addLog('death', `☠️ ${p.name} has died... they'll be back on their feet after the fight, if the party wins it.`);
-      this.removeFromOrder(p.id);
+      this.die(p);
       this.advanceTurn();
     }
+  }
+
+  /** Three failed death saves (or going down a fourth time in one fight): out until the fight is won, then an Injury. */
+  private die(p: PlayerEntity) {
+    p.downed = false;
+    p.dead = true;
+    this.addLog('death', `☠️ ${p.name} has died... they'll be back on their feet after the fight, if the party wins it.`);
+    this.removeFromOrder(p.id);
   }
 
   // ------------------------------------------------------------ shops

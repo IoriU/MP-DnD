@@ -13,7 +13,7 @@ import {
   RARITIES, RARITY_ODDS, RARITY_PITY, RELICS, RELIC_IDS, RELIC_ODDS, nextPity, pickRarity, rarityOdds, rarityPool, rollRarity,
   type Rarity, type RelicId,
 } from '../shared/items.ts';
-import { HELP_UP_HP, INJURY_PCT, MAX_INJURIES } from '../shared/rules.ts';
+import { HELP_UP_HP, INJURY_PCT, MAX_DOWNS, MAX_INJURIES } from '../shared/rules.ts';
 import { COMMON_ACTIONS, atEdge, describeSkill, resolveAim, statsAt, type AimResult } from '../shared/skills.ts';
 import type { ClassId, Entity, MonsterEntity, PlayerEntity, PlayerInfo, TurnState } from '../shared/types.ts';
 
@@ -258,6 +258,48 @@ test('three death save successes stabilize at 1 HP, also without Groggy', () => 
 });
 
 // ---------------------------------------------------------------- Injuries
+
+test('worn down: each time a hero goes down again in a fight, the death saves start one failure worse; the 4th time kills', () => {
+  const { p, heroes, foe } = battle();
+  const [, bob] = heroes;
+  const gob = foe('goblin', 9, 6, 12);
+  const knock = () => {
+    Object.assign(bob, { hp: 5, downed: false });
+    p.damage(bob, 50, gob);
+  };
+  knock();
+  assert.deepEqual([bob.downed, bob.saves.fail], [true, 0], 'the first time: a clean slate');
+  knock();
+  assert.deepEqual([bob.downed, bob.saves.fail], [true, 1]);
+  assert.ok(logged(p, /Bob falls unconscious again! Worn down: their death saves start with 1 failure\./));
+  knock();
+  assert.deepEqual([bob.downed, bob.saves.fail], [true, 2]);
+  knock();
+  assert.equal(MAX_DOWNS, 4);
+  assert.deepEqual([bob.downed, bob.dead], [false, true], 'the 4th time: dead');
+  assert.ok(!p.turn.order.includes(bob.id), 'and out of the turn order');
+  assert.ok(logged(p, /Bob has died/));
+  p.endCombat();
+  assert.equal(bob.injuries, 1, 'an Injury after the fight, like any death');
+  Object.assign(bob, { hp: 5 });
+  p.prepareForFight(bob);
+  p.damage(bob, 50, gob);
+  assert.equal(bob.saves.fail, 0, 'the next fight starts fresh');
+});
+
+test('a bot does not haul up a friend who would just go down again while groggy, unless they are close to dying', () => {
+  const { heroes, foe } = battle(['fighter', 'cleric']);
+  const [ann, cid] = heroes;
+  Object.assign(ann, { x: 4, y: 3, potions: 0 }); // no heals: Help Up is the only way to get her up
+  Object.assign(cid, { x: 5, y: 3, hp: 0, downed: true });
+  const ogre = foe('ogre', 6, 3, 80); // next to the downed cleric: it would put her down again while she's groggy
+  Object.assign(ogre, { dmgBonus: 10 });
+  const gob = foe('goblin', 3, 3, 7); // and a goblin to cut down instead
+  const pick = () => nextHeroIntent(view(ann, heroes, [ogre, gob], turn(3)));
+  assert.notDeepEqual(pick(), { kind: 'act', skill: 'help_up', target: cid.id });
+  cid.saves = { ok: 0, fail: 2 };
+  assert.deepEqual(pick(), { kind: 'act', skill: 'help_up', target: cid.id }, 'one failure from dying: get her up anyway');
+});
 
 test('a hero who dies in a fight is back after it with 1 Injury: max HP down by 20%', () => {
   const { p, heroes } = battle();

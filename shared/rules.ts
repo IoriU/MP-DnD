@@ -152,6 +152,8 @@ export const HELP_UP_HP = 0.25;
 // and so does an attacker far enough round the side (flanking you). See coverFrom in shared/tactics.ts.
 export const HALF_COVER = 2;
 export const FULL_COVER = 5;
+/** Worn down: each time a hero goes down again in one fight, their death saves start one failure worse; this many is death. */
+export const MAX_DOWNS = 4;
 export const INJURY_PCT = 0.2;
 export const MAX_INJURIES = 3;
 
@@ -198,6 +200,8 @@ export const MAX_CANTRIPS = 3; // hotbar limits: learning past them means forget
 export const MAX_SPELLS = 3;
 export const passiveSlots = (level: number) => 2 + (level >= 4 ? 1 : 0) + (level >= 8 ? 1 : 0);
 export const REST_HEAL = 0.3; // Long Rest: heal this share of max HP and restore every slot
+/** The short rest after every won fight: everyone heals this share of max HP (so damage doesn't snowball into a wipe). */
+export const BREATHER = { heal: 0.15 };
 export const REST_MS = 30_000; // rest picks close this long after the first pick
 
 /** Common-pool cards that aren't skills. */
@@ -480,7 +484,8 @@ export const ACTS: ActDef[] = [
 export type Difficulty = 'story' | 'normal' | 'hard';
 
 /**
- * Picked in the lobby by the host, kept for the whole run. The numbers are placeholders until the balance pass (Phase 13).
+ * Picked in the lobby by the host, kept for the whole run. Tuned with bot runs in the balance pass (Phase 13): the bots win
+ * about 100% on Story, 85% on Normal and 45% on Hard (`npm run balance-farm`).
  * `squad`: monsters fight as a squad (server/monsterai.ts); without it each one goes for whoever is closest.
  * `slip`: the chance a monster forgets the plan for a turn and just goes for the closest hero (readable, beatable).
  */
@@ -490,7 +495,7 @@ export interface DifficultyDef {
   desc: string;
   hp: number; // monster HP multiplier
   atk: number; // added to monster attack rolls
-  dmg: number; // added to monster damage
+  dmg: number; // multiplier on a monster's average hit (added as a flat bonus per hit), so it grows with the acts
   budget: number; // encounter threat budget multiplier
   squad: boolean;
   slip: number;
@@ -498,15 +503,15 @@ export interface DifficultyDef {
 
 export const DIFFICULTIES: Record<Difficulty, DifficultyDef> = {
   story: {
-    name: 'Story', icon: '📖', hp: 0.75, atk: -1, dmg: 0, budget: 0.8, squad: false, slip: 1,
+    name: 'Story', icon: '📖', hp: 0.75, atk: -1, dmg: 0.85, budget: 0.8, squad: false, slip: 1,
     desc: 'Weaker monsters that fight on instinct: each one goes for whoever is closest.',
   },
   normal: {
-    name: 'Normal', icon: '⚔️', hp: 1, atk: 0, dmg: 0, budget: 1, squad: true, slip: 0.15,
+    name: 'Normal', icon: '⚔️', hp: 1.1, atk: 0, dmg: 1, budget: 1.15, squad: true, slip: 0.15,
     desc: 'Monsters fight as a squad: they gang up on one hero, flank, and use the battlefield.',
   },
   hard: {
-    name: 'Hard', icon: '💀', hp: 1.2, atk: 1, dmg: 1, budget: 1.2, squad: true, slip: 0,
+    name: 'Hard', icon: '💀', hp: 1.3, atk: 1, dmg: 1.2, budget: 1.3, squad: true, slip: 0,
     desc: 'More monsters, tougher ones, and they never miss a trick.',
   },
 };
@@ -532,9 +537,23 @@ export const isDifficulty = (x: unknown): x is Difficulty => typeof x === 'strin
  * How the monsters grow with each hero past MIN_PARTY, on three levers: more of them (the encounter budget), more max
  * HP and more damage. A room holds at most 6 monsters, so in big parties HP and damage keep growing after the count
  * stops. Elites and bosses get their HP from scaledHp instead (they fight alone, so HP is their lever).
- * Placeholder numbers until the balance pass (Phase 13).
+ * Tuned in the balance pass (Phase 13) so the party's lowest HP per fight is about the same for 3 to 6 heroes.
  */
-export const PARTY_SCALING = { count: 0.15, hp: 0.1, dmg: 0.1 };
+export const PARTY_SCALING = { base: 1.4, count: 0.45, hp: 0.2, dmg: 0.1 }; // base: a 3-hero party's budget per threat point
+
+/**
+ * Monsters grow with the act (Phase 13): the heroes pick a card after every fight, so by act 3 they hit 8 times in 10
+ * and fights were over in under 3 rounds. Every monster of the act gets more max HP (`hp`, a multiplier), AC, attack
+ * bonus, and damage (`dmg`, a multiplier on its average hit, added as a flat bonus per hit like partyScaling's).
+ * Elites and bosses too, but their HP grows less (`solo`): all of it on one body made their fights drag past 10 rounds.
+ * NPC allies grow on their own curve (allyScaling in shared/elites.ts).
+ */
+export const ACT_SCALING = [
+  { hp: 1, solo: 1, ac: 0, atk: 0, dmg: 1 },
+  { hp: 1.7, solo: 1.35, ac: 1, atk: 2, dmg: 1.6 },
+  { hp: 2.4, solo: 1.6, ac: 2, atk: 2, dmg: 2.2 },
+];
+export const actScaling = (act: number) => ACT_SCALING[Math.min(ACT_SCALING.length, Math.max(1, act)) - 1];
 
 const pastMin = (partySize: number) => Math.max(0, partySize - MIN_PARTY);
 export const partyScaling = (partySize: number) => ({
@@ -543,11 +562,15 @@ export const partyScaling = (partySize: number) => ({
   dmg: 1 + PARTY_SCALING.dmg * pastMin(partySize), // every monster's damage multiplier (as a flat bonus per hit, see game.ts)
 });
 
-const MIN_PARTY_BUDGET = 1.8; // a 3-hero party's fights, as they were when budgets were counted from a solo hero
+/**
+ * The run's first fight (act 1, bottom row) is a warm-up: a smaller fight, from the classic line. Level-1 heroes are
+ * fragile, and a party surrounded by six rats could lose the run before making a single choice.
+ */
+export const WARMUP_BUDGET = 0.75;
 
 /** Threat budget for a regular fight. Grows with the act, the map row and the party size. */
 export const encounterBudget = (act: number, row: number, partySize: number) =>
-  (3 + 2 * (act - 1) + Math.floor(row / 3)) * MIN_PARTY_BUDGET * partyScaling(partySize).count;
+  (3 + 2 * (act - 1) + Math.floor(row / 3)) * PARTY_SCALING.base * partyScaling(partySize).count;
 
 /**
  * The monsters split into this many packs against a party (server/monsterai.ts squadPlan), each hunting its own hero:
@@ -555,9 +578,37 @@ export const encounterBudget = (act: number, row: number, partySize: number) =>
  */
 export const packsFor = (partySize: number) => Math.min(3, Math.max(1, Math.round(partySize / 2)));
 
-/** Elites and bosses get extra HP for every hero beyond the first. */
+/**
+ * Elites and bosses fight (mostly) alone, so HP is their lever: against 3 heroes they have `elite` or `boss` times their
+ * HP, and `perHero` more for each hero beyond 3. (It was +25% per hero from 1, which left 3-hero parties facing the
+ * toughest elites per hero and 6-hero parties the softest: bots won 0 of 12 Hard runs with 3 heroes, 10 of 12 with 6.)
+ */
+export const SOLO_HP_SCALING = { elite: 1.1, boss: 1.3, perHero: 0.5 };
 export const scaledHp = (hp: number, partySize: number, boss: boolean) =>
-  Math.round(hp * (1 + (boss ? 0.3 : 0.25) * (partySize - 1)));
+  Math.round(hp * Math.max(0.5, (boss ? SOLO_HP_SCALING.boss : SOLO_HP_SCALING.elite) + SOLO_HP_SCALING.perHero * (partySize - MIN_PARTY)));
+
+/**
+ * Dev knob for the balance pass: the server merges DELVERS_TUNE (JSON, e.g. {"ACT_SCALING":[{},{"hp":1.6}]}) into these
+ * numbers at start, so bot batches can try several settings side by side without editing code.
+ */
+/**
+ * Act bosses: minions per hero in the party (rounded down), and a multiplier on the boss's average hit, so the boss is
+ * the hardest fight of its act. Elites: a multiplier on their average hit (their traits already add a lot).
+ */
+export const BOSS = { minions: 0.75, dmg: 1.4 };
+export const ELITE = { dmg: 1 };
+
+export const TUNABLES: Record<string, object> = { ACT_SCALING, DIFFICULTIES, PARTY_SCALING, SOLO_HP_SCALING, BREATHER, BOSS, ELITE };
+export function tune(patch: Record<string, unknown>) {
+  const merge = (into: Record<string, unknown>, from: Record<string, unknown>) => {
+    for (const [k, v] of Object.entries(from)) {
+      if (!(k in into)) throw new Error(`DELVERS_TUNE: no such knob "${k}"`);
+      if (v && typeof v === 'object' && into[k] && typeof into[k] === 'object') merge(into[k] as Record<string, unknown>, v as Record<string, unknown>);
+      else into[k] = v;
+    }
+  };
+  merge(TUNABLES as Record<string, unknown>, patch);
+}
 
 /** Gold for clearing a room. */
 export const roomGold = (act: number, kind: NodeType) => (kind === 'boss' ? 4 : kind === 'elite' ? 2 : 1) * (8 + 4 * act);

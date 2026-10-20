@@ -28,7 +28,7 @@ export interface TraitDef {
 }
 
 export const TRAITS: Record<TraitId, TraitDef> = {
-  shielded: { name: 'Shielded', icon: '🔰', desc: 'A magic ward soaks the first quarter of its HP in damage, and it comes back every 3rd round.' },
+  shielded: { name: 'Shielded', icon: '🔰', desc: 'A magic ward soaks the first quarter of its HP in damage. Once it breaks, it comes back one time, on the next 3rd round.' },
   vampiric: { name: 'Vampiric', icon: '🩸', desc: 'Heals half the damage its attacks deal.' },
   enraged: { name: 'Enraged', icon: '😡', desc: 'Below half HP it attacks one extra time each turn and deals +2 damage.' },
   swift: { name: 'Swift', icon: '💨', desc: '+3 movement, +5 initiative and +1 AC.' },
@@ -43,13 +43,13 @@ export const isTraitId = (id: unknown): id is TraitId => typeof id === 'string' 
 
 export const AURA_DICE = { n: 1, d: 6 };
 export const WARD_SHARE = 0.25; // Shielded: the ward soaks this share of max HP
-export const WARD_EVERY = 3; // ...and re-forms on every 3rd round
+export const WARD_EVERY = 3; // ...and re-forms once, on the next 3rd round after it breaks (every time made late-act elites unkillable)
 export const SUMMON_EVERY = 2; // Summoner: calls a minion on every 2nd round
 export const MAX_SUMMONS = 3;
 export const ENRAGED_DMG = 2;
 
-/** How many traits an elite gets in this act: one in act 1, one or two in act 2, two in act 3. */
-export const traitCount = (act: number, roll: number) => (act <= 1 ? 1 : act === 2 ? (roll < 0.5 ? 1 : 2) : 2);
+/** How many traits an elite gets in this act: one in act 1, then one or two (two always made act 3's elites spike). */
+export const traitCount = (act: number, roll: number) => (act <= 1 ? 1 : roll < 0.5 ? 1 : 2);
 
 export const hasTrait = (e: Entity, t: TraitId) => e.kind === 'monster' && !!e.traits?.includes(t);
 

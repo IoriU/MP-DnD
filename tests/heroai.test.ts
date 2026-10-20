@@ -219,6 +219,13 @@ test('auto votes: rest when hurt, never an elite at level 1, leave events when n
   for (let i = 0; i < 20; i++) assert.equal(autoEventChoice(['pray', 'leave'], hurt), 'leave');
 });
 
+test('auto votes: a shop when the purse has gold to spend, not when it is empty', () => {
+  const fresh = [hero('fighter', 0, 0), hero('wizard', 0, 0)];
+  const options = [{ id: 'a', type: 'combat' as const }, { id: 's', type: 'shop' as const }];
+  for (let i = 0; i < 30; i++) assert.equal(autoPathChoice(options, fresh, 150), 's');
+  for (let i = 0; i < 30; i++) assert.equal(autoPathChoice(options, fresh, 0), 'a');
+});
+
 // ---------------------------------------------------------------- skills
 
 test('cantrips are used when ready, the basic attack when they are on cooldown', () => {
@@ -338,6 +345,18 @@ test('between rooms: heal spells only with a slot to spare', () => {
 // ---------------------------------------------------------------- positioning & surprise (Phase 4)
 
 /** A Rogue with only the rapier: it has to fight in melee. */
+test('a melee hero walks around a wall toward a monster out of reach, instead of waiting behind it (Phase 13 livelock)', () => {
+  const f = room(20, 12);
+  // A wall across the room; the only way round is at the east end.
+  for (let x = 1; x <= 16; x++) f.tiles = f.tiles.slice(0, 5 * 20 + x) + '#' + f.tiles.slice(5 * 20 + x + 1);
+  const me = hero('fighter', 5, 7);
+  const g = goblin(5, 3);
+  const intent = nextHeroIntent(view(me, [me], [g], freshTurn(), f));
+  assert.equal(intent.kind, 'move', `expected a move, got ${JSON.stringify(intent)}`);
+  const walk = (p: Pos) => reachable(f, g, 99, () => false).get(p.y * 20 + p.x)!;
+  assert.ok(walk((intent as { to: Pos }).to) < walk(me), 'closer by walking distance');
+});
+
 const meleeRogue = (x: number, y: number) => {
   const r = withSkills(hero('rogue', x, y), []);
   r.skills = r.skills.filter((s) => s.id !== 'shortbow');

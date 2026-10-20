@@ -62,8 +62,8 @@ const weighted = <T>(r: Rng, list: [T, number][]): T => {
 };
 
 /** Where a fight starts: an ambush surrounds you, a boss waits at the far end, the rest is a mix. */
-export function pickDeployment(kind: NodeType, start: 'vote' | 'ambush' | 'charge', r: Rng = rng): Deployment {
-  if (kind === 'boss') return 'line';
+export function pickDeployment(kind: NodeType, start: 'vote' | 'ambush' | 'charge', r: Rng = rng, warmup = false): Deployment {
+  if (kind === 'boss' || warmup) return 'line';
   if (start === 'ambush') return 'surrounded';
   return weighted(r, DEPLOYMENTS[kind === 'elite' ? 'elite' : 'combat']);
 }

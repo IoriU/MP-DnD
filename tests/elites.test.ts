@@ -165,13 +165,13 @@ test('monsters that are not allies are the foes, and heroes and NPC allies share
 
 // ---------------------------------------------------------------- traits and auras (pure)
 
-test('traitCount: one trait in act 1, one or two in act 2 (by the roll), two in act 3', () => {
+test('traitCount: one trait in act 1, one or two in acts 2 and 3 (by the roll)', () => {
   assert.equal(traitCount(1, 0), 1);
   assert.equal(traitCount(1, 0.99), 1);
   assert.equal(traitCount(2, 0.2), 1);
   assert.equal(traitCount(2, 0.5), 2);
   assert.equal(traitCount(2, 0.9), 2);
-  assert.equal(traitCount(3, 0), 2);
+  assert.equal(traitCount(3, 0), 1);
   assert.equal(traitCount(3, 0.99), 2);
 });
 
@@ -391,18 +391,21 @@ test('a saved offer card is valid while its skill, boon or gear still exists', (
 
 // ---------------------------------------------------------------- elites in the room
 
-test('an elite rolls one trait in act 1 and two in act 3, never two auras, and is named for its first trait', () => {
+test('an elite rolls one trait in act 1 and one or two in act 3, never two auras, and is named for its first trait', () => {
   const c = battle();
   for (const act of [1, 3]) {
     c.p.run.act = act;
+    const counts = new Set<number>();
     for (let i = 0; i < 40; i++) {
       const m = rollElite(c.p, 'hobgoblin');
       const traits = m.traits ?? [];
-      assert.equal(traits.length, act === 1 ? 1 : 2, `act ${act}`);
+      counts.add(traits.length);
+      assert.ok(act === 1 ? traits.length === 1 : traits.length === 1 || traits.length === 2, `act ${act}: ${traits.length}`);
       assert.equal(new Set(traits).size, traits.length, 'no trait twice');
       assert.ok(traits.filter((t) => TRAITS[t].aura).length <= 1, 'never two auras');
       assert.ok(m.name.startsWith(`${TRAITS[traits[0]].name} `), m.name);
     }
+    if (act === 3) assert.deepEqual([...counts].sort(), [1, 2], 'both counts come up in 40 rolls');
   }
 });
 
@@ -414,17 +417,25 @@ test('Swift adds 3 movement, 1 AC and 5 initiative', () => {
   assert.equal(c.p.initBonus(m), MONSTERS.hobgoblin.dex + 5);
 });
 
-test('a Shielded elite starts with a ward of a quarter of its max HP, and the ward re-forms on every 3rd round', () => {
+test('a Shielded elite starts with a ward of a quarter of its max HP, and the broken ward re-forms once, on a 3rd round', () => {
   const c = battle();
   const m = placeElite(c.p, 'shielded', 6, 5);
   assert.equal(m.ward, Math.round(m.maxHp / 4));
-  m.ward = 0;
-  c.p.turn.round = 2;
-  c.p.eliteTurnStart(m);
-  assert.equal(m.ward, 0, 'not on round 2');
+  m.ward = 5;
   c.p.turn.round = 3;
   c.p.eliteTurnStart(m);
-  assert.equal(m.ward, Math.round(m.maxHp / 4), 're-formed on round 3');
+  assert.equal(m.ward, 5, 'not topped up while it holds');
+  m.ward = 0;
+  c.p.turn.round = 5;
+  c.p.eliteTurnStart(m);
+  assert.equal(m.ward, 0, 'not on round 5');
+  c.p.turn.round = 6;
+  c.p.eliteTurnStart(m);
+  assert.equal(m.ward, Math.round(m.maxHp / 4), 're-formed on round 6');
+  m.ward = 0;
+  c.p.turn.round = 9;
+  c.p.eliteTurnStart(m);
+  assert.equal(m.ward, 0, 'only once a fight');
 });
 
 test('damage to a Shielded elite goes into its ward before its HP', () => {

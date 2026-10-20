@@ -121,7 +121,7 @@ Offers are weighted toward skills you already have, so builds come together.
 | 10 | ~~AI Dungeon Master (local LLM)~~ | ❌ |
 | 11 | Experiments: PPO monsters, bot personalities | 🟢 |
 | 12 | Content backlog | 🟡 |
-| 13 | Balance pass | ⚪ |
+| 13 | Balance pass | 🟡 |
 
 ---
 
@@ -805,7 +805,7 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
     - Tests: `tests/engines.test.ts` (38); the subclass, rewards and XP tests now check that there's no subclass pick. One caught Unleash adding its dice on every dart of a Magic Missile instead of once per target.
     - Bot runs (12, all difficulties, 3-6 heroes): 12/12 won, 0 anomalies, 0 rejected actions, 0 server errors. Main engines at the end: fighters Guardian 8 / Weapon Master 4, wizards Elementalist 5 / Geomancer 2 / Evoker 1, bards Crescendo 5, clerics Order 4, paladins Protection 4, rogues Shadow 4... Engines at work: 9 Finales, 7 raised covers, 6 crushed against walls, 5 shattered ice, 4 knockdown hits, 2 Unleashes.
     - **For Phase 13:** no Duelist build came out (counters rarely fire on bots), and some payoffs never showed in 12 runs (Toxic Catalyst, Knife Juggler, Conductor's arcs, Madness, Split Shot, Unkillable): check the bots pick and use them. Hard is still won every time.
-  - [ ] **Step 4: Phase 13 balance** on the finished design
+  - [x] **Step 4: Phase 13 balance** on the finished design (2026-10-20): see Phase 13 below. All that's left is your playtest.
 - [ ] More monsters and elites per act; alternate bosses
 - [ ] More elements and combos: blood (conducts lightning), curse/bless surfaces, weather events (rain, storms)
 - [ ] Traps and interactive room props (doors, levers, collapsing floors)
@@ -816,16 +816,52 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
 
 ---
 
-## Phase 13: Balance pass ⚪
+## Phase 13: Balance pass 🟡
 
 **When:** after the classes, items and skills are in (Phases 2–7 and enough of Phase 12). Before that, balance is deliberately ignored.
 
-- [ ] Use `npm run balance` (many full bot runs) to measure win rate, where parties die, and kills/XP/levels per class, for party sizes 3–6
-- [ ] Tune the difficulty curve. Known so far: act 1 elites are deadly while acts 2–3 are too easy; small parties without a healer struggle; 3–6 hero parties win every run even on Hard (Phase 9).
-- [ ] Tune XP (kill bonus vs shared base), slots per level, rest healing, gold and item prices
-- [ ] Check the design goals: supports keep up with killers, Long Rest vs Train is a real choice, every class gets picked
-- [ ] Difficulty settings (Phase 9) feel distinct: Story / Normal / Hard, for every party size 3–6. `DIFF=all node scripts/balance.ts N 3,4,5,6` gives the table; the knobs are `DIFFICULTIES`, `PARTY_SCALING`, `scaledHp` and `packsFor` in shared/rules.ts
+Started 2026-10-20, right after the playtest redesign (your call: balance first, then the playtest).
+
+**Targets** (bots playing every hero, scripted monsters): Story about 100% wins, Normal about 85%, Hard about 45%. Losses on Hard should come late rather than at the first fight, and every party size from 3 to 6 should feel the same pressure.
+
+**Where it started** (96 bot runs on the redesign): 95 won, Hard included. After act 1 nothing hurt: in act 3 the heroes hit 8 times in 10 and fights ended in under 3 rounds, and even on Hard the party's lowest HP in an act 3 boss fight averaged 95%. The only losses were Hard parties of 3 wiped in their very first fight (6 rats surrounding level 1 heroes).
+
+- [x] **Measure fast.** `npm run balance-farm` starts several test servers at a high game speed (`DELVERS_SPEED=1000`) and plays a balance client on each: 48 full runs take about 5 minutes instead of 40. The report gained what win rates can't show while the bots win everything:
+  - pressure per difficulty, act and fight kind (combat, elite, boss): downs per fight, the party's lowest HP, the HP it starts the fight with, rounds and wipes
+  - attack rolls per act: how often the monsters hit and how hard, how often the heroes hit
+  - damage share per class (1.00 is an even share), gold per act (in the purse and spent in shops)
+  - `OUT=file.json` keeps every run; `scripts/balance-merge.ts` reports on several files together
+  - `DELVERS_TUNE` (JSON) overrides the knobs in `shared/rules.ts` (`TUNABLES`) at server start, so several settings can be tried side by side without editing code
+- [x] **Monsters grow with the act** (`ACT_SCALING`): act 2 ×1.7 HP, +1 AC, +2 to hit, ×1.6 damage; act 3 ×2.4 HP, +2 AC, +2 to hit, ×2.2 damage. Elites and bosses get less HP (`solo`: ×1.35, ×1.6): with all of it on one body, their fights dragged past 10 rounds.
+- [x] **Bosses are the climax of their act** (`BOSS`): ×1.4 damage, and 0.75 minions per hero (was 1 per 2 heroes). Elites keep a separate damage knob (`ELITE`), left at ×1.
+- [x] **Difficulty damage is a multiplier** now (Story ×0.85, Normal ×1, Hard ×1.2), so Hard bites harder later instead of front-loading act 1. Normal: ×1.1 HP, ×1.15 budget; Hard: ×1.3 HP, +1 to hit, ×1.3 budget.
+- [x] **The run's first fight is a warm-up** (`WARMUP_BUDGET` ×0.75, always the classic line): no more runs lost before the first choice.
+- [x] **Party sizes feel the same** (`PARTY_SCALING`, `SOLO_HP_SCALING`): budgets and elite and boss HP now grow from a 3-hero baseline (budget ×1.4 base, +45% per hero; elites ×1.1, bosses ×1.3, +0.5 per hero). Before, elites had a third more HP per hero against 3 heroes than against 6: bots won 0 of 12 Hard runs with 3 heroes and 10 of 12 with 6. Now the party's lowest HP per fight is the same for 3 to 6 heroes (Normal 79–83%, Hard 68–72%).
+- [x] **The after-fight breather** heals 15% (was 20%, `BREATHER`)
+- [x] **Rule fixes the runs turned up:**
+  - 🔰 **Shielded**'s ward (a quarter of max HP) came back every 3rd round forever. With act-scaled HP, late elites became unkillable (a Fire Drake at full HP after 40 rounds). It comes back once now.
+  - 🩸 **Worn down** (new, `MAX_DOWNS`): each time a hero goes down again in the same fight, their death saves start one failure worse, and the 4th fall is death (an Injury after the fight). A monster that kept hitting the same groggy hero, who was hauled back up every turn, made a 176-round fight. ⚠️ A new rule: say if you'd rather not have it.
+- [x] **Hero bot fixes:**
+  - They walk around walls: they headed for monsters by straight-line distance, so a wall between them and a boss kept two healthy heroes waiting behind it for 40 rounds
+  - They don't haul up a friend who would only go down again before their turn, unless that friend is close to dying
+  - They count the act's bonus damage when they judge how hard monsters hit
+  - They go to the shop when they have gold (they used to skip shops, so gold piled up: about 540 left at the end, now about 350, with 2.5 shop visits and 8 purchases per run)
+- [x] **Design goals:** supports keep up (classes end within a level of each other: bards and clerics about 7, rogues and rangers about 7.4); Long Rest vs Train is still a choice (about 65 / 35 now that fights hurt); every engine shows up in bot builds, and within a class the engines deal similar damage (±11%). Nearly every engine payoff fires now that fights last: Unkillable, Split Shot, Knife Juggler, shock arcs, Counterattack (261 per 144 runs) and Finale (243). Madness still never fires.
+- [x] XP, slots, gold income and prices: left as they are (levels 7–8 at the end, the shop gets used)
 - [ ] Playtest with real people, then adjust
+
+**Result (2026-10-20):** 144 runs on the final numbers (in brackets: 144 on the step before, a little harder for 3 heroes), 0 anomalies, 0 stuck fights:
+
+| | Wins | Lowest party HP: combat / elite / boss (act 3) | Rounds: combat / elite / boss (act 3) |
+|---|---|---|---|
+| 📖 Story | 100% (98%) | 92% / 89% / 89% | 3.0 / 4.1 / 5.1 |
+| ⚔️ Normal | 85% (85%) | 82% / 72% / 82% | 4.3 / 6.1 / 8.0 |
+| 💀 Hard | 48% (46%) | 68% / 49% / 67% | 5.2 / 8.1 / 9.2 |
+
+- On Hard most losses come in acts 2 and 3 (4 in act 1, 10 in act 2, 11 in act 3); the deadliest fights are the act 2 elites and boss (Wight, Spider Broodmother, Bone Knight) and the Orc Warchief.
+- A run takes about 1.5 minutes at bot speed. Deaths per run: Normal 0.7, Hard 2.0, so Injury matters now.
+- Still uneven: 3-hero parties win a bit less than bigger ones with the same average pressure (one down is a third of the party). Worth watching in the playtest, since you and a friend plus a bot make 3.
+- Bots aren't players. Treat these numbers as a starting point for your playtest, not the final word.
 
 ---
 
@@ -850,5 +886,5 @@ Started 2026-10-19. Order: the codex first (to see the pools), then monster abil
 
 ## Known issues / tech debt
 
-- Balance is deliberately untuned until the Balance pass (Phase 13).
+- Balance is tuned against bot runs (Phase 13); the playtest with real people is still to come.
 - `window.delvers` debug handle is exposed in the client (handy, harmless).

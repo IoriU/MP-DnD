@@ -4,7 +4,7 @@ import { ENGINE_IDS } from '../../../shared/engines.ts';
 import { GEAR_IDS, CONSUMABLE_IDS, BLESSING_IDS, RELIC_IDS } from '../../../shared/items.ts';
 import { ALLY_IDS, TRAIT_IDS } from '../../../shared/elites.ts';
 import {
-  ACT_ROWS, ACTS, AMBUSH_CHANCE, BOON_HP, BREATH_DC, CLASS_IDS, COWARD_HP, COWARD_TURNS, DIFFICULTIES, DIFFICULTY_IDS, LEVEL_CAP, MAP_COLS,
+  ACT_ROWS, ACT_SCALING, ACTS, AMBUSH_CHANCE, BOON_HP, BOSS, BREATH_DC, BREATHER, ELITE, MAX_DOWNS, SOLO_HP_SCALING, WARMUP_BUDGET, CLASS_IDS, COWARD_HP, COWARD_TURNS, DIFFICULTIES, DIFFICULTY_IDS, LEVEL_CAP, MAP_COLS,
   MAX_ACT, MAX_BONUS_AC, MAX_CANTRIPS, MAX_PLAYERS, MAX_SPELLS, MIN_PARTY, MONSTERS, PARTY_SCALING, REST_HEAL, REST_MS, STEAL_SHARE,
   STEALTH_DC_BASE, TIER3_LEVEL, VOTE_MS, XP_ASSIST, XP_BUFF, XP_CATCH_UP, XP_HEAL, XP_KILL, XP_REVIVE, XP_SHARED, encounterBudget, packsFor,
   partyScaling, passiveSlots, profBonus, roomGold, scaledHp, xpToNext,
@@ -75,7 +75,7 @@ const difficulties = () =>
     DIFFICULTY_IDS.map((id) => {
       const d = DIFFICULTIES[id];
       const sign = (n: number) => (n > 0 ? `+${n}` : String(n));
-      return `<tr>${td(`${d.icon} <b>${d.name}</b>`)}${td(`×${d.hp}`)}${td(sign(d.atk))}${td(sign(d.dmg))}${td(`×${d.budget}`)}${td(d.squad ? 'yes' : 'no')}${td(`${Math.round(d.slip * 100)}%`)}${td(esc(d.desc), undefined, 'wide')}${td(srcTag('difficulty', id))}</tr>`;
+      return `<tr>${td(`${d.icon} <b>${d.name}</b>`)}${td(`×${d.hp}`)}${td(sign(d.atk))}${td(`×${d.dmg}`)}${td(`×${d.budget}`)}${td(d.squad ? 'yes' : 'no')}${td(`${Math.round(d.slip * 100)}%`)}${td(esc(d.desc), undefined, 'wide')}${td(srcTag('difficulty', id))}</tr>`;
     }).join(''),
   );
 
@@ -90,7 +90,16 @@ function partyTable(): string {
     ${row('Elite HP (per 100 base)', (n) => scaledHp(100, n, false))}
     ${row('Boss HP (per 100 base)', (n) => scaledHp(100, n, true))}
   </tbody></table></div>
-  <p class="muted note">Per hero past ${MIN_PARTY}: +${PARTY_SCALING.count * 100}% encounter budget, +${PARTY_SCALING.hp * 100}% HP, +${PARTY_SCALING.dmg * 100}% damage (${srcConst('PARTY_SCALING')}). Elites and bosses use scaledHp instead (${srcConst('scaledHp')}).</p>`;
+  <p class="muted note">Per hero past ${MIN_PARTY}: +${fmtNum(PARTY_SCALING.count * 100)}% encounter budget, +${fmtNum(PARTY_SCALING.hp * 100)}% HP, +${fmtNum(PARTY_SCALING.dmg * 100)}% damage (${srcConst('PARTY_SCALING')}). Elites and bosses use scaledHp instead: ×${fmtNum(SOLO_HP_SCALING.elite)} (elites) or ×${fmtNum(SOLO_HP_SCALING.boss)} (bosses) against ${MIN_PARTY} heroes, +${fmtNum(SOLO_HP_SCALING.perHero)} per hero past that (${srcConst('SOLO_HP_SCALING')}).</p>`;
+}
+
+/** ACT_SCALING, BOSS and ELITE (Phase 13): how every monster grows with the act, on top of its stat block. */
+function actTable(): string {
+  const body = ACT_SCALING.map((a, i) =>
+    `<tr>${td(`${ACTS[i]?.glyph ?? ''} Act ${i + 1}`)}${td(`×${fmtNum(a.hp)}`)}${td(`×${fmtNum(a.solo)}`)}${td(a.ac ? `+${a.ac}` : '—')}${td(a.atk ? `+${a.atk}` : '—')}${td(`×${fmtNum(a.dmg)}`)}</tr>`,
+  ).join('');
+  return `${wrapTable([th('Act'), th('Monster HP'), th('Elite and boss HP'), th('AC'), th('Attack'), th('Damage')].join(''), body)}
+    <p class="muted note">On top of every stat block (${srcConst('ACT_SCALING')}), so the monsters keep up with heroes who pick a card after every fight. Damage is a multiplier on the average hit, added as a flat bonus per hit. Bosses hit ×${fmtNum(BOSS.dmg)} harder and bring ${fmtNum(BOSS.minions)} minion per hero (${srcConst('BOSS')}); elites hit ×${fmtNum(ELITE.dmg)} (${srcConst('ELITE')}). The run's first fight is a warm-up: ×${fmtNum(WARMUP_BUDGET)} budget, from the classic line (${srcConst('WARMUP_BUDGET')}).</p>`;
 }
 
 function budgetTable(): string {
@@ -120,7 +129,8 @@ function constants(): string {
     c('LEVEL_CAP', LEVEL_CAP), c('TIER3_LEVEL', TIER3_LEVEL), c('MAX_CANTRIPS', MAX_CANTRIPS), c('MAX_SPELLS', MAX_SPELLS),
     c('XP_SHARED', XP_SHARED), c('XP_KILL', XP_KILL), c('XP_ASSIST', XP_ASSIST), c('XP_HEAL', XP_HEAL), c('XP_REVIVE', XP_REVIVE), c('XP_BUFF', XP_BUFF),
     c('XP_CATCH_UP', XP_CATCH_UP), c('STEAL_SHARE', STEAL_SHARE),
-    c('REST_HEAL', REST_HEAL), c('REST_MS', `${REST_MS / 1000}s`), c('BOON_HP', BOON_HP), c('MAX_BONUS_AC', MAX_BONUS_AC),
+    c('REST_HEAL', REST_HEAL), ['BREATHER.heal (after every won fight)', BREATHER.heal, srcConst('BREATHER')], c('REST_MS', `${REST_MS / 1000}s`), c('BOON_HP', BOON_HP), c('MAX_BONUS_AC', MAX_BONUS_AC),
+    ['MAX_DOWNS (worn down: the 4th fall in one fight is death)', MAX_DOWNS, srcConst('MAX_DOWNS')],
     c('STEALTH_DC_BASE', STEALTH_DC_BASE), c('AMBUSH_CHANCE', AMBUSH_CHANCE), c('BREATH_DC', BREATH_DC), c('COWARD_HP', COWARD_HP), c('COWARD_TURNS', COWARD_TURNS),
   ]);
 }
@@ -146,7 +156,8 @@ export const overview: TabDef = {
       ${group('Pools', counts())}
       ${group('Coverage goals', coverageBars(), 'Targets from PLAN.md Phase 12.')}
       ${checkList(list)}
-      ${group('Difficulties', difficulties(), 'The numbers are placeholders until the balance pass (Phase 13).')}
+      ${group('Difficulties', difficulties(), 'Tuned in the balance pass (Phase 13) with bot runs; see PLAN.md for the win rates.')}
+      ${group('Monsters by act', actTable())}
       ${group('Party scaling', partyTable())}
       ${group('Encounter budget', budgetTable())}
       ${group('Levels', levelTable())}

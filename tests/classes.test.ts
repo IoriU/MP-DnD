@@ -10,7 +10,7 @@ import { nextHeroIntent, type HeroIntent, type HeroView } from '../server/heroai
 import { recalcHero, startingSkills } from '../server/progression.ts';
 import { rng } from '../server/rng.ts';
 import { describeStats, gearAlert, gearBonus, gearResist, statBlocks } from '../shared/items.ts';
-import { CLASSES, CLASS_IDS, MAX_CANTRIPS, MAX_SPELLS, MONSTERS, maxHpFor, passiveSlots } from '../shared/rules.ts';
+import { BREATHER, CLASSES, CLASS_IDS, MAX_CANTRIPS, MAX_SPELLS, MONSTERS, maxHpFor, passiveSlots } from '../shared/rules.ts';
 import {
   SKILLS, SKILL_IDS, STATUSES, attackBonus, describeSkill, heroDc, ownedSkill, resolveAim, skillBlockReason, statsAt, statsOf,
   type SkillId, type SkillKind, type StatusId,
@@ -353,19 +353,23 @@ function afterFight(classes: ClassId[], songs: [1 | 2 | 3, ('A' | 'B')?][], maxH
   return { p, heroes, hp: heroes.map((h) => h.hp), slots: heroes.map((h) => h.slots) };
 }
 
+/** HP after the fight from 1 HP: the breather (BREATHER.heal) plus a song's share, of 44 max HP. */
+const healedTo = (song: number, maxHp = 44) => 1 + Math.ceil(maxHp * (BREATHER.heal + song) - 1e-9);
+
 test('Song of Rest: the post-fight heal grows by 5, 10 or 15 percent of max HP, for the whole party, best song only', () => {
-  assert.deepEqual(afterFight(['fighter', 'cleric'], []).hp, [10, 10], 'the usual 20%: 1 + 9');
-  assert.deepEqual(afterFight(['bard', 'fighter'], [[1]]).hp, [12, 12], '25%: 1 + 11');
-  assert.deepEqual(afterFight(['bard', 'fighter'], [[2]]).hp, [15, 15], '30%: 1 + 14');
-  assert.deepEqual(afterFight(['bard', 'fighter'], [[3, 'A']]).hp, [17, 17], '35%: 1 + 16');
+  assert.deepEqual(afterFight(['fighter', 'cleric'], []).hp, [healedTo(0), healedTo(0)], 'the usual breather');
+  assert.deepEqual(afterFight(['bard', 'fighter'], [[1]]).hp, [healedTo(0.05), healedTo(0.05)], '+5%');
+  assert.deepEqual(afterFight(['bard', 'fighter'], [[2]]).hp, [healedTo(0.1), healedTo(0.1)], '+10%');
+  assert.deepEqual(afterFight(['bard', 'fighter'], [[3, 'A']]).hp, [healedTo(0.15), healedTo(0.15)], '+15%');
   const two = afterFight(['bard', 'bard'], [[1], [2]]);
-  assert.deepEqual(two.hp, [15, 15], 'two bards: they do not add up');
-  assert.ok(two.p.log.some((l: { text: string }) => /heals 30% of their max HP/.test(l.text)));
+  assert.deepEqual(two.hp, [healedTo(0.1), healedTo(0.1)], 'two bards: they do not add up');
+  const pct = Math.round((BREATHER.heal + 0.1) * 100);
+  assert.ok(two.p.log.some((l: { text: string }) => l.text.includes(`heals ${pct}% of their max HP`)));
 });
 
 test('Encore (Song of Rest III-B) gives the Bard a slot back after the fight (up to the maximum), the plain song does not', () => {
   const encore = afterFight(['bard', 'fighter'], [[3, 'B']]);
-  assert.deepEqual([encore.slots, encore.hp], [[1, 0], [15, 15]], 'only the Bard, one slot, and the song still heals 10%');
+  assert.deepEqual([encore.slots, encore.hp], [[1, 0], [healedTo(0.1), healedTo(0.1)]], 'only the Bard, one slot, and the song still heals 10%');
   assert.deepEqual(afterFight(['bard', 'fighter'], [[2]]).slots, [0, 0]);
   const full = battle(['bard', 'fighter']);
   full.heroes[0].skills.push(own('song_of_rest', 3, 'B'));
@@ -373,9 +377,17 @@ test('Encore (Song of Rest III-B) gives the Bard a slot back after the fight (up
   assert.equal(full.heroes[0].slots, full.heroes[0].maxSlots, 'full stays full');
 });
 
-// A float away from passing: 0.2 + 0.1 is 0.30000000000000004, and ceil(40 * that) is 13.
+// A float away from passing: 0.2 + 0.1 is 0.30000000000000004, and ceil(40 * that) is 13 (not 12).
 test('Song of Rest at 10% heals exactly 10% more, whatever the max HP', () => {
-  assert.equal(afterFight(['bard', 'fighter'], [[2]], 40).hp[0], 1 + 12);
+  for (const heal of [0.2, BREATHER.heal]) {
+    const was = BREATHER.heal;
+    BREATHER.heal = heal;
+    try {
+      assert.equal(afterFight(['bard', 'fighter'], [[2]], 40).hp[0], 1 + Math.round(40 * (heal + 0.1)), `breather ${heal}`);
+    } finally {
+      BREATHER.heal = was;
+    }
+  }
 });
 
 function lobby(host: ClassId) {

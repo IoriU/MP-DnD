@@ -112,6 +112,7 @@ export interface MonsterEntity extends EntityBase {
   ally?: boolean; // an NPC ally: fights for the party, run by the monster AI (shared/elites.ts)
   traits?: TraitId[]; // elite traits (shared/elites.ts)
   ward?: number; // Shielded: damage the ward still soaks
+  wardBack?: boolean; // Shielded: the ward has come back once already
   atkBonus?: number; // on top of its stat block (NPC allies grow with the act)
   dmgBonus?: number;
   summons?: number; // Summoner: minions called so far

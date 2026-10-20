@@ -133,16 +133,16 @@ const isSetup = (s: SkillStats) => (!!s.surface && s.surface.at !== 'self' && !s
 
 // ---------------------------------------------------------------- numbers about monsters
 
-/** Damage a monster deals in a round if every attack lands. */
+/** Damage a monster deals in a round if every attack lands (with what the act, the party and the difficulty add). */
 function fullDamage(m: MonsterEntity): number {
   const d = MONSTERS[m.type];
-  return d ? d.attacks * avgDice(d.dmg) : 5;
+  return d ? d.attacks * Math.max(1, avgDice(d.dmg) + (m.dmgBonus ?? 0)) : 5;
 }
 
 /** Expected damage per round against a typical hero (AC 15). */
 function threat(m: MonsterEntity): number {
   const d = MONSTERS[m.type];
-  return d ? fullDamage(m) * d20(d.atk, 15) : 3;
+  return d ? fullDamage(m) * d20(d.atk + (m.atkBonus ?? 0), 15) : 3;
 }
 
 const isMelee = (m: MonsterEntity) => (MONSTERS[m.type]?.range ?? 1) <= 1;
@@ -197,6 +197,7 @@ interface FieldCache {
   frosty: boolean; // a monster's attacks are cold or lightning (a Wet hero freezes or gets stunned)
   propAims: Pos[]; // oil barrels and braziers with a monster near enough to care
   previews: Map<string, Preview | null>;
+  paths: Map<string, Map<number, number>>; // walking distance to the enemies (or downed friends) from every tile
 }
 
 /** Not a hazard yet, but asking for one: oil when monsters throw fire, water or steam when their attacks freeze or shock. */
@@ -221,7 +222,7 @@ function fieldCache(field: FieldLike, me: PlayerEntity, monsters: MonsterEntity[
     if (harm + risk > 0) (stand ??= new Float64Array(n))[i] = harm + risk;
   }
   const propAims = props.map((i) => tilePos(field, i)).filter((p) => monsters.some((m) => dist(m, p) <= 2));
-  return { field, empty: !tiles.size && !props.length, walk, stand, fiery, frosty, propAims, previews: new Map() };
+  return { field, empty: !tiles.size && !props.length, walk, stand, fiery, frosty, propAims, previews: new Map(), paths: new Map() };
 }
 
 /** Which elements the standing party could bring to oil or water before it's gone (you a bit more surely than a friend). */
@@ -858,16 +859,27 @@ function hiddenWorth(sim: Sim): number {
   return hideValue(sim, without(sim.me, 'hidden'), h.power);
 }
 
+/**
+ * How much getting a downed friend up is worth (of REVIVE): they come back Groggy and lose their next turn, so with the
+ * monsters around them able to put them down again first, it mostly just saves their death saves (and each time they
+ * go down again in a fight their saves start worse, see game.ts MAX_DOWNS). A friend close to dying is worth it anyway.
+ */
+function upAgain(sim: Sim, f: PlayerEntity, hp: number): number {
+  const hits = sim.monsters.filter((m) => !skipsTurn(m) && dist(m, f) <= reachOf(m)).reduce((n, m) => n + 0.6 * fullDamage(m), 0);
+  const odds = hits < hp ? 1 : hits < 2 * hp ? 0.5 : 0.15;
+  return f.saves.fail >= 2 ? Math.max(odds, 0.7) : odds;
+}
+
 const healWeight = (f: PlayerEntity) => (hpPct(f) < 0.35 ? 1.6 : hpPct(f) < 0.6 ? 0.9 : 0.3);
 
 /** Heals and buffs on one friend (you included). */
 function friendValue(sim: Sim, s: SkillStats, f: PlayerEntity): number {
   let v = 0;
-  if (s.helpUp) return f.downed ? REVIVE + Math.ceil(f.maxHp * HELP_UP_HP) : 0;
+  if (s.helpUp) return f.downed ? REVIVE * upAgain(sim, f, Math.ceil(f.maxHp * HELP_UP_HP)) + Math.ceil(f.maxHp * HELP_UP_HP) : 0;
   if (s.heal) {
     const amt = avgDice(s.heal) + healBonus(sim.me, s);
     const missing = f.maxHp - f.hp;
-    if (f.downed) v += s.noRevive ? 0 : REVIVE + amt;
+    if (f.downed) v += s.noRevive ? 0 : REVIVE * upAgain(sim, f, amt) + amt;
     else v += Math.min(amt, missing) * healWeight(f) + (s.overheal ? Math.max(0, amt - missing) * 0.3 : 0);
   } else if (!standing(f)) {
     return 0; // buffs don't help someone lying on the floor
@@ -1539,11 +1551,25 @@ function bestMove(sim: Sim, scoreAt: (p: Sim) => number): Pos | null {
 const dangerAt = (p: Sim) => (p.ranged.has(p.me.id) ? danger(p) * (hpPct(p.me) < 0.5 ? 6 : 4) : 0);
 const nearestFoe = (p: Sim) => Math.min(99, ...p.monsters.map((m) => dist(p.me, m)));
 
+/**
+ * Walking distance from this spot to the nearest goal, around walls and crates (creatures don't count, they move).
+ * Straight-line distance kept melee heroes pinned behind a wall 3 tiles from a boss forever: every step around it
+ * looked like a step away. Worked out once per decision for each set of goals; tiles it can't reach count as far.
+ */
+function walkDist(p: Sim, key: string, goals: Pos[]): number {
+  let field = p.fx.paths.get(key);
+  if (!field) {
+    field = new Map();
+    for (const g of goals) for (const [i, n] of reachable(p.fx.field, g, 99, () => false)) if (n < (field.get(i) ?? Infinity)) field.set(i, n);
+    p.fx.paths.set(key, field);
+  }
+  return Math.min(99, field.get(p.me.y * p.fx.field.width + p.me.x) ?? 20 + Math.min(...goals.map((g) => dist(p.me, g))));
+}
+
 /** Where to head when nothing is in reach: a downed friend if you can get them up, else the nearest enemy. */
 function approachDist(p: Sim): number {
   const downed = p.heroes.filter((h) => h.downed && !h.dead);
-  const goals = p.healer && downed.length ? downed : p.monsters;
-  return Math.min(99, ...goals.map((g) => dist(p.me, g)));
+  return p.healer && downed.length ? walkDist(p, `downed:${downed.map((h) => h.id).join(',')}`, downed) : walkDist(p, 'foes', p.monsters);
 }
 
 /** Friends standing across a monster from you: you give them flanking (advantage) on it. */
@@ -1572,7 +1598,7 @@ function engageAt(p: Sim): number {
 function afterAt(p: Sim): number {
   let score = spend(plansFrom(p, false), p.turn.ap).score;
   if (p.ranged.has(p.me.id)) score += Math.min(nearestFoe(p), 3) * 0.2;
-  else score -= Math.max(0, nearestFoe(p) - 1) * 0.3;
+  else score -= Math.max(0, walkDist(p, 'foes', p.monsters) - 1) * 0.3;
   return score + FLANK_GIFT * flanksGiven(p) - dangerAt(p) - standCost(p);
 }
 
@@ -1647,7 +1673,7 @@ export function upkeepIntent(hero: PlayerEntity, heroes: PlayerEntity[]): HeroIn
 }
 
 /** Map vote for an all-auto party: rest when hurt, elites when healthy, otherwise a bit of everything. */
-export function autoPathChoice(options: { id: string; type: NodeType }[], heroes: PlayerEntity[]): string {
+export function autoPathChoice(options: { id: string; type: NodeType }[], heroes: PlayerEntity[], gold = 0): string {
   const alive = heroes.filter((p) => !p.dead);
   const health = alive.length ? alive.reduce((s, p) => s + hpPct(p), 0) / alive.length : 0;
   const level = alive.length ? alive.reduce((s, p) => s + p.level, 0) / alive.length : 1;
@@ -1657,7 +1683,7 @@ export function autoPathChoice(options: { id: string; type: NodeType }[], heroes
     treasure: 2,
     event: 1.5,
     combat: 1.2,
-    shop: 0.5,
+    shop: gold >= 120 ? 2.2 : gold >= 60 ? 1.3 : 0.4, // worth it with gold to spend (the party's purse)
     boss: 10,
   };
   let best = options[0];
