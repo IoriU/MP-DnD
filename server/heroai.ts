@@ -9,7 +9,7 @@
 // friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
 import { DIRS, canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
-import { AP_GAIN, AP_MAX, ATTACK_AP, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
+import { AP_GAIN, AP_MAX, ATTACK_AP, BOSS, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
 import { attackAdvantage, canReact, coverFrom, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
   CLEANSED,
@@ -136,13 +136,13 @@ const isSetup = (s: SkillStats) => (!!s.surface && s.surface.at !== 'self' && !s
 /** Damage a monster deals in a round if every attack lands (with what the act, the party and the difficulty add). */
 function fullDamage(m: MonsterEntity): number {
   const d = MONSTERS[m.type];
-  return d ? d.attacks * Math.max(1, avgDice(d.dmg) + (m.dmgBonus ?? 0)) : 5;
+  return d ? d.attacks * Math.max(1, avgDice(d.dmg) + (m.dmgBonus ?? 0)) * (1 + BOSS.furyDmg * stacksOf(m, 'fury')) : 5;
 }
 
 /** Expected damage per round against a typical hero (AC 15). */
 function threat(m: MonsterEntity): number {
   const d = MONSTERS[m.type];
-  return d ? fullDamage(m) * d20(d.atk + (m.atkBonus ?? 0), 15) : 3;
+  return d ? fullDamage(m) * d20(d.atk + (m.atkBonus ?? 0) + BOSS.furyAtk * stacksOf(m, 'fury'), 15) : 3;
 }
 
 const isMelee = (m: MonsterEntity) => (MONSTERS[m.type]?.range ?? 1) <= 1;
@@ -708,7 +708,11 @@ function foeValue(
   // Damage into Block or a ward is worth a little (it's gone for the next hit), the rest counts up to its HP.
   const soak = soakOf(m);
   const into = hit.dmg >= 0 ? Math.min(Math.max(0, hit.dmg - soak), m.hp) + 0.3 * Math.min(hit.dmg, soak) : Math.max(hit.dmg, m.hp - m.maxHp);
-  let v = into + hit.kill * killValue(m);
+  // A boss fight is a race: when the boss falls the rest flee (they count as killed), and a Rise Again boss's minions
+  // don't stay down while it stands.
+  const rises = !m.boss && sim.monsters.some((b) => b.boss && MONSTERS[b.type]?.signature === 'rise');
+  let v = into + hit.kill * killValue(m) * (rises ? 0.4 : 1);
+  if (m.boss) v += 0.25 * into + hit.kill * sim.monsters.filter((x) => x.id !== m.id).reduce((n, x) => n + killValue(x), 0);
   if (hit.dmg > 0) {
     if (m.boss || m.elite) v += 1.5;
     if (main) v -= m.hp * 0.02; // tie-break toward the wounded

@@ -97,6 +97,7 @@ export const usedAsFoe = (u: Usage): boolean => usageActs(u).length > 0 || u.eve
 /** Statuses the game engine applies without a skill's stats saying so: the battlefield, the elements, the ambush rules and the build engines' passives. */
 const ENGINE_STATUSES: Record<string, string> = {
   groggy: 'getting back up from 0 HP (Help Up, a heal)',
+  fury: "the Dread Wyrm's Wrath (one stack a round from round 4)",
   burning: 'fire and burning ground',
   poisoned: 'poison ground and gas',
   stunned: 'lightning on a Wet creature',

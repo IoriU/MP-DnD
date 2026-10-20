@@ -14,7 +14,7 @@ import { ALLIES, ENRAGED_DMG, auraOf, hasTrait, isAllyNpc, isFoe, sameSide } fro
 import { DIRS, canStep, dist, hasLOS } from '../shared/grid.ts';
 import { gearBonus } from '../shared/items.ts';
 import {
-  CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
+  BOSS, CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
   type Difficulty, type OrderId, type Role,
 } from '../shared/rules.ts';
 import { ROOTED, SKILLS, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, statsOf, type Element, type StatusApply } from '../shared/skills.ts';
@@ -88,8 +88,10 @@ const acOf = (e: Entity) => e.ac + e.statuses.reduce((s, x) => s + (x.id === 'sh
 const ehp = (e: Entity) => Math.max(1, e.hp + blockOf(e) + (e.kind === 'player' ? e.tempHp : (e.ward ?? 0)));
 const enraged = (m: MonsterEntity) => hasTrait(m, 'enraged') && m.hp < m.maxHp / 2;
 const rallyOf = (e: Entity) => e.statuses.find((x) => x.id === 'rallied')?.power ?? 0;
-const atkOf = (m: MonsterEntity) => MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + rallyOf(m);
-const dmgOf = (m: MonsterEntity) => avgDice(MONSTERS[m.type].dmg) + (m.dmgBonus ?? 0) + (enraged(m) ? ENRAGED_DMG : 0) + rallyOf(m);
+const furyOf = (e: Entity) => e.statuses.find((x) => x.id === 'fury')?.power ?? 0;
+const atkOf = (m: MonsterEntity) => MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + rallyOf(m) + BOSS.furyAtk * furyOf(m);
+const dmgOf = (m: MonsterEntity) =>
+  (avgDice(MONSTERS[m.type].dmg) + (m.dmgBonus ?? 0)) * (1 + BOSS.furyDmg * furyOf(m)) + (enraged(m) ? ENRAGED_DMG : 0) + rallyOf(m);
 const attacksOf = (m: MonsterEntity) => MONSTERS[m.type].attacks + (enraged(m) ? 1 : 0);
 export const elementOf = (m: MonsterEntity): Element => auraOf(m) ?? MONSTERS[m.type].element ?? 'physical';
 const rangeOf = (m: MonsterEntity) => MONSTERS[m.type].range;

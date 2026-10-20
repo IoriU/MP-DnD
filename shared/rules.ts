@@ -258,6 +258,7 @@ export interface MonsterDef {
   resist?: Partial<Record<Element, Resist>>;
   death?: { ground?: GroundId; cloud?: CloudId; radius: number; text: string }; // what it leaves behind when it dies
   breath?: boolean; // fire breath every 3rd round
+  signature?: BossSignature; // an act boss's own mechanic (BOSS_SIGNATURES)
   role?: Role; // how it fights (default: archer if it shoots, else brute)
   shove?: boolean; // shoves heroes into fire, poison and other hazards when it can (STR contest, like the heroes' Shove)
   support?: { heal: Dice; buff: StatusApply }; // a support's spells, at its attack range: mend a hurt friend, or buff one
@@ -343,7 +344,7 @@ export const MONSTERS: Record<string, MonsterDef> = {
     support: { heal: { n: 1, d: 8, bonus: 2 }, buff: { id: 'rallied', turns: 3, power: 1, stack: 3 } },
   }),
   hobgoblin: m('Hobgoblin Captain', '👿', 30, 17, 5, { n: 1, d: 8, bonus: 3 }, 10, { attacks: 2, str: 3, wis: 1, shove: true, leader: true, block: 3, verb: 'cuts' }),
-  goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, shove: true, leader: true, verb: 'slashes' }),
+  goblin_king: m('Goblin King', '👑', 50, 16, 5, { n: 1, d: 10, bonus: 3 }, 0, { attacks: 2, dex: 2, str: 3, wis: 1, xp: 200, shove: true, leader: true, signature: 'horn', verb: 'slashes' }),
   mimic: m('Mimic', '📦', 30, 12, 4, { n: 1, d: 8, bonus: 2 }, 10, { attacks: 2, speed: 4, dex: 0, str: 3, verb: 'chomps' }),
   // Act 2: Forgotten Crypt
   skeleton: m('Skeleton', '💀', 13, 13, 4, { n: 1, d: 6, bonus: 2 }, 3, { dex: 2, wis: -1, resist: { poison: 'immune' }, block: 2, verb: 'hacks' }),
@@ -373,7 +374,7 @@ export const MONSTERS: Record<string, MonsterDef> = {
     trick: { name: 'Web', icon: '🕸️', verb: 'spits a web at', range: 4, save: 'dex', dc: 13, status: [{ id: 'webbed', turns: 3 }], cooldown: 3 },
   }),
   bone_knight: m('Bone Knight', '☠️', 85, 17, 7, { n: 2, d: 6, bonus: 4 }, 0, {
-    attacks: 2, str: 4, wis: 2, xp: 350, shove: true, leader: true, block: 5, resist: { poison: 'immune' }, verb: 'cleaves',
+    attacks: 2, str: 4, wis: 2, xp: 350, shove: true, leader: true, block: 5, resist: { poison: 'immune' }, signature: 'rise', verb: 'cleaves',
   }),
   // Act 3: Dragon's Lair
   orc: m('Orc', '👹', 15, 13, 5, { n: 1, d: 12, bonus: 3 }, 4, { str: 3, shove: true, verb: 'cleaves' }),
@@ -396,7 +397,7 @@ export const MONSTERS: Record<string, MonsterDef> = {
   warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, shove: true, leader: true, verb: 'cleaves' }),
   drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, resist: { fire: 'immune' }, verb: 'rends' }),
   wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, {
-    attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, shove: true, leader: true, resist: { fire: 'resist' }, verb: 'rends',
+    attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, shove: true, leader: true, resist: { fire: 'resist' }, signature: 'wrath', verb: 'rends',
   }),
   // NPC allies (shared/elites.ts): they fight for the party; act 1 numbers, they grow with the act
   sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, shove: true, block: 2, verb: 'cuts' }),
@@ -426,7 +427,7 @@ export interface ActDef {
   elites: string[];
   escorts: Record<string, string[]>; // elite -> monsters that may join it
   boss: string;
-  minions: string[]; // join the boss
+  minions: string[]; // join the boss (and answer a War Horn, or rise again)
 }
 
 export const ACTS: ActDef[] = [
@@ -583,7 +584,7 @@ export const packsFor = (partySize: number) => Math.min(3, Math.max(1, Math.roun
  * HP, and `perHero` more for each hero beyond 3. (It was +25% per hero from 1, which left 3-hero parties facing the
  * toughest elites per hero and 6-hero parties the softest: bots won 0 of 12 Hard runs with 3 heroes, 10 of 12 with 6.)
  */
-export const SOLO_HP_SCALING = { elite: 1.1, boss: 1.3, perHero: 0.5 };
+export const SOLO_HP_SCALING = { elite: 1.1, boss: 0.9, perHero: 0.5 };
 export const scaledHp = (hp: number, partySize: number, boss: boolean) =>
   Math.round(hp * Math.max(0.5, (boss ? SOLO_HP_SCALING.boss : SOLO_HP_SCALING.elite) + SOLO_HP_SCALING.perHero * (partySize - MIN_PARTY)));
 
@@ -594,8 +595,20 @@ export const scaledHp = (hp: number, partySize: number, boss: boolean) =>
 /**
  * Act bosses: minions per hero in the party (rounded down), and a multiplier on the boss's average hit, so the boss is
  * the hardest fight of its act. Elites: a multiplier on their average hit (their traits already add a lot).
+ * A boss fight is a race (your call, 2026-10-20): killing the boss ends the fight (the rest flee), and each boss has one
+ * signature that punishes a slow fight (BOSS_SIGNATURES). The numbers for those are here: War Horn calls `callPerHero`
+ * minions per hero (at least one) every `callEvery` rounds; Rise Again stands a fallen minion back up `riseAfter` rounds
+ * later; Wrath adds a 😡 Fury stack every round from round `furyFrom` (+`furyAtk` to hit, +`furyDmg` of its average hit).
  */
-export const BOSS = { minions: 0.75, dmg: 1.4 };
+export const BOSS = { minions: 0.5, dmg: 1.2, furyFrom: 4, furyAtk: 1, furyDmg: 0.1, callEvery: 3, callPerHero: 0.5, riseAfter: 2 };
+
+/** Each act boss's own way of making a long fight go badly (decided 2026-10-20: one each, so bosses don't feel the same). */
+export type BossSignature = 'horn' | 'rise' | 'wrath';
+export const BOSS_SIGNATURES: Record<BossSignature, { name: string; icon: string; desc: string }> = {
+  horn: { name: 'War Horn', icon: '📯', desc: 'Every 3rd round it blows a war horn and more of its warband pours in. Kill it and they scatter.' },
+  rise: { name: 'Rise Again', icon: '🦴', desc: 'Its fallen minions claw their way back up 2 rounds later, as long as it stands. Break it and the dead stay down.' },
+  wrath: { name: 'Wrath', icon: '😡', desc: 'From round 4 it grows angrier every round: +1 to hit and +10% damage per Fury stack, its fire breath too.' },
+};
 export const ELITE = { dmg: 1 };
 
 export const TUNABLES: Record<string, object> = { ACT_SCALING, DIFFICULTIES, PARTY_SCALING, SOLO_HP_SCALING, BREATHER, BOSS, ELITE };

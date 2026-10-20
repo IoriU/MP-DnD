@@ -1,6 +1,6 @@
 // Monsters: a sortable table of every stat block, with where each one appears (acts, encounters, elites, bosses, allies, events).
 
-import { ACTS, BREATH_DC, HELP, MONSTERS, RESIST_WORD, ROLES, canHelp, diceText, roleOf, type MonsterDef } from '../../../shared/rules.ts';
+import { ACTS, BOSS_SIGNATURES, BREATH_DC, HELP, MONSTERS, RESIST_WORD, ROLES, canHelp, diceText, roleOf, type MonsterDef } from '../../../shared/rules.ts';
 import { STATUSES } from '../../../shared/skills.ts';
 import { MONSTER_SPRITES } from '../../sprites.ts';
 import { usageActs, type Usage } from '../data.ts';
@@ -17,6 +17,7 @@ function specials(id: string, m: MonsterDef): string[] {
   const out: string[] = [];
   if (ALLY_MONSTERS.has(id)) out.push(chip('NPC ally', 'good', 'Fights for the party (shared/elites.ts)'));
   if (m.breath) out.push(chip('🐲 Breath', 'warn', `Fire breath every 3rd round (DEX save DC ${BREATH_DC})`));
+  if (m.signature) out.push(chip(`${BOSS_SIGNATURES[m.signature].icon} ${BOSS_SIGNATURES[m.signature].name}`, 'warn', `${BOSS_SIGNATURES[m.signature].desc} When it falls, the rest flee.`));
   if (m.shove) out.push(chip('✋ Shoves', '', 'Shoves heroes into hazards when it can (STR contest)'));
   if (m.support) {
     const b = m.support.buff;

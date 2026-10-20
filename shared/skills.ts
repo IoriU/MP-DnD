@@ -39,6 +39,7 @@ export type StatusId =
   | 'distracted'
   | 'drained'
   | 'rallied'
+  | 'fury'
   | 'charging'
   | 'raging'
   | 'honed'
@@ -96,6 +97,7 @@ export const STATUSES: Record<StatusId, StatusDef> = {
   distracted: { name: 'Distracted', icon: '👉', good: false, desc: "Someone's in its face: the next attack against it has advantage." },
   drained: { name: 'Drained', icon: '🩸', good: false, desc: 'Max HP lowered by its power until the end of the fight.' },
   rallied: { name: 'Rallied', icon: '📯', good: true, desc: '+1 to attack rolls and +1 damage per stack (stacks up to 3).' },
+  fury: { name: 'Fury', icon: '😡', good: true, desc: 'A boss in a long fight: +1 to attack rolls and +10% damage per stack, and one more stack every round. Bring it down fast.' },
   charging: { name: 'Charging', icon: '🏃', good: true, desc: '+3 movement on its next turn.' },
   raging: { name: 'Raging', icon: '😤', good: true, desc: 'Melee hits deal + its power in damage, and physical damage against it is halved.' },
   honed: { name: 'Honed', icon: '💢', good: true, desc: 'The next hit deals +1d8 per power.' },

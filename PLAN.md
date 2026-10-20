@@ -833,7 +833,14 @@ Started 2026-10-20, right after the playtest redesign (your call: balance first,
   - `OUT=file.json` keeps every run; `scripts/balance-merge.ts` reports on several files together
   - `DELVERS_TUNE` (JSON) overrides the knobs in `shared/rules.ts` (`TUNABLES`) at server start, so several settings can be tried side by side without editing code
 - [x] **Monsters grow with the act** (`ACT_SCALING`): act 2 ×1.7 HP, +1 AC, +2 to hit, ×1.6 damage; act 3 ×2.4 HP, +2 AC, +2 to hit, ×2.2 damage. Elites and bosses get less HP (`solo`: ×1.35, ×1.6): with all of it on one body, their fights dragged past 10 rounds.
-- [x] **Bosses are the climax of their act** (`BOSS`): ×1.4 damage, and 0.75 minions per hero (was 1 per 2 heroes). Elites keep a separate damage knob (`ELITE`), left at ×1.
+- [x] **Bosses are a race, each its own way** (your call, 2026-10-20: "not for every boss", "unique so it doesn't feel repetitive"). Before, a boss was a big bag of HP: its fights were the longest in the game (8–9.5 rounds in acts 2–3) and invited turtling. Now:
+  - When the boss falls, the rest flee and the fight is won (all bosses), so bursting the boss pays.
+  - 👑 Goblin King, 📯 **War Horn**: every 3rd round it calls more goblins and archers (one per two heroes).
+  - ☠️ Bone Knight, 🦴 **Rise Again**: its fallen minions get back up 2 rounds later, as long as it stands (no XP the second time).
+  - 🐉 Dread Wyrm, 😡 **Wrath**: from round 4 a Fury stack every round, +1 to hit and +10% damage each, its fire breath too. The breath also grows with the act now (it was a flat 3d6 all game).
+  - Boss numbers to match (`BOSS`, `BOSS_SIGNATURES`): ×1.2 damage, 0.5 minions per hero, ×0.9 HP against 3 heroes. Shown on the boss's token, in its tooltip, the codex and the how-to-play.
+  - The hero bots know: damage on the boss counts extra, killing it counts every minion as killed, and a Rise Again minion's kill counts less.
+  - Elites keep a separate damage knob (`ELITE`), left at ×1.
 - [x] **Difficulty damage is a multiplier** now (Story ×0.85, Normal ×1, Hard ×1.2), so Hard bites harder later instead of front-loading act 1. Normal: ×1.1 HP, ×1.15 budget; Hard: ×1.3 HP, +1 to hit, ×1.3 budget.
 - [x] **The run's first fight is a warm-up** (`WARMUP_BUDGET` ×0.75, always the classic line): no more runs lost before the first choice.
 - [x] **Party sizes feel the same** (`PARTY_SCALING`, `SOLO_HP_SCALING`): budgets and elite and boss HP now grow from a 3-hero baseline (budget ×1.4 base, +45% per hero; elites ×1.1, bosses ×1.3, +0.5 per hero). Before, elites had a third more HP per hero against 3 heroes than against 6: bots won 0 of 12 Hard runs with 3 heroes and 10 of 12 with 6. Now the party's lowest HP per fight is the same for 3 to 6 heroes (Normal 79–83%, Hard 68–72%).
@@ -848,17 +855,19 @@ Started 2026-10-20, right after the playtest redesign (your call: balance first,
   - They go to the shop when they have gold (they used to skip shops, so gold piled up: about 540 left at the end, now about 350, with 2.5 shop visits and 8 purchases per run)
 - [x] **Design goals:** supports keep up (classes end within a level of each other: bards and clerics about 7, rogues and rangers about 7.4); Long Rest vs Train is still a choice (about 65 / 35 now that fights hurt); every engine shows up in bot builds, and within a class the engines deal similar damage (±11%). Nearly every engine payoff fires now that fights last: Unkillable, Split Shot, Knife Juggler, shock arcs, Counterattack (261 per 144 runs) and Finale (243). Madness still never fires.
 - [x] XP, slots, gold income and prices: left as they are (levels 7–8 at the end, the shop gets used)
-- [ ] Playtest with real people, then adjust
+- [x] **📓 Run journal** (your ask, for analyzing the playtest): every run writes its whole story to `saves/journal/<code>-<date>.jsonl` (server/journal.ts): every log line, each fight's numbers (rounds, downs, deaths, the party's HP at the start and lowest, damage per hero), every pick next to the cards that were offered, the path, and the builds at the end. The game never deletes them. `node scripts/journal-report.ts --latest` prints the report.
+- [ ] Playtest with real people, then adjust (`node scripts/journal-report.ts --latest` afterwards)
 
-**Result (2026-10-20):** 144 runs on the final numbers (in brackets: 144 on the step before, a little harder for 3 heroes), 0 anomalies, 0 stuck fights:
+**Result (2026-10-20):** 144 runs on the final numbers, boss signatures included (in brackets: before the boss rework), 0 anomalies, 0 stuck fights:
 
 | | Wins | Lowest party HP: combat / elite / boss (act 3) | Rounds: combat / elite / boss (act 3) |
 |---|---|---|---|
-| 📖 Story | 100% (98%) | 92% / 89% / 89% | 3.0 / 4.1 / 5.1 |
-| ⚔️ Normal | 85% (85%) | 82% / 72% / 82% | 4.3 / 6.1 / 8.0 |
-| 💀 Hard | 48% (46%) | 68% / 49% / 67% | 5.2 / 8.1 / 9.2 |
+| 📖 Story | 96% (100%) | 91% / 89% / 92% | 3.2 / 4.0 / 4.1 |
+| ⚔️ Normal | 85% (85%) | 80% / 64% / 77% | 4.4 / 7.0 / 6.2 (8.0) |
+| 💀 Hard | 50% (48%) | 68% / 54% / 72% | 5.4 / 7.7 / 7.4 (9.2) |
 
-- On Hard most losses come in acts 2 and 3 (4 in act 1, 10 in act 2, 11 in act 3); the deadliest fights are the act 2 elites and boss (Wight, Spider Broodmother, Bone Knight) and the Orc Warchief.
+- Boss fights per act on Normal: 3.9 / 5.7 / 6.2 rounds (were 4.9 / 8.5 / 8.0). The bots put about 70% of their weapon damage on the boss (a little over half against the Bone Knight, whose dead keep getting up).
+- On Hard most losses come in act 2 (the Wight, the Spider Broodmother and the Bone Knight); the Goblin King's War Horn is the act 1 wall on Hard.
 - A run takes about 1.5 minutes at bot speed. Deaths per run: Normal 0.7, Hard 2.0, so Injury matters now.
 - Still uneven: 3-hero parties win a bit less than bigger ones with the same average pressure (one down is a third of the party). Worth watching in the playtest, since you and a friend plus a bot make 3.
 - Bots aren't players. Treat these numbers as a starting point for your playtest, not the final word.

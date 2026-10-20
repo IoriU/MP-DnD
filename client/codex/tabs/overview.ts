@@ -4,7 +4,7 @@ import { ENGINE_IDS } from '../../../shared/engines.ts';
 import { GEAR_IDS, CONSUMABLE_IDS, BLESSING_IDS, RELIC_IDS } from '../../../shared/items.ts';
 import { ALLY_IDS, TRAIT_IDS } from '../../../shared/elites.ts';
 import {
-  ACT_ROWS, ACT_SCALING, ACTS, AMBUSH_CHANCE, BOON_HP, BOSS, BREATH_DC, BREATHER, ELITE, MAX_DOWNS, SOLO_HP_SCALING, WARMUP_BUDGET, CLASS_IDS, COWARD_HP, COWARD_TURNS, DIFFICULTIES, DIFFICULTY_IDS, LEVEL_CAP, MAP_COLS,
+  ACT_ROWS, ACT_SCALING, ACTS, AMBUSH_CHANCE, BOON_HP, BOSS, BOSS_SIGNATURES, BREATH_DC, BREATHER, ELITE, MAX_DOWNS, SOLO_HP_SCALING, WARMUP_BUDGET, CLASS_IDS, COWARD_HP, COWARD_TURNS, DIFFICULTIES, DIFFICULTY_IDS, LEVEL_CAP, MAP_COLS,
   MAX_ACT, MAX_BONUS_AC, MAX_CANTRIPS, MAX_PLAYERS, MAX_SPELLS, MIN_PARTY, MONSTERS, PARTY_SCALING, REST_HEAL, REST_MS, STEAL_SHARE,
   STEALTH_DC_BASE, TIER3_LEVEL, VOTE_MS, XP_ASSIST, XP_BUFF, XP_CATCH_UP, XP_HEAL, XP_KILL, XP_REVIVE, XP_SHARED, encounterBudget, packsFor,
   partyScaling, passiveSlots, profBonus, roomGold, scaledHp, xpToNext,
@@ -99,7 +99,7 @@ function actTable(): string {
     `<tr>${td(`${ACTS[i]?.glyph ?? ''} Act ${i + 1}`)}${td(`×${fmtNum(a.hp)}`)}${td(`×${fmtNum(a.solo)}`)}${td(a.ac ? `+${a.ac}` : '—')}${td(a.atk ? `+${a.atk}` : '—')}${td(`×${fmtNum(a.dmg)}`)}</tr>`,
   ).join('');
   return `${wrapTable([th('Act'), th('Monster HP'), th('Elite and boss HP'), th('AC'), th('Attack'), th('Damage')].join(''), body)}
-    <p class="muted note">On top of every stat block (${srcConst('ACT_SCALING')}), so the monsters keep up with heroes who pick a card after every fight. Damage is a multiplier on the average hit, added as a flat bonus per hit. Bosses hit ×${fmtNum(BOSS.dmg)} harder and bring ${fmtNum(BOSS.minions)} minion per hero (${srcConst('BOSS')}); elites hit ×${fmtNum(ELITE.dmg)} (${srcConst('ELITE')}). The run's first fight is a warm-up: ×${fmtNum(WARMUP_BUDGET)} budget, from the classic line (${srcConst('WARMUP_BUDGET')}).</p>`;
+    <p class="muted note">On top of every stat block (${srcConst('ACT_SCALING')}), so the monsters keep up with heroes who pick a card after every fight. Damage is a multiplier on the average hit, added as a flat bonus per hit. Bosses hit ×${fmtNum(BOSS.dmg)} harder and bring ${fmtNum(BOSS.minions)} minion per hero. A boss fight is a race: when the boss falls the rest flee, and each boss has its own signature (${srcConst('BOSS_SIGNATURES')}): ${Object.values(BOSS_SIGNATURES).map((s) => `${s.icon} ${s.name}`).join(', ')} (Monsters tab; numbers in ${srcConst('BOSS')}). Elites hit ×${fmtNum(ELITE.dmg)} (${srcConst('ELITE')}). The run's first fight is a warm-up: ×${fmtNum(WARMUP_BUDGET)} budget, from the classic line (${srcConst('WARMUP_BUDGET')}).</p>`;
 }
 
 function budgetTable(): string {

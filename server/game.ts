@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
-import { canStep, dist, findPath, hasLOS } from '../shared/grid.ts';
+import { canStep, dist, findPath, hasLOS, isBlocked } from '../shared/grid.ts';
 import {
   ACTS,
   ACT_ROWS,
@@ -99,6 +99,7 @@ import {
   resolveAim,
   skillBlockReason,
   skillTitle,
+  topEngine,
   slotCost,
   statsAt,
   statsOf,
@@ -182,6 +183,7 @@ import type {
   MonsterEntity,
   NodeType,
   Notice,
+  OfferCard,
   OwnedSkill,
   Phase,
   PickRequest,
@@ -231,6 +233,8 @@ import { applyLevelUps, applyPick, dealOffer, killShares, picksLeft, recalcHero,
 import { pick, randInt, rng, shuffle } from './rng.ts';
 import { generateRoom, pickDeployment, type Deployment } from './room.ts';
 import { SAVE_VERSION, archiveSave, dumpFight, writeSave, type SaveFile, type SavePoint } from './saves.ts';
+import { Journal } from './journal.ts';
+import { ENGINES } from '../shared/engines.ts';
 
 /**
  * Chooses a monster's move from the options the monster AI lists (Phase 11): the trained PPO policy, or the RL
@@ -351,6 +355,11 @@ export class Game {
   private shopReceipts: string[] = []; // what was bought, for the notice when the party moves on
   private eliteKiller: string | null = null; // the hero who landed the killing blow on this fight's elite (they take its gear)
   private phoenixUsed = false; // Phoenix Feather: once per fight
+  private journal: Journal | null = null; // the run journal (server/journal.ts), from the run's start
+  private fightMeta: { kind: string; name: string; deployment: string } | null = null; // the room being fought in
+  private fallen: { type: string; x: number; y: number; at: number }[] = []; // Rise Again: minions to stand back up, and when
+  /** This fight's numbers for the journal: downs and deaths, the party's HP share (start, lowest), damage per hero. */
+  private fightStats: { downs: number; deaths: number; startHp: number; minHp: number; dmg: Record<string, number> } | null = null;
   private chatter = newChatter(); // who among the bots has spoken lately (callouts, server/companions.ts)
   private difficulty: Difficulty = 'normal'; // the lobby's pick; a run keeps its own (run.difficulty)
   private monsterAi: MonsterAi = 'scripted'; // likewise (run.monsterAi)
@@ -582,6 +591,7 @@ export class Game {
     this.entities = this.players.map((p) => this.makePlayer(p, 1));
     const seed = randInt(1, 2 ** 31 - 2);
     this.run = { act: 1, maxAct: MAX_ACT, actName: ACTS[0].name, map: generateActMap(1, seed, ROWS), currentId: null, visited: [], gold: 0, relics: [], blessings: [], allies: [], seed, difficulty: this.difficulty, monsterAi: this.monsterAi };
+    this.openJournal(false);
     this.addLog('system', '🍺 The party finishes their drinks and leaves the tavern...');
     this.addLog('system', `🗺️ Act 1: ${ACTS[0].name}. Vote on your path. The ${MONSTERS[ACTS[0].boss].name} waits at the top of the map.`);
     this.notice = {
@@ -692,6 +702,7 @@ export class Game {
   /** Continues a loaded save: same heroes, same map, the node in progress replayed from its start. */
   private resumeRun(save: SaveFile) {
     this.resumeFrom = null;
+    this.openJournal(true);
     const level = Math.max(1, ...save.heroes.map((h) => h.level));
     // The run first, so the heroes come back with its relics and blessings already on their sheets.
     this.run = {
@@ -772,6 +783,7 @@ export class Game {
    * Never mid-fight: a restart replays the node in progress from its start.
    */
   private checkpoint() {
+    this.journal?.flush();
     const run = this.run;
     if (!run || this.resumeFrom || this.phase === 'combat' || this.phase === 'victory' || this.phase === 'defeat') return;
     const save: SaveFile = {
@@ -896,6 +908,7 @@ export class Game {
     this.checkpoint();
     run.currentId = id;
     if (run.visited.at(-1) !== id) run.visited.push(id); // a resumed node is already on the list
+    this.journal?.write({ k: 'node', act: run.act, row: node.row, type: node.type });
     this.notice = null;
     switch (node.type) {
       case 'combat':
@@ -1230,11 +1243,13 @@ export class Game {
       for (const p of this.heroes()) {
         for (let guard = 0; guard < 16 && p.offer && picksLeft(p) > 0 && this.isAuto(p.playerId); guard++) {
           const icon = PICK_ICON[p.offerKind ?? 'level'];
-          const res = applyPick(p, autoLevelPick(p), rng, this.run?.act ?? 1);
+          const [offered, kind, req] = [p.offer, p.offerKind ?? 'level', autoLevelPick(p)];
+          const res = applyPick(p, req, rng, this.run?.act ?? 1);
           if (!res.ok) {
             console.warn(`[auto pick ${p.name}] rejected: ${res.error}`);
             break;
           }
+          this.journalPick(p, offered, kind, req, res.text, true);
           this.addLog('level', `${icon} ${p.name} ${res.text}.`);
           this.autoManage(p); // gear from elite spoils
         }
@@ -1248,8 +1263,11 @@ export class Game {
     const p = this.hero(playerId);
     if (!p?.offer || this.phase === 'lobby' || this.phase === 'victory' || this.phase === 'defeat') return;
     const icon = PICK_ICON[p.offerKind ?? 'level'];
-    const res = applyPick(p, { card: Number(req?.card), branch: req?.branch, forget: req?.forget }, rng, this.run?.act ?? 1);
+    const [offered, kind] = [p.offer, p.offerKind ?? 'level'];
+    const pick = { card: Number(req?.card), branch: req?.branch, forget: req?.forget };
+    const res = applyPick(p, pick, rng, this.run?.act ?? 1);
     if (!res.ok) return this.whisper(playerId, res.error);
+    this.journalPick(p, offered, kind, pick, res.text, this.isAuto(playerId));
     this.addLog('level', `${icon} ${p.name} ${res.text}.`);
     this.checkpoint();
     this.broadcast();
@@ -1403,6 +1421,7 @@ export class Game {
     const icon = kind === 'boss' ? '👑' : kind === 'elite' ? '💀' : '⚔️';
     this.addLog('system', `${icon} ${name}: ${counted.join(', ')}!`);
     if (DEPLOYMENT_LINE[deployment]) this.addLog('info', DEPLOYMENT_LINE[deployment]!);
+    this.fightMeta = { kind, name, deployment };
     for (const m of this.monsters()) {
       if (m.traits?.length) this.addLog('info', `${m.traits.map((t) => TRAITS[t].icon).join('')} ${m.name}: ${m.traits.map((t) => `${TRAITS[t].name} (${TRAITS[t].desc})`).join(' ')}`);
     }
@@ -1639,6 +1658,7 @@ export class Game {
 
   private startCombat() {
     this.phoenixUsed = false;
+    this.fallen = [];
     this.traps.clear();
     this.raised.clear();
     this.eliteKiller = null;
@@ -1648,6 +1668,13 @@ export class Game {
     for (const e of fighters) init[e.id] = rollDie(20) + this.initBonus(e);
     const order = fighters.map((e) => e.id).sort((a, b) => init[b] - init[a]); // stable: players win ties
     this.turn = { order, init, index: 0, round: 1, movesLeft: 0, ap: 0 };
+    const node = this.run?.currentId ? this.node(this.run.currentId) : undefined;
+    this.journal?.write({
+      k: 'fight', act: this.run?.act ?? 1, row: node?.row ?? -1, kind: this.fightMeta?.kind ?? this.roomKind ?? 'combat', name: this.fightMeta?.name ?? '',
+      monsters: this.monsters().map((m) => m.name), deployment: this.fightMeta?.deployment ?? 'line',
+      heroes: this.heroes().map((h) => ({ name: h.name, classId: h.classId, level: h.level, hp: h.hp, maxHp: h.maxHp })),
+    });
+    this.fightStats = { downs: 0, deaths: 0, startHp: this.partyHp(), minHp: this.partyHp(), dmg: {} };
     this.addLog('system', `🎲 Roll for initiative! ${order.map((id) => `${this.entity(id)?.name} ${init[id]}`).join(' · ')}`);
     // A bot sizes up the foe: elites and bosses get a line of their own.
     this.chatter = newChatter();
@@ -1696,6 +1723,7 @@ export class Game {
     t.ap = 0; // heroes get theirs below, once it's clear they get to act
     // The Block this creature gave runs out (on itself and on friends); then shields and gear put up this turn's.
     this.expireBlock(e);
+    if (this.fightStats) this.fightStats.minHp = Math.min(this.fightStats.minHp, this.partyHp());
     if (e.kind === 'player' && e.dead) return this.advanceTurn();
     const wall = e.kind === 'player' ? (this.standing(e) ? gearBonus(e, 'block') : 0) : (MONSTERS[e.type]?.block ?? 0);
     if (wall > 0) this.addBlock(e, e, wall, false);
@@ -2122,6 +2150,7 @@ export class Game {
   }
 
   private endCombat() {
+    this.journalFightEnd(true);
     this.traps.clear();
     this.raised.clear();
     const kind = this.roomKind ?? 'combat';
@@ -2263,6 +2292,7 @@ export class Game {
   }
 
   private endRun(victory: boolean) {
+    this.journalFightEnd(victory);
     this.dispose();
     this.phase = victory ? 'victory' : 'defeat';
     try {
@@ -2278,6 +2308,14 @@ export class Game {
         ? `🏆 VICTORY! The ${MONSTERS[ACTS[MAX_ACT - 1].boss].name} is slain and the party leaves the dungeon with ${gold} gold!`
         : `☠️ The party has fallen in Act ${run?.act ?? 1} (${run?.actName ?? ''}). Gold found: ${gold}.`,
     );
+    this.journal?.write({
+      k: 'end', victory, act: run?.act ?? 1, gold, relics: (run?.relics ?? []).map((id) => RELICS[id]?.name ?? id),
+      heroes: this.heroes().map((h) => ({
+        name: h.name, classId: h.classId, level: h.level, engine: ((e) => (e ? ENGINES[e].name : undefined))(topEngine(h)),
+        skills: h.skills.map((o) => skillTitle(o)), gear: [...Object.values(h.gear), ...h.bag].filter((id) => !!id).map((id) => itemInfo(id!).name), injuries: h.injuries ?? 0,
+      })),
+    });
+    this.journal?.flush();
     this.broadcast();
   }
 
@@ -2299,6 +2337,7 @@ export class Game {
     await sleep(400);
     if (!ok()) return;
     const ally = !!m.ally;
+    if (m.boss && !ally) this.bossClock(m);
     if (!ally && this.madness(m)) {
       this.broadcast();
       if (this.checkEnd()) return;
@@ -2451,8 +2490,10 @@ export class Game {
     const element = auraOf(m) ?? def.element ?? 'physical';
     const enraged = hasTrait(m, 'enraged') && m.hp < m.maxHp / 2;
     const before = target.hp;
+    const fury = stacksOf(m, 'fury');
+    const furyDmg = Math.round((avgDice(def.dmg) + (m.dmgBonus ?? 0)) * BOSS.furyDmg * fury);
     const hit = this.attackRoll(m, target, {
-      bonus: def.atk + (m.atkBonus ?? 0), dmg: def.dmg, extra: (m.dmgBonus ?? 0) + (enraged ? ENRAGED_DMG : 0) - this.wasting(m), verb: def.verb, element,
+      bonus: def.atk + (m.atkBonus ?? 0) + BOSS.furyAtk * fury, dmg: def.dmg, extra: (m.dmgBonus ?? 0) + furyDmg + (enraged ? ENRAGED_DMG : 0) - this.wasting(m), verb: def.verb, element,
     });
     // Spiked Pauldrons: melee hits on you hurt back.
     const thorns = hit && target.kind === 'player' && dist(m, target) <= 1 ? gearBonus(target, 'thorns') : 0;
@@ -2541,6 +2582,74 @@ export class Game {
     }
     const touch = fieldElement(aura);
     if (touch && this.entities.includes(m)) this.runField([{ kind: 'touch', tiles: tilesAround(this, m, 1), element: touch }], m);
+  }
+
+  /**
+   * A boss's signature at the start of its turn (BOSS_SIGNATURES): Wrath has one 😡 Fury stack per round from round
+   * furyFrom (it catches up after a stun), War Horn calls in its warband every callEvery rounds (never past a full room),
+   * Rise Again stands up the minions that fell riseAfter rounds ago.
+   */
+  private bossClock(m: MonsterEntity) {
+    const sig = MONSTERS[m.type]?.signature;
+    if (sig === 'wrath') this.wrath(m);
+    if (sig === 'horn') this.warHorn(m);
+    if (sig === 'rise') this.riseAgain(m);
+  }
+
+  private wrath(m: MonsterEntity) {
+    const round = this.turn?.round ?? 1;
+    const fury = round - BOSS.furyFrom + 1;
+    if (fury > stacksOf(m, 'fury')) {
+      m.statuses = [...m.statuses.filter((s) => s.id !== 'fury'), { id: 'fury', turns: 99, power: fury }];
+      this.addLog(
+        'crit',
+        fury === 1
+          ? `😡 The fight drags on, and ${m.name} grows furious: +${BOSS.furyAtk} to hit and +${Math.round(BOSS.furyDmg * 100)}% damage, and more every round. Bring it down!`
+          : `😡 ${m.name}'s fury grows (${fury}).`,
+      );
+      this.float(m, `😡 ${fury}`, '#ff6b6b');
+    }
+  }
+
+  private warHorn(m: MonsterEntity) {
+    const round = this.turn?.round ?? 1;
+    if (round % BOSS.callEvery !== 0 || m.calledAt === round) return;
+    m.calledAt = round;
+    const act = ACTS[(this.run?.act ?? 1) - 1];
+    const size = this.heroes().length;
+    let called = 0;
+    for (let i = 0; i < Math.max(1, Math.floor(size * BOSS.callPerHero)); i++) {
+      if (this.monsters().length >= MAX_ROOM_MONSTERS) break;
+      const spot = this.freeSpotNear(m);
+      if (!spot) break;
+      const minion = this.spawnMonster(pick(act.minions), spot, size);
+      this.face(minion, this.heroes().find((h) => this.standing(h)) ?? m);
+      this.float(minion, '📯', '#ffd84d');
+      this.joinInitiative(minion);
+      this.standIn(minion, 'appear');
+      called++;
+    }
+    if (called) this.addLog('crit', `📯 ${m.name} blows a war horn, and more of its warband pours in!`);
+  }
+
+  /** Rise Again: the minions that fell at least riseAfter rounds ago get back up where they fell (or close by). */
+  private riseAgain(m: MonsterEntity) {
+    const round = this.turn?.round ?? 1;
+    const size = this.heroes().length;
+    const ready = this.fallen.filter((f) => f.at <= round);
+    this.fallen = this.fallen.filter((f) => f.at > round);
+    for (const f of ready) {
+      if (this.monsters().length >= MAX_ROOM_MONSTERS) break;
+      const spot = !this.occupied(f.x, f.y) && !isBlocked(this, f.x, f.y) ? { x: f.x, y: f.y } : this.freeSpotNear(f);
+      if (!spot) continue;
+      const back = this.spawnMonster(f.type, spot, size);
+      back.risen = true;
+      this.face(back, this.heroes().find((h) => this.standing(h)) ?? m);
+      this.float(back, '🦴', '#c8d1dc');
+      this.joinInitiative(back);
+      this.standIn(back, 'appear');
+      this.addLog('crit', `🦴 The ${back.name} claws its way back up! (${m.name} still stands.)`);
+    }
   }
 
   /** Summoner: every other round the elite calls in one of its escorts (3 at most, never past a full room). */
@@ -2699,7 +2808,7 @@ export class Game {
       const r1 = rollDie(20);
       const r2 = rollDie(20);
       const d20 = net > 0 ? Math.max(r1, r2) : net < 0 ? Math.min(r1, r2) : r1;
-      const bonus = MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + this.rallyOf(m);
+      const bonus = MONSTERS[m.type].atk + (m.atkBonus ?? 0) + (hasStatus(m, 'blessed') ? 2 : 0) - (hasStatus(m, 'dazed') ? 2 : 0) + this.rallyOf(m) + BOSS.furyAtk * stacksOf(m, 'fury');
       const cover = coverFrom(this, m, t);
       const ac = this.acOf(t) + cover;
       landed = d20 === 20 || (d20 !== 1 && d20 + bonus >= ac);
@@ -2801,7 +2910,7 @@ export class Game {
     for (const p of victims) {
       const { total: save, text } = this.creatureSave(p, 'dex');
       const saved = save >= BREATH_DC;
-      let dmg = rollDice({ n: 3, d: 6 });
+      let dmg = Math.round(rollDice({ n: 3, d: 6 }) * (actScaling(this.run?.act ?? 1).dmg + BOSS.furyDmg * stacksOf(m, 'fury')));
       const evasion = p.kind === 'player' && hasBranch(p, 'opportunist', 'B');
       if (saved) dmg = evasion ? 0 : Math.floor(dmg / 2);
       else if (evasion) dmg = Math.floor(dmg / 2);
@@ -4018,6 +4127,7 @@ export class Game {
   }
 
   private damage(t: Entity, amount: number, by?: Entity, element: Element = 'physical', area = false, field = false) {
+    if (t.kind === 'monster' && !this.entities.includes(t)) return; // gone already (slain, or fled with its boss)
     // Catalyst: the battlefield's fire, poison, shocks and blasts that a hero set off hit monsters harder.
     const catalyst = field && by?.kind === 'player' && t.kind === 'monster' && !isAllyNpc(t) ? passiveOf(by, 'catalyst') : null;
     if (catalyst && amount > 0) amount = Math.round(amount * (1 + catalyst.value / 100));
@@ -4082,7 +4192,10 @@ export class Game {
       if (!t.ward) this.addLog('info', `🔰 ${t.name}'s ward shatters!`);
     }
     if (amount <= 0) return;
-    if (t.kind === 'monster' && by?.kind === 'player') t.dmgBy[by.id] = (t.dmgBy[by.id] ?? 0) + Math.min(amount, t.hp);
+    if (t.kind === 'monster' && by?.kind === 'player') {
+      t.dmgBy[by.id] = (t.dmgBy[by.id] ?? 0) + Math.min(amount, t.hp);
+      if (this.fightStats && !isAllyNpc(t)) this.fightStats.dmg[by.name] = (this.fightStats.dmg[by.name] ?? 0) + Math.min(amount, t.hp);
+    }
     const bloodied = t.hp < t.maxHp / 2;
     if (t.kind === 'player' && amount >= t.hp && this.unkillable(t)) amount = t.hp - 1;
     const dealt = Math.min(amount, t.hp);
@@ -4107,6 +4220,7 @@ export class Game {
       // time is death. Hauled up groggy only to drop again (and again) used to loop forever.
       const again = Math.min(MAX_DOWNS - 1, t.used.filter((u) => u === 'fight:down').length);
       t.used.push('fight:down');
+      if (this.fightStats) this.fightStats.downs++;
       t.downed = true;
       t.saves = { ok: 0, fail: again };
       t.statuses = [];
@@ -4290,7 +4404,7 @@ export class Game {
       this.addLog('death', `💀 ${t.name} is slain${isAllyNpc(by) ? ` by ${by.name}` : ''}!`);
     }
     const alive = this.heroes().filter((h) => !h.dead);
-    const shares = killShares(MONSTERS[t.type].xp, killer?.id ?? null, t.dmgBy, alive.map((h) => h.id));
+    const shares = killShares(t.risen ? 0 : MONSTERS[t.type].xp, killer?.id ?? null, t.dmgBy, alive.map((h) => h.id)); // the risen give no XP twice
     for (const [id, xp] of shares) {
       const h = this.heroes().find((x) => x.id === id);
       if (h) this.grantXp(h, xp);
@@ -4306,6 +4420,19 @@ export class Game {
       if (death.cloud) ops.push({ kind: 'cloud', tiles: area, id: death.cloud });
       if (this.deferredBursts) this.deferredBursts.push({ ops, by: killer ?? undefined });
       else this.runField(ops, killer ?? undefined);
+    }
+    // Rise Again: while the boss stands, a fallen minion gets back up later.
+    const riser = !t.boss && !t.ally ? this.monsters().find((b) => b.boss && MONSTERS[b.type]?.signature === 'rise') : undefined;
+    if (riser && this.turn) this.fallen.push({ type: t.type, x: t.x, y: t.y, at: this.turn.round + BOSS.riseAfter });
+    // The boss is down: the rest lose heart and flee, and the fight is won.
+    if (t.boss && !t.ally && this.phase === 'combat') {
+      this.fallen = [];
+      const rest = this.entities.filter((e): e is MonsterEntity => isFoe(e));
+      for (const e of rest) {
+        this.entities = this.entities.filter((x) => x !== e);
+        this.removeFromOrder(e.id);
+      }
+      if (rest.length) this.addLog('system', `🏳️ With ${t.name} dead, the rest of them flee!`);
     }
   }
 
@@ -4487,6 +4614,7 @@ export class Game {
   private die(p: PlayerEntity) {
     p.downed = false;
     p.dead = true;
+    if (this.fightStats) this.fightStats.deaths++;
     this.addLog('death', `☠️ ${p.name} has died... they'll be back on their feet after the fight, if the party wins it.`);
     this.removeFromOrder(p.id);
   }
@@ -4760,6 +4888,38 @@ export class Game {
   private addLog(kind: LogKind, text: string) {
     this.log.push({ id: ++this.logId, kind, text });
     if (this.log.length > LOG_LIMIT) this.log.shift();
+    this.journal?.write({ k: 'log', kind, text, act: this.run?.act, round: this.phase === 'combat' ? this.turn?.round : undefined });
+  }
+
+  /** The run journal (server/journal.ts): a file per run, kept for analyzing how real games go. */
+  private openJournal(resumed: boolean) {
+    this.journal?.flush();
+    this.journal = new Journal(this.code, this.createdAt);
+    this.journal.write({
+      k: 'start', code: this.code, resumed, difficulty: this.difficulty, monsterAi: this.monsterAi,
+      party: this.players.map((p) => ({ name: p.name, classId: p.classId, bot: !!p.bot })),
+    });
+  }
+
+  /** The party's HP as a share of its max HP (the downed and the dead count 0). */
+  private partyHp(): number {
+    const hs = this.heroes();
+    const max = hs.reduce((n, h) => n + h.maxHp, 0);
+    return max ? hs.reduce((n, h) => n + (h.downed || h.dead ? 0 : Math.max(0, h.hp)), 0) / max : 0;
+  }
+
+  /** A fight is over: its numbers go into the journal (before the breather heals anyone). */
+  private journalFightEnd(won: boolean) {
+    const f = this.fightStats;
+    if (!f) return;
+    this.fightStats = null;
+    const r = (n: number) => Math.round(n * 100) / 100;
+    this.journal?.write({ k: 'fightEnd', won, rounds: this.turn?.round ?? 1, downs: f.downs, deaths: f.deaths, startHp: r(f.startHp), minHp: r(Math.min(f.minHp, this.partyHp())), endHp: r(this.partyHp()), dmg: f.dmg });
+  }
+
+  /** A pick went through: which cards were on offer, and which one was taken. */
+  private journalPick(p: PlayerEntity, offered: OfferCard[] | null, kind: string, req: PickRequest, text: string, auto: boolean) {
+    this.journal?.write({ k: 'pick', hero: p.name, classId: p.classId, offerKind: kind, auto, offered: offered ?? [], card: Number(req.card), branch: req.branch, text });
   }
 
   private float(at: Pos, text: string, color: string) {

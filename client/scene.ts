@@ -5,7 +5,7 @@
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
 import { LOW_COVER, dist, hasLOS, reachable } from '../shared/grid.ts';
-import { FULL_COVER, HALF_COVER, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
+import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
   CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planWalk, previewField, reactionSummary,
@@ -187,7 +187,12 @@ function allyInfo(s: GameState, e: MonsterEntity): { def?: AllyDef; fights?: num
 }
 
 /** An elite's trait icons in a row ("🔥🔰"); empty for anything else. */
-const traitIcons = (e: Entity): string => (e.kind === 'monster' ? (e.traits ?? []).map((t) => TRAITS[t]?.icon ?? '').join('') : '');
+/** An elite's trait icons, or an act boss's signature (BOSS_SIGNATURES). */
+const traitIcons = (e: Entity): string => {
+  if (e.kind !== 'monster') return '';
+  const sig = MONSTERS[e.type]?.signature;
+  return (e.traits ?? []).map((t) => TRAITS[t]?.icon ?? '').join('') + (sig ? BOSS_SIGNATURES[sig].icon : '');
+};
 
 /** What stepping onto a tile does to this creature: "fire (1d4 + Burning)". Mirrors hazardAt in shared/surfaces.ts. */
 function tileHazards(f: FieldLike, i: number, who: Entity): string[] {
@@ -1241,11 +1246,13 @@ class DungeonScene extends Phaser.Scene {
     // What it is in the squad, and its tricks.
     const mdef = mon ? MONSTERS[mon.type] : undefined;
     if (mdef) lines.push(...roleLines(mdef, mon ?? undefined));
-    // An elite's traits, one short block each.
+    // An elite's traits, one short block each, and a boss's signature.
     for (const t of mon?.traits ?? []) {
       const tr = TRAITS[t];
       if (tr) lines.push(`<span class="tip-trait"><b>${tr.icon} ${esc(tr.name)}:</b> ${esc(tr.desc)}</span>`);
     }
+    const sig = mdef?.signature && !mon?.ally ? BOSS_SIGNATURES[mdef.signature] : undefined;
+    if (sig) lines.push(`<span class="tip-trait"><b>${sig.icon} ${esc(sig.name)}:</b> ${esc(sig.desc)} When it falls, the rest flee.</span>`);
     // An NPC ally: what it is, how long it stays, and what it hits for.
     if (mon && isAllyNpc(mon)) {
       const { def, fights } = allyInfo(s, mon);

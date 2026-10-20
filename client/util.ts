@@ -21,7 +21,7 @@ export function classLabel(h: Pick<PlayerEntity, 'classId' | 'subclass' | 'skill
 }
 
 /** Statuses whose power is a stack count, shown after the icon when there is more than one ("🤢5"). */
-const STACKED: StatusId[] = ['poisoned', 'charged', 'unleashed', 'seared', 'aiming', 'verse', 'inspired', 'rallied', 'drained'];
+const STACKED: StatusId[] = ['poisoned', 'charged', 'unleashed', 'seared', 'aiming', 'verse', 'inspired', 'rallied', 'drained', 'fury'];
 export const stacksShown = (x: Pick<StatusInst, 'id' | 'power'>): number => (STACKED.includes(x.id) && (x.power ?? 0) > 1 ? x.power! : 0);
 
 export function esc(text: string): string {

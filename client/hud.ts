@@ -2,7 +2,7 @@
 
 import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
 import { BAG_SIZE, type ItemId } from '../shared/items.ts';
-import { AP_GAIN, AP_MAX, CLASSES, DIFFICULTIES, INJURY_PCT, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
+import { AP_GAIN, AP_MAX, BOSS_SIGNATURES, CLASSES, DIFFICULTIES, INJURY_PCT, LEVEL_CAP, MONSTERS, xpToNext } from '../shared/rules.ts';
 import {
   apOf, blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, isSignature, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
@@ -211,7 +211,8 @@ export function renderHud(s: GameState) {
         const cls = [id === cur?.id ? 'current' : '', ally ? 'ally' : e.kind, e.kind === 'player' && e.playerId === store.playerId ? 'mine' : ''].join(' ');
         const auto = e.kind === 'player' && isAuto(s, e.playerId) ? ' 🤖' : '';
         const surprised = hasStatus(e, 'surprised') ? ` ${STATUSES.surprised.icon}` : ''; // loses its first turn
-        const traits = e.kind === 'monster' ? (e.traits ?? []).map((tr) => TRAITS[tr]?.icon ?? '').join('') : ''; // an elite's traits
+        const sig = e.kind === 'monster' ? MONSTERS[e.type]?.signature : undefined;
+        const traits = e.kind === 'monster' ? (e.traits ?? []).map((tr) => TRAITS[tr]?.icon ?? '').join('') + (sig ? BOSS_SIGNATURES[sig].icon : '') : ''; // an elite's traits, a boss's signature
         const tip = `${ally ? 'NPC ally: fights for the party · ' : ''}Initiative ${t.init[id] ?? '?'}${surprised ? ' · Surprised: loses its first turn' : ''}`;
         return `<span class="chip ${cls}" title="${tip}">${e.glyph} ${esc(e.name)}${traits ? ` ${traits}` : ''}${auto}${surprised}</span>`;
       })
