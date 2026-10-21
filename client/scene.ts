@@ -4,11 +4,11 @@
 
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
-import { LOW_COVER, dist, hasLOS, reachable } from '../shared/grid.ts';
+import { LOW_COVER, dist, hasLOS } from '../shared/grid.ts';
 import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, baseType, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
-  CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planWalk, previewField, reactionSummary,
+  CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, moveArea, planFreeWalk, previewField, reactionSummary,
   resistance, tilePos, tilesAround, type CloudId, type FieldLike, type FieldPreview, type GroundId,
 } from '../shared/surfaces.ts';
 import { advantageText, attackAdvantage, coverFrom, coverWord, dirTo, isBehind, isFlanking, netAdvantage, turnsToFace, type AdvantageInfo } from '../shared/tactics.ts';
@@ -1104,12 +1104,14 @@ class DungeonScene extends Phaser.Scene {
       }
       return;
     }
-    const moves = myActs()?.moves ?? 0;
-    if (moves > 0) {
-      const reach = reachable(s, m, moves, (x, y) => occupied(s, x, y, m.id));
+    const acts = myActs();
+    if (acts && (acts.budget ?? acts.moves) > 0) {
+      // Free movement until you act: the whole area stays open (measured from where this stretch began) until you act.
+      const reach = moveArea(s, m, acts, (x, y) => occupied(s, x, y, m.id));
+      const here = m.y * s.width + m.x;
       g.fillStyle(0x4fb3ff, 0.24);
-      for (const [idx, steps] of reach) {
-        if (steps === 0) continue;
+      for (const idx of reach.keys()) {
+        if (idx === here) continue;
         const x = idx % s.width;
         g.fillRect(x * T + 1, ((idx - x) / s.width) * T + 1, T - 2, T - 2);
       }
@@ -1129,8 +1131,8 @@ class DungeonScene extends Phaser.Scene {
         if (out(1, 0)) g.lineBetween((x + 1) * T, y * T, (x + 1) * T, (y + 1) * T);
       }
       // Gold dots: standing here you'd attack a monster from behind or flank it. Hover a dotted tile to see who and why.
-      for (const [idx, steps] of reach) {
-        if (steps === 0) continue;
+      for (const idx of reach.keys()) {
+        if (idx === here) continue;
         const x = idx % s.width;
         const y = (idx - x) / s.width;
         const why = this.spotReasons(s, m, x, y);
@@ -1200,10 +1202,10 @@ class DungeonScene extends Phaser.Scene {
 
   /** The walk a click would start (the same plan the server makes), on my turn. */
   private walkPlan(s: GameState, m: PlayerEntity, to: Pos): WalkPlan | null {
-    const moves = myActs()?.moves ?? 0;
-    if (moves <= 0 || hasStatus(m, 'stunned') || hasStatus(m, 'frozen')) return null;
+    const acts = myActs();
+    if (!acts || (acts.budget ?? acts.moves) <= 0 || hasStatus(m, 'stunned') || hasStatus(m, 'frozen')) return null;
     if (occupied(s, to.x, to.y, m.id) || (to.x === m.x && to.y === m.y)) return null;
-    const plan = planWalk(s, m, to, moves, (x, y) => occupied(s, x, y, m.id), m);
+    const plan = planFreeWalk(s, m, to, acts, (x, y) => occupied(s, x, y, m.id), m);
     return plan?.path.length ? { kind: 'walk', to, ...plan } : null;
   }
 

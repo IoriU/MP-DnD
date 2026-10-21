@@ -154,8 +154,14 @@ export interface TurnState {
 
 /** One creature's share of the turn. */
 export interface TurnActs {
-  moves: number;
+  moves: number; // left from where it stands now
   ap: number; // action points left (0 for monsters; shared/rules.ts AP_GAIN, AP_MAX)
+  /**
+   * Free movement until you act (heroes): moves count from where this stretch began (the start of the turn, or where the
+   * hero last acted), with `budget` moves, so walking somewhere and back costs nothing. Set by the first step.
+   */
+  from?: Pos;
+  budget?: number;
   held?: number; // movement held back while stuck in a net or a web (Cut Free gives it back)
   /**
    * Loses this turn (down, stunned, frozen, surprised, groggy): it stays part of the turn without acting, and its turn ends

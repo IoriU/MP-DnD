@@ -263,7 +263,7 @@ export function renderHud(s: GameState) {
       const cur = acting[0];
       const mates = acting.filter((e) => e.kind === 'player' && e.id !== m.id).map((e) => esc(e.name));
       eco.innerHTML = acts
-        ? `<span class="pill">👣 ${acts.moves} moves</span>${apPips(acts.ap)}${mates.length ? ` <span class="muted">together with ${listNames(mates)}</span>` : ''}`
+        ? `<span class="pill" title="Walk anywhere inside the blue area, as often as you like: moves only count once you act (attack, cast, use an item).">👣 ${acts.moves} moves</span>${apPips(acts.ap)}${mates.length ? ` <span class="muted">together with ${listNames(mates)}</span>` : ''}`
         : `<span class="muted">Waiting for ${cur ? listNames(acting.map((e) => esc(e.name))) : '...'}${isAllyNpc(cur) ? " (ally's turn)" : isFoe(cur) ? ' (monster turn)' : ''}</span>`;
     } else if (s.phase === 'shop') {
       eco.innerHTML = '<span class="muted">🛒 Shopping: press I for your bag (equip, give, drop). Potions and heals wait until you are back on the map.</span>';

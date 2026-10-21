@@ -8,7 +8,7 @@
 // Durations count rounds and tick down at the start of every round. `turns: null` is permanent (room features).
 
 import { traitResist } from './elites.ts';
-import { DIRS, canStep, dist, findPath, type MapLike } from './grid.ts';
+import { DIRS, canStep, dist, findPath, reachable, type MapLike } from './grid.ts';
 import { gearResist } from './items.ts';
 import { MONSTERS, type Dice, type Resist } from './rules.ts';
 import { hasBranch, hasStatus, type AimResult, type Element, type SkillStats, type StatusId } from './skills.ts';
@@ -537,6 +537,34 @@ export function planWalk(
   if (least) return done(least);
   const far = safe ?? findPath(f, from, blocked, goal);
   return far ? done(far.slice(0, moves)) : null;
+}
+
+/** A hero's movement this turn (shared/types.ts TurnActs). */
+export interface MoveStretch {
+  moves: number;
+  from?: Pos;
+  budget?: number;
+}
+
+/**
+ * Free movement until you act: the tiles a hero may walk to, as index -> steps from where this stretch began (the start
+ * of the turn, or where they last acted). Walking somewhere and back again costs nothing until they act.
+ */
+export function moveArea(m: MapLike, here: Pos, a: MoveStretch, blocked: (x: number, y: number) => boolean): Map<number, number> {
+  return reachable(m, a.from ?? here, a.budget ?? a.moves, blocked);
+}
+
+/** The walk to a clicked tile, kept inside the move area: planWalk inside it, or toward it as far as the area goes. */
+export function planFreeWalk(
+  f: FieldLike, here: Pos, to: Pos, a: MoveStretch, blocked: (x: number, y: number) => boolean, who?: Entity,
+): { path: Pos[]; hazards: Pos[] } | null {
+  const area = moveArea(f, here, a, blocked);
+  const inside = (x: number, y: number) => area.has(y * f.width + x);
+  if (inside(to.x, to.y)) return planWalk(f, here, to, area.size, (x, y) => blocked(x, y) || !inside(x, y), who);
+  const full = findPath(f, here, blocked, (x, y) => x === to.x && y === to.y);
+  const stop = full ? full.findIndex((p) => !inside(p.x, p.y)) : -1;
+  const path = full ? full.slice(0, stop < 0 ? full.length : stop) : [];
+  return path.length ? { path, hazards: hazardsOn(f, path, who) } : null;
 }
 
 // ---------------------------------------------------------------- skills on the field

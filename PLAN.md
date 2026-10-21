@@ -907,7 +907,7 @@ Your list after the first playtest (2026-10-21), and what we decided:
   - [x] 👣 The movement area is easier to see (a stronger fill and a bright line around its edge)
   - [x] 🔍 The wheel zooms toward the mouse
   - [x] 🎲 Event choices show who rolls the check and the chance ("WIS check, DC 13: bunted rolls (+1), 45%")
-- [ ] **👣 Free movement until you act:** inside the blue area you can move as often as you like (a misclick costs nothing). Once you act, the area shrinks to what's left.
+- [x] **👣 Free movement until you act:** inside the blue area you can move as often as you like (a misclick costs nothing). Once you act, the area shrinks to what's left. Moves count from where the stretch began (`TurnActs.from`/`budget`, `moveArea`/`planFreeWalk` in shared/surfaces.ts); a Dash adds to it; slipping on ice or getting cut free starts a new stretch. Tests in `tests/turns.test.ts` (3).
 - [ ] **💪 Stats you can see and raise** (your call: both): shown on the hero card and in tooltips; a stat point every other level that you put in any stat you like; stat boons in the spoils; gear with stats. Every stat has to change something you feel: health, damage, AC, spell slots...
 - [ ] **📈 Smoother scaling:** monsters get a little tougher every floor, and the jump between acts gets smaller. Then a bot balance pass so the win rates stay where they are.
 - [ ] **🗺️ Bigger, shaped rooms** (your call): about 1.5x bigger, built from chambers, cave walls and corridors; elite and boss rooms much bigger. The camera follows whoever is acting, right-drag pans, the wheel zooms toward the mouse.

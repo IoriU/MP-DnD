@@ -6,6 +6,7 @@ import { after, test } from 'node:test';
 import type { Server } from 'socket.io';
 import { generateActMap } from '../server/actmap.ts';
 import { Game } from '../server/game.ts';
+import { planFreeWalk } from '../shared/surfaces.ts';
 import { AP_GAIN, ATTACK_AP } from '../shared/rules.ts';
 import type { ClassId, MonsterEntity, PlayerEntity, PlayerInfo } from '../shared/types.ts';
 
@@ -255,4 +256,55 @@ test('bots in a shared turn take theirs one after another, in turn order', async
     const before = seen.slice(0, first);
     assert.ok(before.includes(`${name === 'Bob' ? 'Ann' : 'Bob'} done`), `${name} waited: ${seen.join(', ')}`);
   }
+});
+
+// ---------------------------------------------------------------- free movement until you act (playtest 1)
+
+test('free movement until you act: walking somewhere and back costs nothing, and a misclick can be undone', () => {
+  const { p, heroes } = battle('HG', ['fighter']);
+  const [ann] = heroes;
+  p.beginTurn();
+  const a = p.turn.acts[ann.id];
+  const speed = a.moves;
+  const start = { x: ann.x, y: ann.y };
+  for (let i = 0; i < 3; i++) assert.ok(p.tryMove(ann, { x: ann.x + 1, y: ann.y }));
+  assert.equal(a.moves, speed - 3);
+  for (let i = 0; i < 3; i++) assert.ok(p.tryMove(ann, { x: ann.x - 1, y: ann.y }));
+  assert.deepEqual({ x: ann.x, y: ann.y }, start);
+  assert.equal(a.moves, speed, 'back where the turn began: every move is back');
+  // Walk to the edge of the area: no moves left, but stepping back toward the start is still allowed.
+  for (let i = 0; i < speed; i++) assert.ok(p.tryMove(ann, { x: ann.x + 1, y: ann.y }));
+  assert.equal(a.moves, 0);
+  assert.equal(p.tryMove(ann, { x: ann.x + 1, y: ann.y }), false, 'not past the edge of the area');
+  assert.ok(p.tryMove(ann, { x: ann.x - 1, y: ann.y }), 'but back inside it');
+  assert.equal(a.moves, 1);
+});
+
+test('acting fixes where you stand: after an action, the moves left count from there', () => {
+  const { p, heroes } = battle('HG', ['fighter']);
+  const [ann] = heroes;
+  p.beginTurn();
+  const a = p.turn.acts[ann.id];
+  const speed = a.moves;
+  assert.ok(p.tryMove(ann, { x: ann.x + 1, y: ann.y }));
+  assert.ok(p.tryMove(ann, { x: ann.x + 1, y: ann.y }));
+  assert.ok(p.handleSkill(ann.playerId, 'brace'), 'an action');
+  assert.equal(a.from, undefined, 'the stretch is over');
+  assert.equal(a.moves, speed - 2);
+  assert.ok(p.tryMove(ann, { x: ann.x - 1, y: ann.y }));
+  assert.equal(a.moves, speed - 3, 'walking back now costs a move');
+});
+
+test('a click walks inside the move area; a tile beyond it gets walked toward as far as the area goes', () => {
+  const { g, heroes } = battle('HG', ['fighter']);
+  const [ann] = heroes;
+  const free = () => false;
+  const here = { x: ann.x, y: ann.y };
+  const near = planFreeWalk(g as any, here, { x: here.x + 2, y: here.y }, { moves: 2 }, free);
+  assert.equal(near?.path.length, 2);
+  const far = planFreeWalk(g as any, here, { x: here.x + 6, y: here.y }, { moves: 2 }, free);
+  assert.deepEqual(far?.path, [{ x: here.x + 1, y: here.y }, { x: here.x + 2, y: here.y }], 'two steps toward it');
+  // Out at the edge with no moves left, a click back toward the start still walks.
+  const back = planFreeWalk(g as any, { x: here.x + 2, y: here.y }, here, { moves: 0, from: here, budget: 2 }, free);
+  assert.equal(back?.path.length, 2);
 });

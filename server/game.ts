@@ -216,6 +216,8 @@ import {
   fieldElement,
   hazardAt,
   immuneToStatus,
+  moveArea,
+  planFreeWalk,
   planWalk,
   selfFieldOps,
   tickField,
@@ -1774,11 +1776,11 @@ export class Game {
 
   handleMove(playerId: string, target: Pos) {
     const p = this.hero(playerId);
-    if (!p || !this.canMove(p) || !Number.isInteger(target?.x) || !Number.isInteger(target?.y)) return;
-    const moves = this.acts(p)?.moves ?? 0;
-    if (moves <= 0) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
-    // Around fire, poison and the like when that still gets there; the client warns before walking through.
-    const plan = planWalk(this, p, target, moves, (x, y) => this.occupied(x, y, p.id), p);
+    const a = p && this.acts(p);
+    if (!p || !a || !this.canMove(p) || !Number.isInteger(target?.x) || !Number.isInteger(target?.y)) return;
+    if (!this.canWalk(a)) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
+    // Inside the move area; around fire, poison and the like when that still gets there (the client warns before walking through).
+    const plan = planFreeWalk(this, p, target, a, (x, y) => this.occupied(x, y, p.id), p);
     if (!plan?.path.length) return;
     this.startWalk(p, plan.path, plan.hazards);
   }
@@ -1787,8 +1789,29 @@ export class Game {
     const p = this.hero(playerId);
     if (!p || !this.canMove(p) || ![-1, 0, 1].includes(dx) || ![-1, 0, 1].includes(dy) || (dx === 0 && dy === 0)) return;
     this.cancelWalk(p.id);
-    if ((this.acts(p)?.moves ?? 0) <= 0) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
+    const a = this.acts(p);
+    if (!a || !this.canWalk(a)) return this.whisper(playerId, 'No movement left. Use an action or end your turn.');
     this.tryMove(p, { x: p.x + dx, y: p.y + dy });
+  }
+
+  /** Any movement this stretch (free movement until you act: a hero with 0 moves left may still walk back). */
+  private canWalk(a: TurnActs): boolean {
+    return (a.budget ?? a.moves) > 0;
+  }
+
+  /** Where a stretch of free movement begins: the first step after the turn starts or after the hero acts. */
+  private beginStretch(p: PlayerEntity, a: TurnActs) {
+    if (a.from) return;
+    a.from = { x: p.x, y: p.y };
+    a.budget = a.moves;
+  }
+
+  /** Acting (or anything else that fixes where it stands) ends the stretch: moves count from here again. */
+  private endStretch(e: Entity) {
+    const a = this.acts(e);
+    if (!a) return;
+    delete a.from;
+    delete a.budget;
   }
 
   private canMove(p: PlayerEntity): boolean {
@@ -1835,20 +1858,29 @@ export class Game {
     for (const id of [...this.walks.keys()]) this.cancelWalk(id);
   }
 
-  /** Moves one tile on your turn. Returns false if it couldn't. */
+  /**
+   * Moves one tile on your turn. Returns false if it couldn't. Free movement until you act: the tile has to be inside this
+   * stretch's move area, and the moves left are counted from where the stretch began, so stepping back gives them back.
+   */
   private tryMove(p: PlayerEntity, next: Pos): boolean {
     const a = this.acts(p);
-    if (!this.canMove(p) || !a || a.moves <= 0 || ROOTED.some((id) => hasStatus(p, id))) return false;
+    if (!this.canMove(p) || !a || !this.canWalk(a) || ROOTED.some((id) => hasStatus(p, id))) return false;
     const dx = next.x - p.x;
     const dy = next.y - p.y;
     if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1 || !canStep(this, p, dx, dy) || this.occupied(next.x, next.y, p.id)) return false;
-    a.moves--;
+    this.beginStretch(p, a);
+    const steps = moveArea(this, p, a, (x, y) => this.occupied(x, y, p.id)).get(next.y * this.width + next.x);
+    if (steps === undefined) return false; // beyond this stretch's movement
+    a.moves = a.budget! - steps;
     p.facing = { x: dx, y: dy };
     if (!p.used.includes('turn:moved')) p.used.push('turn:moved'); // Patience
     p.x = next.x;
     p.y = next.y;
     this.watch(p);
-    if (this.standIn(p, 'step')) a.moves = 0; // slipped on ice, stunned, or down
+    if (this.standIn(p, 'step')) {
+      a.moves = 0; // slipped on ice, stunned, or down
+      this.endStretch(p);
+    }
     if (!this.standing(p)) this.cancelWalk(p.id);
     this.checkEnd();
     this.broadcast();
@@ -3223,7 +3255,10 @@ export class Game {
     const a = this.acts(e);
     if (!a) return;
     if (ROOTED.some((id) => hasStatus(e, id))) a.held = (a.held ?? 0) + n;
-    else a.moves += n;
+    else {
+      a.moves += n;
+      if (a.budget !== undefined) a.budget += n;
+    }
   }
 
   /** Out of a net or a web: on its own turn it gets its held-back movement. */
@@ -3233,6 +3268,7 @@ export class Game {
     if (a?.held) {
       a.moves += a.held;
       a.held = 0;
+      this.endStretch(e);
     }
   }
 
@@ -3358,6 +3394,7 @@ export class Game {
     if (acts) {
       const ap = apOf(p, skillId, s);
       acts.ap -= ap;
+      this.endStretch(p); // acting fixes where you stand: movement counts from here again
       if (skillId === 'shove' && ap === 0) p.used.push('turn:free-shove'); // Pile Driver
       if (s.oncePerTurn) p.used.push(`turn:${skillId}`);
       const blood = hpCostOf(p, s);
