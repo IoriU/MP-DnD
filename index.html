@@ -82,6 +82,7 @@
       <div id="canvas-wrap">
         <div id="tooltip" hidden></div>
         <div id="turnbar" hidden></div>
+        <div id="tips" hidden></div>
         <div id="target-hint" hidden></div>
         <div id="map-view" hidden></div>
         <div id="event-view" hidden></div>
@@ -120,6 +121,17 @@
         </form>
         <details class="help">
           <summary>How to play</summary>
+          <ul class="quick">
+            <li>🗺️ <b>Vote</b> on the map: click a room. Beat 3 acts, each ending in a boss 👑.</li>
+            <li>👣 <b>Your turn:</b> walk anywhere in the blue area (free until you act), click a monster to attack. ⚡ 3 AP a turn: attacks cost 2, quick skills 1, and saved AP carries over. <kbd>Space</kbd> ends your turn.</li>
+            <li>🔍 <b>Hover anything</b> (monsters, heroes, tiles, your stats) to read what it does and what you'd roll.</li>
+            <li>🏆 <b>After a fight</b> pick a card from your spoils. Every other level: +1 to any stat.</li>
+            <li>🤝 Heroes next to each other in the turn order <b>play at the same time</b>. A friend down? 🤝 Help Up (2 AP, next to them) or heal them.</li>
+            <li>⌨️ <kbd>1</kbd>–<kbd>0</kbd> skills · <kbd>I</kbd> bag · <kbd>L</kbd> spoils · <kbd>P</kbd> auto-play · <kbd>F</kbd> find your hero · <kbd>G</kbd> art style.</li>
+          </ul>
+          <p class="muted help-links"><button id="tips-reset" class="btn ghost small" type="button">💡 Show the tips again</button> · <a href="codex" target="_blank" rel="noopener">📖 The codex</a> has every class, skill, monster and item.</p>
+          <details class="help-more">
+          <summary>All the rules</summary>
           <ul>
             <li><b>The map:</b> click a glowing room to vote. Majority wins; ties are rolled. Beat 3 acts, each ending in a boss 👑.</li>
             <li><b>Rooms:</b> ⚔️ fight · 💀 elite (tough, lots of XP, drops gear) · ❓ event · 🔥 rest · 💰 treasure (pick a relic) · 🛒 shop.</li>
@@ -157,6 +169,7 @@
             <li><b>Keys:</b> <kbd>Space</kbd> end turn · <kbd>Esc</kbd> cancel aiming · <kbd>I</kbd> bag · <kbd>L</kbd> spoils and level-up · <kbd>P</kbd> auto-play (it fights for you; your spoils picks still wait 10 seconds for you) · <kbd>G</kbd> pixel art or classic emoji look · <kbd>F</kbd> camera to your hero (right-drag looks around) · <kbd>Enter</kbd> chat.</li>
             <li><b>Art:</b> <a href="https://opengameart.org/content/dawnlike-16x16-universal-rogue-like-tileset-v181" target="_blank" rel="noopener">DawnLike</a> by DragonDePlatino, palette by DawnBringer (CC-BY 4.0).</li>
           </ul>
+          </details>
         </details>
       </aside>
       <div id="end-overlay" hidden>

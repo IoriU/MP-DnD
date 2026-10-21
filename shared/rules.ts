@@ -622,7 +622,7 @@ export const DIFFICULTIES: Record<Difficulty, DifficultyDef> = {
     desc: 'Monsters fight as a squad: they gang up on one hero, flank, and use the battlefield.',
   },
   hard: {
-    name: 'Hard', icon: '💀', hp: 1.15, atk: 1, dmg: 1.2, budget: 1.3, squad: true, slip: 0,
+    name: 'Hard', icon: '💀', hp: 1.27, atk: 1, dmg: 1.28, budget: 1.3, squad: true, slip: 0, // playtest 1 pass: hp 1.15 -> 1.27, dmg 1.2 -> 1.28
     desc: 'More monsters, tougher ones, and every one brings an extra move: hamstrings, shield bashes, venom, raised dead.',
   },
 };
@@ -650,7 +650,9 @@ export const isDifficulty = (x: unknown): x is Difficulty => typeof x === 'strin
  * stops. Elites and bosses get their HP from scaledHp instead (they fight alone, so HP is their lever).
  * Tuned in the balance pass (Phase 13) so the party's lowest HP per fight is about the same for 3 to 6 heroes.
  */
-export const PARTY_SCALING = { base: 1.4, count: 0.45, hp: 0.2, dmg: 0.1 }; // base: a 3-hero party's budget per threat point
+// Playtest 1 pass (2026-10-21): base 1.4 -> 1.3 and count 0.45 -> 0.5, so 3-hero parties (the usual table) face a little
+// less and big parties a little more (bots on Normal won 67% with 3 heroes and every run with 5 or 6).
+export const PARTY_SCALING = { base: 1.3, count: 0.5, hp: 0.2, dmg: 0.1 }; // base: a 3-hero party's budget per threat point
 
 /**
  * Monsters grow with the act (Phase 13): the heroes pick a card after every fight, so by act 3 they hit 8 times in 10
@@ -665,6 +667,21 @@ export const ACT_SCALING = [
   { hp: 2.4, solo: 1.6, ac: 2, atk: 2, dmg: 2.2 },
 ];
 export const actScaling = (act: number) => ACT_SCALING[Math.min(ACT_SCALING.length, Math.max(1, act)) - 1];
+
+/**
+ * Monsters get a little tougher every floor (playtest 1, 2026-10-21: the jump between acts felt heavy). Each act's
+ * ACT_SCALING is where the middle of that act sits; in between, the numbers climb row by row, so an act starts about
+ * halfway from the last act's and ends halfway to the next one's (past act 3's middle they keep climbing at the same
+ * pace). The first half of act 1 stays at act 1's. Bosses keep their act's (actScaling).
+ */
+export function floorScaling(act: number, row: number, rows: number) {
+  const t = Math.max(0, act - 1 + (row + 0.5) / rows - 0.5); // 0 at act 1's middle row, 1 at act 2's, 2 at act 3's
+  const i = Math.min(ACT_SCALING.length - 2, Math.floor(t));
+  const f = t - i;
+  const [a, b] = [ACT_SCALING[i], ACT_SCALING[i + 1]];
+  const lerp = (x: number, y: number) => x + (y - x) * f;
+  return { hp: lerp(a.hp, b.hp), solo: lerp(a.solo, b.solo), ac: Math.round(lerp(a.ac, b.ac)), atk: Math.round(lerp(a.atk, b.atk)), dmg: lerp(a.dmg, b.dmg) };
+}
 
 const pastMin = (partySize: number) => Math.max(0, partySize - MIN_PARTY);
 export const partyScaling = (partySize: number) => ({

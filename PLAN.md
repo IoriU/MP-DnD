@@ -914,13 +914,21 @@ Your list after the first playtest (2026-10-21), and what we decided:
   - Events: six talking checks moved from WIS to CHA (bluffing the toll goblins, haggling, interrogating...); the gnome's green vial and the goblin's stew are CON checks instead of coin flips. On Hard, the Bloated Zombie's vomit is a CON save.
   - Bots raise their casting or weapon stat first, then CON. Old saves get the points of the even levels they already reached.
   - Tests: `tests/stats.test.ts` (12).
-- [ ] **📈 Smoother scaling:** monsters get a little tougher every floor, and the jump between acts gets smaller. Then a bot balance pass so the win rates stay where they are.
+- [x] **📈 Smoother scaling:** monsters get a little tougher every floor (floorScaling in shared/rules.ts): each act's numbers are its middle row, and in between they climb row by row, so the act 1 → 2 jump is about a third of what it was (HP x1.32 → x1.38 instead of x1 → x1.7). Bosses keep their act's numbers.
+- [x] **⚖️ Balance pass** (after stats, an at-will Fire Bolt and pits made the heroes stronger: Hard bots won 73%): Hard monsters x1.27 HP (was 1.15) and x1.28 damage (was 1.2); 3-hero parties face a little less and 5–6 a little more (PARTY_SCALING base 1.4 → 1.3, count 0.45 → 0.5). 48 bot runs each, 0 anomalies:
+
+  | | Wins | 3 / 4 / 5 / 6 heroes |
+  |---|---|---|
+  | ⚔️ Normal | 90% (was 87%) | 9/12 · 10/12 · 12/12 · 12/12 (3 heroes was 8/12) |
+  | 💀 Hard | 48% (was 73%) | 4/12 · 6/12 · 7/12 · 6/12 |
+
+  - Found and fixed on the way: a hero's free-movement area was measured around creatures, so in a shared turn a friend stepping into the corridor behind you froze your walk (the bot retried until the turn timed out); and Raise Cover or Shatter Ground's rubble could seal the only corridor between the party and the monsters for good (a 54-round stall). Permanent cover never splits a room now; a Wall of Stone still can, until it crumbles.
 - [x] **🗺️ Bigger, shaped rooms** (your call): 36×24 rooms (were 24×16), elites 46×30 and bosses 50×32, from seven plans: the old five plus caverns (cellular automaton caves) and chambers joined by corridors two tiles wide. A fight starts in an engagement zone the size of an old room (placed where the room is most open; a boss's hall in the middle), so the sides meet as soon as before; the rest is room to flank and fall back. Act 0 (test) rooms are the old bare ones.
   - Camera: opens on about an old room's worth around your hero, stays over the room, follows the fight (your hero on your turn, whoever acts when they're off screen, unless you're looking around), right-drag pans, the wheel zooms toward the mouse, F finds your hero.
   - Bot runs: fights take about as many rounds as before; a bot run takes about 63 s instead of 40–55 s.
 - [x] **🕳️ Pits** (your call): 'v' tiles (shared/grid.ts PIT): nobody walks in, sight and shots cross them. Rooms get 0–3 small chasms by act (elites and bosses one more), never at a spawn and never cutting the floor in two. A push over the edge (a Shove, a knockback, a brute's shove): a monster is gone and the pusher gets the kill; elites and bosses roll their Shove contest twice (keep the better) and catch the edge on a DEX save with advantage (DC 13); a hero loses 30% of max HP and climbs out prone with no movement left, and on Hard dies. Monsters with a shove go for the edge (on Hard it's a kill); bots value a pit push as a kill. 34 pit kills in 24 bot runs.
   - Tests: `tests/pits.test.ts` (5); `tests/battlefield.test.ts` reworked for the zone (and a pit test).
-- [ ] **📖 Shorter tutorial** (your call): a quick start of a few lines, the details in the codex, and a short tip the first time something new happens.
+- [x] **📖 Shorter tutorial** (your call): How to play opens on a six-line quick start (vote, your turn, hover anything, spoils and stat points, shared turns and Help Up, keys), with every rule folded under "All the rules" and a link to the codex. In the game, a 💡 tip card shows up the first time something new happens: the map, your first turn, a shared turn, a status, a pit, a downed friend, an event check, spoils, a stat point (client/tips.ts; once per browser, "No more tips" turns them off, "Show the tips again" in How to play brings them back).
 - [x] **🎲 Turn order on screen:** the turn order as a bar across the top of the battlefield, always visible (portraits with HP bars and initiative, whoever acts now lit, an "R2" line where the next round starts), and a short dice tumble for the initiative roll when a fight starts (client/turnbar.ts). The battlefield is fitted below it; the sidebar keeps the hunted note.
 
 ---

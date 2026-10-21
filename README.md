@@ -33,6 +33,8 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 
 ## How to play
 
+New here? Just start: a 💡 tip shows up the first time something new happens (the map, your first turn, a status, an event check, spoils, a stat point, a pit). The sidebar's **How to play** has a six-line quick start, with every rule folded underneath.
+
 - **The map:** each act is a branching map. Click a glowing room to vote for it. When everyone has voted (or 20 seconds after the first vote) the majority wins; ties are rolled.
 - **Rooms:**
   - ⚔️ **Combat:** a fight. Each act has 9 kinds of encounter, and some have a twist: you walk into their camp, they come at you from both ends of a tunnel, or the room is soaked in oil, flooded or full of magma.

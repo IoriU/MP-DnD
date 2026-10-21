@@ -9,7 +9,7 @@ import { turnBarHeight } from './turnbar.ts';
 import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, PIT_FALL, baseType, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
-  CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, moveArea, planFreeWalk, previewField, reactionSummary,
+  CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, planFreeWalk, previewField, reactionSummary, walkArea,
   resistance, tilePos, tilesAround, type CloudId, type FieldLike, type FieldPreview, type GroundId,
 } from '../shared/surfaces.ts';
 import { advantageText, attackAdvantage, coverFrom, coverWord, dirTo, isBehind, isFlanking, netAdvantage, turnsToFace, type AdvantageInfo } from '../shared/tactics.ts';
@@ -1194,10 +1194,10 @@ class DungeonScene extends Phaser.Scene {
     const acts = myActs();
     if (acts && (acts.budget ?? acts.moves) > 0) {
       // Free movement until you act: the whole area stays open (measured from where this stretch began) until you act.
-      const reach = moveArea(s, m, acts, (x, y) => occupied(s, x, y, m.id));
+      const reach = walkArea(s, m, acts, (x, y) => occupied(s, x, y, m.id));
       const here = m.y * s.width + m.x;
       g.fillStyle(0x4fb3ff, 0.24);
-      for (const idx of reach.keys()) {
+      for (const idx of reach) {
         if (idx === here) continue;
         const x = idx % s.width;
         g.fillRect(x * T + 1, ((idx - x) / s.width) * T + 1, T - 2, T - 2);

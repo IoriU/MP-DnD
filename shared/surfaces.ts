@@ -548,17 +548,25 @@ export interface MoveStretch {
 
 /**
  * Free movement until you act: the tiles a hero may walk to, as index -> steps from where this stretch began (the start
- * of the turn, or where they last acted). Walking somewhere and back again costs nothing until they act.
+ * of the turn, or where they last acted). Walking somewhere and back again costs nothing until they act. Measured around
+ * walls, cover and pits only: creatures move (in a shared turn a friend may step into the corridor behind you), so they
+ * only block the walk itself (walkArea, planFreeWalk).
  */
-export function moveArea(m: MapLike, here: Pos, a: MoveStretch, blocked: (x: number, y: number) => boolean): Map<number, number> {
-  return reachable(m, a.from ?? here, a.budget ?? a.moves, blocked);
+export function moveArea(m: MapLike, here: Pos, a: MoveStretch): Map<number, number> {
+  return reachable(m, a.from ?? here, a.budget ?? a.moves, () => false);
+}
+
+/** The tiles a hero can walk to right now: inside the move area, and not cut off by anyone standing in the way. */
+export function walkArea(m: MapLike, here: Pos, a: MoveStretch, blocked: (x: number, y: number) => boolean): Set<number> {
+  const area = moveArea(m, here, a);
+  return new Set(reachable(m, here, area.size, (x, y) => blocked(x, y) || !area.has(y * m.width + x)).keys());
 }
 
 /** The walk to a clicked tile, kept inside the move area: planWalk inside it, or toward it as far as the area goes. */
 export function planFreeWalk(
   f: FieldLike, here: Pos, to: Pos, a: MoveStretch, blocked: (x: number, y: number) => boolean, who?: Entity,
 ): { path: Pos[]; hazards: Pos[] } | null {
-  const area = moveArea(f, here, a, blocked);
+  const area = moveArea(f, here, a);
   const inside = (x: number, y: number) => area.has(y * f.width + x);
   if (inside(to.x, to.y)) return planWalk(f, here, to, area.size, (x, y) => blocked(x, y) || !inside(x, y), who);
   const full = findPath(f, here, blocked, (x, y) => x === to.x && y === to.y);

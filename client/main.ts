@@ -4,18 +4,24 @@ import { initHud, renderHud, toggleAuto, toggleGraphics, useSkill } from './hud.
 import { initInventory, isInventoryOpen, renderInventory, toggleInventory } from './inventory.ts';
 import { initLevelUp, renderLevelUp, toggleLevelUp } from './levelup.ts';
 import { renderTurnBar } from './turnbar.ts';
+import { initTips, renderTips, resetTips } from './tips.ts';
 import { initLobby, renderRoom } from './lobby.ts';
 import { hasSession, send } from './net.ts';
 import { initRunView, renderRunView } from './runview.ts';
 import { ensureGame } from './scene.ts';
 import { initShop, renderShop } from './shop.ts';
 import { isMyTurn, me, select, store, subscribe } from './store.ts';
-import { $ } from './util.ts';
+import { $, toast } from './util.ts';
 
 initLobby();
 initHud();
 initRunView();
 initLevelUp();
+initTips();
+document.getElementById('tips-reset')?.addEventListener('click', () => {
+  resetTips();
+  toast('💡 The tips will show again as things come up.');
+});
 initShop();
 initInventory();
 if (hasSession()) document.body.classList.add('resuming');
@@ -31,6 +37,7 @@ subscribe(() => {
     ensureGame();
     renderHud(s);
     renderTurnBar(s);
+    renderTips(s);
     renderRunView(s);
     renderShop(s);
     renderLevelUp(s);

@@ -308,3 +308,23 @@ test('a click walks inside the move area; a tile beyond it gets walked toward as
   const back = planFreeWalk(g as any, { x: here.x + 2, y: here.y }, here, { moves: 0, from: here, budget: 2 }, free);
   assert.equal(back?.path.length, 2);
 });
+
+test('free movement in a corridor: a friend stepping in behind you mid-turn does not freeze your walk', () => {
+  const { g, p, heroes } = battle('HHG', ['fighter', 'cleric']);
+  const [ann, bob] = heroes;
+  // Rows 1 and 3 become wall: row 2 is a corridor one tile wide.
+  const t = [...(g as any).tiles];
+  for (let x = 1; x < 13; x++) [t[1 * 14 + x], t[3 * 14 + x]] = ['#', '#'];
+  (g as any).tiles = t.join('');
+  Object.assign(ann, { x: 3, y: 2 });
+  Object.assign(bob, { x: 1, y: 2 });
+  p.beginTurn();
+  const a = p.turn.acts[ann.id];
+  const speed = a.moves;
+  assert.ok(p.tryMove(ann, { x: 4, y: 2 }) && p.tryMove(ann, { x: 5, y: 2 }));
+  assert.ok(p.tryMove(bob, { x: 2, y: 2 }) && p.tryMove(bob, { x: 3, y: 2 }), "Bob walks into Ann's old spot");
+  assert.ok(p.tryMove(ann, { x: 6, y: 2 }), 'Ann can still walk on');
+  assert.equal(a.moves, speed - 3);
+  assert.ok(p.tryMove(ann, { x: 5, y: 2 }), 'and back');
+  assert.equal(a.moves, speed - 2);
+});

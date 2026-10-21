@@ -93,7 +93,7 @@ function comboLegend(): string {
 }
 
 export function initHud() {
-  document.querySelector('.help ul')?.insertAdjacentHTML('beforeend', comboLegend());
+  document.querySelector('.help-more ul')?.insertAdjacentHTML('beforeend', comboLegend()); // with all the rules, not the quick start
   $('#auto-btn').addEventListener('click', toggleAuto);
   const gfx = $('#gfx-btn');
   gfx.addEventListener('click', toggleGraphics);

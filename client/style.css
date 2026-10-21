@@ -577,3 +577,26 @@ button.tag.lvl:hover { background: var(--accent-2); }
   .tb-chip { transition: none; }
   #turnbar.settle .tb-init { animation: none; }
 }
+
+/* ---------------------------------------------------------------- tips (client/tips.ts) */
+
+#tips {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: flex;
+  gap: 10px;
+  width: min(360px, calc(100% - 24px));
+  padding: 10px 12px;
+  background: #1a140fee;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px #000a;
+}
+.tip-icon { font-size: 24px; line-height: 1; }
+.tip-text { font-size: 13px; line-height: 1.45; }
+.tip-btns { display: flex; gap: 6px; margin-top: 8px; }
+.help .quick { margin-bottom: 6px; }
+.help-links { font-size: 12px; margin: 4px 0 8px; }
+.help-more > summary { cursor: pointer; font-size: 12px; color: var(--muted); }

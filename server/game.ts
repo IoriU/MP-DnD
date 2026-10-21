@@ -60,6 +60,7 @@ import {
   MAX_DOWNS,
   WARMUP_BUDGET,
   actScaling,
+  floorScaling,
   partyScaling,
   rollDice,
   rollDie,
@@ -206,7 +207,7 @@ import type {
   TurnView,
 } from '../shared/types.ts';
 import { attackAdvantage, canReact, coverFrom, coverWord, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
-import { LOW_COVER, fallsIn } from '../shared/grid.ts';
+import { LOW_COVER, fallsIn, reachable } from '../shared/grid.ts';
 import {
   EXPLOSION,
   FIELD_STATUS_TURNS,
@@ -800,7 +801,7 @@ export class Game {
   // ------------------------------------------------------------ the act map
 
   private node(id: string | null): MapNode | undefined {
-    return this.run?.map.nodes.find((n) => n.id === id);
+    return this.run?.map?.nodes.find((n) => n.id === id);
   }
 
   private clearRoom() {
@@ -1725,7 +1726,9 @@ export class Game {
     // Later acts: everyone gets tougher (actScaling).
     const d = DIFFICULTIES[this.diff];
     const party = partyScaling(partySize);
-    const act = actScaling(this.run?.act ?? 1);
+    // Bosses: their act's numbers; everyone else: a little more every floor (floorScaling).
+    const row = this.node(this.run?.currentId ?? null)?.row ?? Math.floor(ROWS / 2);
+    const act = boss ? actScaling(this.run?.act ?? 1) : floorScaling(this.run?.act ?? 1, row, ROWS);
     const hp = Math.max(1, Math.round((boss || elite ? scaledHp(def.hp, partySize, boss) * act.solo : def.hp * party.hp * act.hp) * d.hp));
     const dmg = Math.round(avgDice(def.dmg) * (party.dmg * act.dmg * d.dmg * (boss ? BOSS.dmg : elite ? ELITE.dmg : 1) - 1));
     const atk = d.atk + act.atk;
@@ -1877,7 +1880,7 @@ export class Game {
     const dy = next.y - p.y;
     if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1 || !canStep(this, p, dx, dy) || this.occupied(next.x, next.y, p.id)) return false;
     this.beginStretch(p, a);
-    const steps = moveArea(this, p, a, (x, y) => this.occupied(x, y, p.id)).get(next.y * this.width + next.x);
+    const steps = moveArea(this, p, a).get(next.y * this.width + next.x);
     if (steps === undefined) return false; // beyond this stretch's movement
     a.moves = a.budget! - steps;
     p.facing = { x: dx, y: dy };
@@ -3797,6 +3800,19 @@ export class Game {
   }
 
   /**
+   * Would permanent cover on tile `i` cut the room's floor in two? In the shaped rooms (playtest 1) a corridor can be the
+   * only way between the party and the monsters, and rubble that seals it never goes away.
+   */
+  private splitsRoom(i: number): boolean {
+    const tiles = this.tiles.slice(0, i) + LOW_COVER + this.tiles.slice(i + 1);
+    const start = tiles.indexOf('.');
+    if (start < 0) return true;
+    const floor = [...tiles].filter((t) => t === '.').length;
+    const map = { width: this.width, height: this.height, tiles };
+    return reachable(map, { x: start % this.width, y: Math.floor(start / this.width) }, this.width * this.height, () => false).size !== floor;
+  }
+
+  /**
    * Raise Cover and Wall of Stone: cover or a wall rises on empty floor across the aimed spot (square to the caster),
    * or all around the target (Prison of Stone). Earthshaper makes it burst on the enemies next to it, and walls last
    * twice as long.
@@ -3823,6 +3839,7 @@ export class Game {
     for (const q of spots.slice(0, r.ring ? 8 : r.tiles)) {
       if (!open(q)) continue;
       const i = q.y * this.width + q.x;
+      if (r.cover !== 'wall' && this.splitsRoom(i)) continue; // a wall of stone crumbles; rubble stays
       this.setTile(i, r.cover === 'wall' ? '#' : LOW_COVER);
       if (r.cover === 'wall') {
         delete this.ground[i];
@@ -3851,8 +3868,13 @@ export class Game {
         if (x > 0 && y > 0 && x < this.width - 1 && y < this.height - 1 && this.tiles[i] === '.' && !this.occupied(x, y) && !this.traps.has(i)) free.push(i);
       }
     }
-    const picked = shuffle(free).slice(0, n);
-    for (const i of picked) this.setTile(i, LOW_COVER);
+    const picked: number[] = [];
+    for (const i of shuffle(free)) {
+      if (picked.length >= n) break;
+      if (this.splitsRoom(i)) continue; // rubble never seals the only way through
+      this.setTile(i, LOW_COVER);
+      picked.push(i);
+    }
     if (picked.length) this.addLog('info', `⛏️ The broken floor leaves rubble on ${picked.length} tiles.`);
   }
 

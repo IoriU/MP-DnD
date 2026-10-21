@@ -10,7 +10,7 @@ import { Game } from '../server/game.ts';
 import { autoLevelPick } from '../server/heroai.ts';
 import { applyLevelUps, applyPick, dealOffer, raiseStat, recalcHero, startingSkills } from '../server/progression.ts';
 import { makeRng } from '../server/rng.ts';
-import { CLASSES, CLASS_IDS, STATS, STAT_CAP, maxHpFor, maxSlotsFor, statMod, xpToNext } from '../shared/rules.ts';
+import { ACT_SCALING, CLASSES, CLASS_IDS, STATS, STAT_CAP, floorScaling, maxHpFor, maxSlotsFor, statMod, xpToNext } from '../shared/rules.ts';
 import { SKILLS, attackBonus, heroDc, statsOf } from '../shared/skills.ts';
 import type { ClassId, PlayerEntity, PlayerInfo } from '../shared/types.ts';
 
@@ -196,4 +196,23 @@ test('a latecomer joining at level 5 gets the stat points of the levels it skipp
   const r = p.join(undefined, 'Cid', 'cleric');
   const late = p.newcomer(p.players.find((x: PlayerInfo) => x.id === r.playerId), 5);
   assert.equal(late.levelUps, 2);
+});
+
+// ---------------------------------------------------------------- monsters grow every floor (playtest 1)
+
+test('monsters get a little tougher every floor, the middle of each act is its old numbers, and the act jump is smaller', () => {
+  const rows = 12;
+  const at = (act: number, row: number) => floorScaling(act, row, rows);
+  let last = at(1, 0).hp;
+  for (const act of [1, 2, 3]) {
+    for (let row = 0; row < rows; row++) {
+      const hp = at(act, row).hp;
+      assert.ok(hp >= last, `act ${act} row ${row}: ${hp} after ${last}`);
+      last = hp;
+    }
+  }
+  assert.ok(Math.abs(at(2, 5.5).hp - ACT_SCALING[1].hp) < 1e-9, "act 2's middle is act 2's numbers");
+  assert.equal(at(1, 0).hp, 1, 'the first floors stay at act 1');
+  const jump = at(2, 0).hp - at(1, rows - 1).hp;
+  assert.ok(jump < (ACT_SCALING[1].hp - ACT_SCALING[0].hp) / 2, `act 1 → 2 jump ${jump.toFixed(2)}`);
 });
