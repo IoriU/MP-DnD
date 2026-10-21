@@ -899,7 +899,7 @@ Started 2026-10-20, right after the playtest redesign (your call: balance first,
 
 ---
 
-## Phase 14: Playtest 1 feedback 🟡
+## Phase 14: Playtest 1 feedback 🟢
 Your list after the first playtest (2026-10-21), and what we decided:
 - [x] **Quick fixes**
   - [x] 🧙 Fire Bolt can be cast every turn (it needed a turn to recharge, so every other turn the Wizard only had a dagger thrown 4 tiles and walked into melee)
