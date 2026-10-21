@@ -351,10 +351,16 @@ class DungeonScene extends Phaser.Scene {
       this.drawCursor();
       $('#tooltip').hidden = true;
     });
-    this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
+    // The wheel zooms toward the mouse: the spot under the cursor stays put.
+    this.input.on('wheel', (p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
       const cam = this.cameras.main;
       this.userCam = true;
+      const before = cam.getWorldPoint(p.x, p.y);
       cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), 0.5, 3));
+      cam.preRender();
+      const after = cam.getWorldPoint(p.x, p.y);
+      cam.scrollX += before.x - after.x;
+      cam.scrollY += before.y - after.y;
     });
     this.scale.on('resize', () => {
       const s = store.state;
@@ -1101,11 +1107,26 @@ class DungeonScene extends Phaser.Scene {
     const moves = myActs()?.moves ?? 0;
     if (moves > 0) {
       const reach = reachable(s, m, moves, (x, y) => occupied(s, x, y, m.id));
-      g.fillStyle(0x4fb3ff, 0.12);
+      g.fillStyle(0x4fb3ff, 0.24);
       for (const [idx, steps] of reach) {
         if (steps === 0) continue;
         const x = idx % s.width;
         g.fillRect(x * T + 1, ((idx - x) / s.width) * T + 1, T - 2, T - 2);
+      }
+      // A bright line around the area's edge, so where you can walk reads at a glance on any floor.
+      g.lineStyle(2, 0x8fd0ff, 0.95);
+      for (const idx of reach.keys()) {
+        const x = idx % s.width;
+        const y = (idx - x) / s.width;
+        const out = (dx: number, dy: number) => {
+          const nx = x + dx;
+          const ny = y + dy;
+          return nx < 0 || ny < 0 || nx >= s.width || ny >= s.height || !reach.has(ny * s.width + nx);
+        };
+        if (out(0, -1)) g.lineBetween(x * T, y * T, (x + 1) * T, y * T);
+        if (out(0, 1)) g.lineBetween(x * T, (y + 1) * T, (x + 1) * T, (y + 1) * T);
+        if (out(-1, 0)) g.lineBetween(x * T, y * T, x * T, (y + 1) * T);
+        if (out(1, 0)) g.lineBetween((x + 1) * T, y * T, (x + 1) * T, (y + 1) * T);
       }
       // Gold dots: standing here you'd attack a monster from behind or flank it. Hover a dotted tile to see who and why.
       for (const [idx, steps] of reach) {
@@ -1239,7 +1260,13 @@ class DungeonScene extends Phaser.Scene {
     const block = blockOf(e) > 0 ? ` (+${blockOf(e)} 🧱 Block)` : '';
     const soak = block + (e.kind === 'player' ? (e.tempHp > 0 ? ` (+${e.tempHp} temp)` : '') : mon?.ward ? ` (+${mon.ward} 🔰 ward)` : '');
     const lines = [`<b>${esc(e.name)}</b>${tag} ${traitIcons(e)}`.trim(), `${e.hp} / ${e.maxHp} HP${soak} · AC ${e.ac}`];
-    if (e.statuses.length) lines.push(e.statuses.map((x) => `${STATUSES[x.id].icon} ${STATUSES[x.id].name}${stacksShown(x) ? ` ×${stacksShown(x)}` : ''} ${x.turns}`).join(' · '));
+    // Each buff and debuff with what it does, so a 🎯 on the map can be read without the rules page.
+    for (const x of e.statuses) {
+      const def = STATUSES[x.id];
+      lines.push(
+        `<span class="tip-status ${def.good ? 'good' : 'bad'}">${def.icon} <b>${def.name}</b>${stacksShown(x) ? ` ×${stacksShown(x)}` : ''} <span class="muted">${x.turns} turn${x.turns === 1 ? '' : 's'}</span></span><br><span class="tip-desc">${esc(def.desc)}</span>`,
+      );
+    }
     const resist = this.resistLine(e);
     if (resist) lines.push(resist);
     // Who the monsters (or the NPC allies) have picked: the red reticle on the map.

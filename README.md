@@ -52,7 +52,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
   - **Skills:** keys **1–9** (or the buttons), then click a highlighted target (or a spot, for area spells). Esc or right-click cancels.
   - **Big rooms, different starts:** fight rooms are 24×16 tiles (elites 26×17, bosses 28×18), with walls, crates and rubble to fight around. Fights start in different ways, and the log says so when it isn't the classic **line** (you on the left, the monsters on the right): **scattered** groups, a **pincer** (the monsters close in from both ends), **surrounded** (every ambush starts like this) or **their camp** (they wait in the middle and you come in from three sides). Bosses always start as a line.
 - **Skills:** every class has three kinds, each with its own class flavor (the Fighter's spells are Maneuvers paid with Grit, for example):
-  - ⏱ **Cantrips** have a cooldown of a few turns and reset every fight. Use them freely.
+  - ⏱ **Cantrips** have a cooldown of a few turns and reset every fight. Use them freely. The Wizard's Fire Bolt has none: it's their everyday ranged attack.
   - 🔮 **Spells** cost slots, which only come back with a Long Rest (or an act boss kill). Much stronger: save them for elites, bosses and emergencies.
   - 🔁 **Passives** are always on.
   - Each skill upgrades I → II → III, and tier III makes you choose one of two branches (Fire Bolt becomes *Inferno* or *Splitting Bolt*).

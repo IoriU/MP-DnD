@@ -493,6 +493,8 @@ button.tag.lvl:hover { background: var(--accent-2); }
 
 /* Battlefield tooltips: surface descriptions wrap, reactions and electrified tiles in their own colors. */
 .tip-desc { display: inline-block; max-width: 260px; white-space: normal; color: var(--muted); }
+.tip-status.good b { color: var(--good); }
+.tip-status.bad b { color: #ff8c7a; }
 .tip-shock { color: #fff36b; }
 .tip-react { font-weight: 600; }
 .tip-death { color: #d6b8ff; }

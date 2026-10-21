@@ -416,7 +416,7 @@ const SKILL_DEFS = {
   // ---------------------------------------------- Wizard
   fire_bolt: {
     kind: 'cantrip', pool: 'wizard',
-    base: { name: 'Fire Bolt', icon: '🔥', ap: 2, target: 'enemy', range: 8, cooldown: 1, roll: 'attack', dmg: d(1, 10), element: 'fire' },
+    base: { name: 'Fire Bolt', icon: '🔥', ap: 2, target: 'enemy', range: 8, roll: 'attack', dmg: d(1, 10), element: 'fire' }, // no cooldown: the Wizard's at-will ranged attack
     t2: { dmg: d(2, 10) },
     a: { name: 'Inferno', surface: { ground: 'fire' } },
     b: { name: 'Splitting Bolt', chain: 1 },

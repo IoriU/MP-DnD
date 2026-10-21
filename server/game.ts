@@ -1485,11 +1485,28 @@ export class Game {
     } else this.showOutcome(scene, '🗺️ Back to the map', () => this.toMap());
   }
 
-  /** d20 + the best modifier in the party for that stat. */
-  private eventCheck(stat: EventStat, dc: number): CheckResult {
-    const hero = this.heroes()
+  /** Who would roll an event check: the standing hero with the best modifier for that stat. */
+  private checkRoller(stat: EventStat): PlayerEntity | undefined {
+    return this.heroes()
       .filter((p) => !p.dead)
       .sort((a, b) => CLASSES[b.classId].mods[stat] - CLASSES[a.classId].mods[stat])[0];
+  }
+
+  /** "WIS check, DC 13" gets who would roll it and the chance: "WIS check, DC 13: bunted rolls (+1), 45%". */
+  private checkOdds(hint: string | undefined): string | undefined {
+    const m = hint && /\b(STR|DEX|INT|WIS) check, DC (\d+)/.exec(hint);
+    if (!hint || !m) return hint;
+    const stat = m[1].toLowerCase() as EventStat;
+    const hero = this.checkRoller(stat);
+    if (!hero) return hint;
+    const mod = CLASSES[hero.classId].mods[stat];
+    const chance = Math.max(0, Math.min(20, 21 - Number(m[2]) + mod)) * 5; // a d20 + mod against the DC
+    return hint.replace(m[0], `${m[0]}: ${hero.name} rolls (${fmtMod(mod)}), ${chance}%`);
+  }
+
+  /** d20 + the best modifier in the party for that stat. */
+  private eventCheck(stat: EventStat, dc: number): CheckResult {
+    const hero = this.checkRoller(stat);
     const mod = hero ? CLASSES[hero.classId].mods[stat] : 0;
     const roll = rollDie(20);
     const ok = roll + mod >= dc;
@@ -5329,7 +5346,7 @@ export class Game {
         title: e.title,
         glyph: e.glyph,
         text: e.text,
-        choices: e.choices.map((c) => ({ id: c.id, label: c.label, hint: c.hint ?? (c.cost ? `Costs ${c.cost} gold` : undefined) })),
+        choices: e.choices.map((c) => ({ id: c.id, label: c.label, hint: this.checkOdds(c.hint) ?? (c.cost ? `Costs ${c.cost} gold` : undefined) })),
         ...(e.chosen ? { chosen: e.chosen } : {}),
         ...(e.lines ? { lines: e.lines } : {}),
       },

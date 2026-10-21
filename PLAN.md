@@ -881,7 +881,7 @@ Started 2026-10-20, right after the playtest redesign (your call: balance first,
 - [x] **🤖 Build and let the AI fight** (your ask, 2026-10-20): with auto-play on, the AI plays your turns, but each spoils or level-up pick waits 10 seconds for you (`PICK_WAIT_MS`), with a countdown on the pick panel, and so does your rest-site choice. Pick in time and it's your pick; the next pick gets its own 10 seconds. The victory screen waits until your picks are made, then moves on by itself. Bots and players who dropped out still pick at once (bot runs are as fast as before).
   - Tests: `tests/autopick.test.ts` (6, on mocked timers).
 - [x] **🤖 Pick a bot's class** (your ask, 2026-10-20): in the tavern, the host picks each added bot's class from a dropdown on its row (it starts with a class that fills a gap, as before). A saved run's bots keep their class. Test in `tests/classes.test.ts`.
-- [ ] Playtest with real people, then adjust (`node scripts/journal-report.ts --latest` afterwards)
+- [x] Playtest with real people (2026-10-20, 3 people: Ranger, Wizard, Paladin on Normal): 34 minutes, wiped at the act 2 Wight (Shielded + Summoner). Pace is fine (about 70 minutes for a full run at that rate). Your feedback is Phase 14.
 
 **Result (2026-10-20):** 144 runs on the final numbers, boss signatures included (in brackets: before the boss rework), 0 anomalies, 0 stuck fights:
 
@@ -896,6 +896,24 @@ Started 2026-10-20, right after the playtest redesign (your call: balance first,
 - A run takes about 1.5 minutes at bot speed. Deaths per run: Normal 0.7, Hard 2.0, so Injury matters now.
 - Still uneven: 3-hero parties win a bit less than bigger ones with the same average pressure (one down is a third of the party). Worth watching in the playtest, since you and a friend plus a bot make 3.
 - Bots aren't players. Treat these numbers as a starting point for your playtest, not the final word.
+
+---
+
+## Phase 14: Playtest 1 feedback 🟡
+Your list after the first playtest (2026-10-21), and what we decided:
+- [x] **Quick fixes**
+  - [x] 🧙 Fire Bolt can be cast every turn (it needed a turn to recharge, so every other turn the Wizard only had a dagger thrown 4 tiles and walked into melee)
+  - [x] 🏷️ Hovering a creature explains its buffs and debuffs (🎯 Marked: attack rolls against it have advantage, 2 turns)
+  - [x] 👣 The movement area is easier to see (a stronger fill and a bright line around its edge)
+  - [x] 🔍 The wheel zooms toward the mouse
+  - [x] 🎲 Event choices show who rolls the check and the chance ("WIS check, DC 13: bunted rolls (+1), 45%")
+- [ ] **👣 Free movement until you act:** inside the blue area you can move as often as you like (a misclick costs nothing). Once you act, the area shrinks to what's left.
+- [ ] **💪 Stats you can see and raise** (your call: both): shown on the hero card and in tooltips; a stat point every other level that you put in any stat you like; stat boons in the spoils; gear with stats. Every stat has to change something you feel: health, damage, AC, spell slots...
+- [ ] **📈 Smoother scaling:** monsters get a little tougher every floor, and the jump between acts gets smaller. Then a bot balance pass so the win rates stay where they are.
+- [ ] **🗺️ Bigger, shaped rooms** (your call): about 1.5x bigger, built from chambers, cave walls and corridors; elite and boss rooms much bigger. The camera follows whoever is acting, right-drag pans, the wheel zooms toward the mouse.
+- [ ] **🕳️ Pits** (your call): a regular monster shoved into a pit is gone; elites and bosses are harder to shove; a hero who falls takes heavy damage and climbs out. On Hard a fall is deadly for everyone.
+- [ ] **📖 Shorter tutorial** (your call): a quick start of a few lines, the details in the codex, and a short tip the first time something new happens.
+- [ ] **🎲 Turn order on screen:** the turn order as a bar across the top of the battlefield, always visible, and a short dice animation for the initiative roll when a fight starts.
 
 ---
 

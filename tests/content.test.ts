@@ -9,7 +9,8 @@ import { getEvent } from '../server/events.ts';
 import { Game } from '../server/game.ts';
 import { makeRng, rng } from '../server/rng.ts';
 import { generateRoom, pickDeployment } from '../server/room.ts';
-import { ACTS, HARD_MOVES, INJURY_PCT, MONSTERS, baseType, hardId, isHardVersion } from '../shared/rules.ts';
+import { ACTS, CLASSES, HARD_MOVES, INJURY_PCT, MONSTERS, baseType, hardId, isHardVersion } from '../shared/rules.ts';
+import { SKILLS } from '../shared/skills.ts';
 import type { ClassId, PlayerEntity, PlayerInfo } from '../shared/types.ts';
 
 // More events and encounters (Phase 12, 2026-10-20): events can hand out spoils picks, XP and random relics, charge an
@@ -212,4 +213,23 @@ test('Raise Dead: a Hard necromancer stands a Zombie back up once a fight, only 
   assert.equal(p.monsters().filter((m: any) => m.type === 'zombie_hard').length, 1, 'once a fight');
   p.damage(zombie, 999, heroes[0]);
   assert.deepEqual(heroes.map((h) => h.xp), xp, 'no XP the second time');
+});
+
+// ---------------------------------------------------------------- playtest 1 quick fixes
+
+test('an event check says who would roll it and the chance, before the party votes', () => {
+  const { p } = camp(['fighter', 'wizard']);
+  p.event = getEvent('toll_bridge', 1);
+  p.phase = 'event';
+  const hint = p.snapshot().event.choices.find((c: { id: string }) => c.id === 'bluff').hint as string;
+  const best = Math.max(CLASSES.fighter.mods.wis, CLASSES.wizard.mods.wis);
+  const who = CLASSES.fighter.mods.wis >= CLASSES.wizard.mods.wis ? 'Ann' : 'Bob'; // a tie goes to the first in the party
+  const chance = Math.max(0, Math.min(20, 21 - 13 + best)) * 5;
+  assert.equal(hint, `WIS check, DC 13: ${who} rolls (${best >= 0 ? '+' : ''}${best}), ${chance}%`);
+  assert.equal(p.snapshot().event.choices.find((c: { id: string }) => c.id === 'pay').hint, 'Costs 20 gold. A blessing until the end of the act', 'other hints are left alone');
+});
+
+test("Fire Bolt is the Wizard's at-will ranged attack: no cooldown", () => {
+  assert.equal(SKILLS.fire_bolt.base.cooldown, undefined);
+  assert.ok(CLASSES.wizard.start.includes('fire_bolt'));
 });
