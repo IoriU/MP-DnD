@@ -521,3 +521,59 @@ button.tag.lvl:hover { background: var(--accent-2); }
   image-rendering: pixelated;
   vertical-align: middle;
 }
+
+/* ---------------------------------------------------------------- the turn order bar (client/turnbar.ts) */
+
+#turnbar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  padding: 5px 8px;
+  background: #0d0a08e0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 6px 18px #0008;
+}
+.tb-label { align-self: center; margin-right: 4px; font: 600 12px var(--serif); color: var(--accent-2); white-space: nowrap; }
+.tb-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 40px;
+  padding: 3px 2px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: help;
+  transition: transform 0.2s;
+}
+.tb-chip.hero { background: #1b2a3a; }
+.tb-chip.foe { background: #3a1b1b; }
+.tb-chip.ally { background: #1d3320; }
+.tb-chip.mine { border-color: #4fb3ff; }
+.tb-chip.now { border-color: var(--accent); box-shadow: 0 0 10px #e8b04a88; transform: translateY(-2px); }
+.tb-chip.down, .tb-chip.lost { opacity: 0.45; }
+.tb-chip.big .tb-face { filter: drop-shadow(0 0 3px #e0523f); }
+.tb-face { position: relative; display: grid; place-items: center; width: 28px; height: 28px; font-size: 20px; }
+.tb-face .sprite { display: block; }
+.tb-badge { position: absolute; top: -6px; right: -6px; font-size: 11px; font-style: normal; }
+.tb-hp { width: 30px; height: 3px; overflow: hidden; background: #0008; border-radius: 2px; }
+.tb-hp i { display: block; height: 100%; background: var(--good); }
+.tb-chip.foe .tb-hp i { background: var(--bad); }
+.tb-init { min-width: 14px; font: 700 10px var(--sans); text-align: center; color: var(--muted); }
+#turnbar.rolling .tb-init { color: var(--accent-2); }
+#turnbar.settle .tb-init { animation: tb-settle 0.35s ease-out; color: var(--accent-2); }
+@keyframes tb-settle { from { transform: scale(1.6); } to { transform: scale(1); } }
+.tb-round { align-self: stretch; display: grid; place-items: center; padding: 0 4px; font: 700 10px var(--sans); color: var(--muted); border-left: 1px dashed var(--line); }
+.tb-more { align-self: center; font-size: 11px; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) {
+  .tb-chip { transition: none; }
+  #turnbar.settle .tb-init { animation: none; }
+}

@@ -45,6 +45,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **After a room:** a won fight, an event, a treasure or a rest ends on its own screen (over the battlefield, after a fight) that says what happened: the gold, the healing, the loot, the level-ups, the damage everyone dealt, or what your choice did. Pick your spoils there; the map comes when everyone has clicked Continue (or a minute after the first person did). Spoils you don't pick wait for you on the map.
 - **Fights:**
   - On your turn you get movement (the blue tiles) and **⚡ 3 AP**. Attacks and most spells cost 2 AP, quick skills 1, the biggest spells (Fireball, Shatter...) 3. AP you don't spend carries over, but a turn starts with at most 5. Walking is free, and until you act you can walk anywhere inside the blue area as often as you like (a misclick costs nothing); once you attack, cast or use an item, your remaining movement counts from there. **👟 Dash** (everyone, 1 AP) adds 3 tiles.
+  - **🎲 Turn order:** a bar across the top of the battlefield shows everyone in the order they act, starting with whoever is acting now, with a line where the next round starts (hover a portrait for HP and initiative). When a fight starts, the initiative dice roll for a moment first.
   - **🤝 Shared turns:** heroes next to each other in the turn order play at the same time (like Baldur's Gate 3). Each of you moves and acts with your own movement and AP, in any order, and ends your own turn; the monsters wait until all of you have. A monster or an NPC ally always acts alone.
   - **🧱 Block** soaks damage before HP and temporary HP, until the start of the turn of whoever gave it. **Brace** (everyone, 1 AP, once per turn) gives 1d6; Fighter and Paladin skills, some gear and shield-carrying monsters have more.
   - Click a tile to walk, or use WASD / arrow keys (Q E Z C for diagonals). Press **Space** to end your turn.
@@ -104,7 +105,7 @@ The `tunnel` script needs `cloudflared`. Install it with `winget install Cloudfl
 - **Difficulty:** the host picks **📖 Story**, **⚔️ Normal** or **💀 Hard** in the tavern, and the whole run keeps it (saved runs too). On Story the monsters are weaker and fight on instinct: each one goes for whoever is closest. On Normal and Hard they fight as a squad (below), and Hard also hits harder and brings more of them. On Hard every regular monster also has **one extra move** (shown on its tooltip as 💀 On Hard): goblins hamstring, archers pin you in place, skeletons shield-bash you down, zombies grab, wolves and priests shout orders, necromancers raise a fallen friend once a fight, cultists set you on fire, ogres bellow, and so on. Every act's monsters are tougher than the last (more HP, AC, aim and damage), to keep up with a party that picks a card after every fight; the run's first fight is a small warm-up.
 - **👑 Bosses are a race:** the moment a boss falls, the rest flee and the fight is won, and each boss punishes a slow fight its own way. The 👑 Goblin King's 📯 War Horn calls more goblins every 3rd round; the ☠️ Bone Knight's 🦴 Rise Again stands its fallen minions back up 2 rounds later; the 🐉 Dread Wyrm's 😡 Wrath adds +1 to hit and +10% damage (its breath too) every round from round 4. Burst it down instead of turtling.
 - **🧠 Who plays the monsters:** next to the difficulty, the host can pick the **📜 scripted** squad AI or a **🧠 PPO-trained policy** (a neural network trained against the hero bots) in the tavern. The PPO card is only available when the server has a trained policy file. The run keeps the pick (saved runs too), and a 🧠 PPO tag shows next to the difficulty.
-- **🎯 Monster squads:** on Normal and Hard the monsters call a target and gang up on it. A red 🎯 reticle marks each hunted hero and the turn order names them (in a bigger party the monsters split into packs, each hunting its own hero), so heal them, block for them or draw the monsters off. Every monster has a role, shown on its tooltip:
+- **🎯 Monster squads:** on Normal and Hard the monsters call a target and gang up on it. A red 🎯 reticle marks each hunted hero and the sidebar names them (in a bigger party the monsters split into packs, each hunting its own hero), so heal them, block for them or draw the monsters off. Every monster has a role, shown on its tooltip:
   - 🛡️ **Brutes** push to the front and hold it, and some **shove** you into fire and other hazards.
   - 🗡️ **Skirmishers** circle around for flanks and back attacks.
   - 🏹 **Archers** keep their distance and shoot.
@@ -197,7 +198,8 @@ server/rng.ts      seeded random numbers
 server/index.ts    HTTP + WebSocket server and room codes
 client/runview.ts  the act map and event screens
 client/scene.ts    Phaser rendering of the battle room: tiles, creatures, effects
-client/hud.ts      sidebar: party, abilities, turn order, dice log
+client/hud.ts      sidebar: party, abilities, dice log
+client/turnbar.ts  the turn order bar over the battlefield (and the initiative roll)
 client/lobby.ts    home screen and tavern lobby
 client/codex/      the Codex (codex.html): the content dashboard and its pool checks
 ```

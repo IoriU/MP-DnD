@@ -918,7 +918,7 @@ Your list after the first playtest (2026-10-21), and what we decided:
 - [ ] **🗺️ Bigger, shaped rooms** (your call): about 1.5x bigger, built from chambers, cave walls and corridors; elite and boss rooms much bigger. The camera follows whoever is acting, right-drag pans, the wheel zooms toward the mouse.
 - [ ] **🕳️ Pits** (your call): a regular monster shoved into a pit is gone; elites and bosses are harder to shove; a hero who falls takes heavy damage and climbs out. On Hard a fall is deadly for everyone.
 - [ ] **📖 Shorter tutorial** (your call): a quick start of a few lines, the details in the codex, and a short tip the first time something new happens.
-- [ ] **🎲 Turn order on screen:** the turn order as a bar across the top of the battlefield, always visible, and a short dice animation for the initiative roll when a fight starts.
+- [x] **🎲 Turn order on screen:** the turn order as a bar across the top of the battlefield, always visible (portraits with HP bars and initiative, whoever acts now lit, an "R2" line where the next round starts), and a short dice tumble for the initiative roll when a fight starts (client/turnbar.ts). The battlefield is fitted below it; the sidebar keeps the hunted note.
 
 ---
 

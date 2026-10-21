@@ -5,6 +5,7 @@
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
 import { LOW_COVER, dist, hasLOS } from '../shared/grid.ts';
+import { turnBarHeight } from './turnbar.ts';
 import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, baseType, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
@@ -826,9 +827,9 @@ class DungeonScene extends Phaser.Scene {
     }
   }
 
-  /** How much of the canvas top the Sneak-or-Charge card covers (0 when it isn't up). */
+  /** How much of the canvas top the Sneak-or-Charge card (or, in a fight, the turn order bar) covers. */
   private insetFor(s: GameState): number {
-    if (!inApproach(s)) return 0;
+    if (!inApproach(s)) return turnBarHeight();
     const card = document.querySelector<HTMLElement>('#approach-view .ap-card');
     return card ? Math.min(card.offsetHeight + 24, this.cameras.main.height * 0.5) : 0;
   }

@@ -3,6 +3,7 @@ import { hotbar } from '../shared/skills.ts';
 import { initHud, renderHud, toggleAuto, toggleGraphics, useSkill } from './hud.ts';
 import { initInventory, isInventoryOpen, renderInventory, toggleInventory } from './inventory.ts';
 import { initLevelUp, renderLevelUp, toggleLevelUp } from './levelup.ts';
+import { renderTurnBar } from './turnbar.ts';
 import { initLobby, renderRoom } from './lobby.ts';
 import { hasSession, send } from './net.ts';
 import { initRunView, renderRunView } from './runview.ts';
@@ -29,6 +30,7 @@ subscribe(() => {
   if (screen === 'game') {
     ensureGame();
     renderHud(s);
+    renderTurnBar(s);
     renderRunView(s);
     renderShop(s);
     renderLevelUp(s);

@@ -1,11 +1,11 @@
 // The sidebar: turn order, party, your skills, the dice log and chat.
 
-import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
+import { isAllyNpc, isFoe } from '../shared/elites.ts';
 import { BAG_SIZE, type ItemId } from '../shared/items.ts';
-import { AP_GAIN, AP_MAX, BOSS_SIGNATURES, CLASSES, DIFFICULTIES, INJURY_PCT, LEVEL_CAP, MONSTERS, xpToNext } from '../shared/rules.ts';
+import { AP_GAIN, AP_MAX, CLASSES, DIFFICULTIES, INJURY_PCT, LEVEL_CAP, xpToNext } from '../shared/rules.ts';
 import { statsRow } from './stats.ts';
 import {
-  apOf, blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, isSignature, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
+  apOf, blockOf, canHitProps, describeSkill, hitsArea, hotbar, isSignature, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
 } from '../shared/skills.ts';
 import { SUBCLASSES } from '../shared/subclasses.ts';
@@ -15,7 +15,7 @@ import { alliesHtml, blessingsHtml, gearIconsHtml, itemIcon, relicsHtml, toggleI
 import { toggleLevelUp } from './levelup.ts';
 import { leave, send } from './net.ts';
 import { classIcon, onGraphicsMode, spritesOn, toggleSprites } from './sprites.ts';
-import { actingNow, aimAt, blockReason, huntedIds, inApproach, isAuto, isMyTurn, me, myActs, mySkillStats, refresh, select, store, turnKey, validTarget } from './store.ts';
+import { actingNow, aimAt, blockReason, huntedIds, inApproach, isMyTurn, me, myActs, mySkillStats, refresh, select, store, turnKey, validTarget } from './store.ts';
 import { $, classLabel, esc, monsterAiTag, stacksShown, toast } from './util.ts';
 
 let lastLogId = -1;
@@ -203,26 +203,11 @@ export function renderHud(s: GameState) {
     );
   }
 
-  // Turn order
+  // Who the monsters hunt (the turn order itself is the bar over the battlefield, client/turnbar.ts)
   const init = $('#initiative');
-  init.hidden = !s.turn;
-  if (s.turn) {
-    const t = s.turn;
-    init.innerHTML = `<div class="section-label">Turn order</div><div class="chips">${t.order
-      .map((id) => {
-        const e = s.entities.find((x) => x.id === id);
-        if (!e) return '';
-        const ally = isAllyNpc(e);
-        const cls = [actingIds.includes(id) ? 'current' : '', ally ? 'ally' : e.kind, e.kind === 'player' && e.playerId === store.playerId ? 'mine' : ''].join(' ');
-        const auto = e.kind === 'player' && isAuto(s, e.playerId) ? ' 🤖' : '';
-        const surprised = hasStatus(e, 'surprised') ? ` ${STATUSES.surprised.icon}` : ''; // loses its first turn
-        const sig = e.kind === 'monster' ? MONSTERS[e.type]?.signature : undefined;
-        const traits = e.kind === 'monster' ? (e.traits ?? []).map((tr) => TRAITS[tr]?.icon ?? '').join('') + (sig ? BOSS_SIGNATURES[sig].icon : '') : ''; // an elite's traits, a boss's signature
-        const tip = `${ally ? 'NPC ally: fights for the party · ' : ''}Initiative ${t.init[id] ?? '?'}${surprised ? ' · Surprised: loses its first turn' : ''}`;
-        return `<span class="chip ${cls}" title="${tip}">${e.glyph} ${esc(e.name)}${traits ? ` ${traits}` : ''}${auto}${surprised}</span>`;
-      })
-      .join('')}</div>${focusNote(s, t)}`;
-  }
+  const note = s.turn ? focusNote(s, s.turn) : '';
+  init.hidden = !note;
+  if (note) init.innerHTML = note;
 
   // Your turn banner (heroes side by side in the turn order play at the same time)
   const key = turnKey(s);
