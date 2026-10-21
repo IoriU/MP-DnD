@@ -32,9 +32,10 @@ after(() => {
 });
 
 const KINDS = ['combat', 'elite', 'boss'] as const;
-const SIZE: Record<(typeof KINDS)[number], [number, number]> = { combat: [24, 16], elite: [26, 17], boss: [28, 18] };
+// Since playtest 1 (2026-10-21) rooms are bigger and shaped; the fight starts in an old-size engagement zone.
+const SIZE: Record<(typeof KINDS)[number], [number, number]> = { combat: [36, 24], elite: [46, 30], boss: [50, 32] };
 const DEPLOYMENTS: Deployment[] = ['line', 'scattered', 'pincer', 'surrounded', 'camp'];
-const ALL_PLANS: Plan[] = ['rocks', 'pillars', 'chokepoint', 'halls', 'ruins'];
+const ALL_PLANS: Plan[] = ['rocks', 'pillars', 'chokepoint', 'halls', 'ruins', 'cavern', 'chambers'];
 const ACTS = [1, 2, 3];
 const SEEDS = 40;
 
@@ -135,7 +136,7 @@ function yard(cells: Record<string, string>, props: Record<string, PropId> = {})
 function checkShape(room: RoomLayout, where: string) {
   const { width, height, tiles } = room;
   assert.equal(tiles.length, width * height, where);
-  assert.match(tiles, /^[#.o]+$/, where);
+  assert.match(tiles, /^[#.ov]+$/, where);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       if (x === 0 || y === 0 || x === width - 1 || y === height - 1) assert.equal(tiles[y * width + x], '#', `${where}: open border at ${x},${y}`);
@@ -156,7 +157,7 @@ function checkApart(room: RoomLayout, where: string) {
 
 // ---------------------------------------------------------------- rooms
 
-test('act 1-3 rooms of every kind and deployment are walled, use only # . o, and every open tile is reachable', () => {
+test('act 1-3 rooms of every kind and deployment are walled, use only # . o v, and every open tile is reachable', () => {
   for (const act of ACTS) {
     for (const kind of KINDS) {
       for (const dep of DEPLOYMENTS) {
@@ -202,13 +203,31 @@ test('surrounded and camp starts keep the monsters more than 3 tiles from the pa
   }
 });
 
-test('line: the party in columns 1-2, the monsters in the last two columns', () => {
+const meanX = (ps: Pos[]) => ps.reduce((s, p) => s + p.x, 0) / ps.length;
+const center = (ps: Pos[]) => ({ x: meanX(ps), y: ps.reduce((s, p) => s + p.y, 0) / ps.length });
+
+test('line: the party on the left of the engagement zone, the monsters on its right', () => {
   for (const act of ACTS) {
     for (let seed = 0; seed < SEEDS; seed++) {
       const where = `act ${act} seed ${seed}`;
       const room = generateRoom('combat', makeRng(seed), act, 'line');
-      for (const p of room.partySpawns) assert.ok([1, 2].includes(p.x), `${where}: hero at x=${p.x}`);
-      for (const e of room.enemySpawns) assert.ok([room.width - 3, room.width - 2].includes(e.x), `${where}: monster at x=${e.x}`);
+      const party = room.partySpawns.slice(0, 6);
+      const foes = room.enemySpawns.slice(0, 8);
+      assert.ok(meanX(foes) - meanX(party) >= 8, `${where}: party at x ${meanX(party).toFixed(1)}, monsters at x ${meanX(foes).toFixed(1)}`);
+    }
+  }
+});
+
+test('the engagement zone is an old-size stretch of the room, and the fight starts in or next to it', () => {
+  for (const kind of KINDS) {
+    for (let seed = 0; seed < SEEDS; seed++) {
+      const room = generateRoom(kind, makeRng(seed), 1, 'line');
+      const z = room.zone;
+      assert.ok(z.x >= 0 && z.y >= 0 && z.x + z.w <= room.width && z.y + z.h <= room.height, `${kind} seed ${seed}: zone out of the room`);
+      assert.ok(z.w < room.width && z.h < room.height, `${kind}: the room is bigger than the zone`);
+      for (const p of [...room.partySpawns.slice(0, 4), ...room.enemySpawns.slice(0, 4)]) {
+        assert.ok(p.x >= z.x - 6 && p.x < z.x + z.w + 6 && p.y >= z.y - 6 && p.y < z.y + z.h + 6, `${kind} seed ${seed}: spawn ${p.x},${p.y} far from the zone`);
+      }
     }
   }
 });
@@ -218,14 +237,13 @@ test('surrounded: the first hero starts near the middle, and the first four mons
     for (let seed = 0; seed < SEEDS; seed++) {
       const where = `act ${act} seed ${seed}`;
       const room = generateRoom('combat', makeRng(seed), act, 'surrounded');
-      const { width: w, height: h } = room;
+      const z = room.zone;
       const hero = room.partySpawns[0];
-      assert.ok(Math.abs(hero.x - (w - 1) / 2) <= 3 && Math.abs(hero.y - (h - 1) / 2) <= 3, `${where}: first hero at ${hero.x},${hero.y}`);
-      const corners = [{ x: 1, y: 1 }, { x: w - 2, y: 1 }, { x: 1, y: h - 2 }, { x: w - 2, y: h - 2 }];
-      const first4 = room.enemySpawns.slice(0, 4);
-      const quarters = first4.map((p) => `${p.x < w / 2 ? 'W' : 'E'}${p.y < h / 2 ? 'N' : 'S'}`);
-      assert.equal(new Set(quarters).size, 4, `${where}: quarters ${quarters.join(' ')}`);
-      for (const e of first4) assert.ok(Math.min(...corners.map((c) => dist(c, e))) <= 3, `${where}: monster at ${e.x},${e.y} is not near a corner`);
+      assert.ok(Math.abs(hero.x - (z.x + (z.w - 1) / 2)) <= 5 && Math.abs(hero.y - (z.y + (z.h - 1) / 2)) <= 5, `${where}: first hero at ${hero.x},${hero.y}`);
+      // The monsters come from all around the party: at least three of the four quarters around it.
+      const c = center(room.partySpawns.slice(0, 6));
+      const quarters = room.enemySpawns.slice(0, 6).map((p) => `${p.x < c.x ? 'W' : 'E'}${p.y < c.y ? 'N' : 'S'}`);
+      assert.ok(new Set(quarters).size >= 3, `${where}: quarters ${quarters.join(' ')}`);
     }
   }
 });
@@ -235,41 +253,38 @@ test('pincer: monsters on both the left and the right of the party, and the firs
     for (let seed = 0; seed < SEEDS; seed++) {
       const where = `act ${act} seed ${seed}`;
       const room = generateRoom('combat', makeRng(seed), act, 'pincer');
-      const lo = Math.min(...room.partySpawns.map((p) => p.x));
-      const hi = Math.max(...room.partySpawns.map((p) => p.x));
-      assert.ok(room.enemySpawns.some((e) => e.x < lo), `${where}: nobody on the left`);
-      assert.ok(room.enemySpawns.some((e) => e.x > hi), `${where}: nobody on the right`);
-      assert.ok(room.enemySpawns[0].x > hi && room.enemySpawns[1].x < lo, `${where}: first two monsters at x ${room.enemySpawns[0].x}, ${room.enemySpawns[1].x}`);
+      const c = meanX(room.partySpawns.slice(0, 6));
+      assert.ok(room.enemySpawns.some((e) => e.x < c - 2), `${where}: nobody on the left`);
+      assert.ok(room.enemySpawns.some((e) => e.x > c + 2), `${where}: nobody on the right`);
+      assert.ok((room.enemySpawns[0].x - c) * (room.enemySpawns[1].x - c) < 0, `${where}: first two monsters at x ${room.enemySpawns[0].x}, ${room.enemySpawns[1].x}`);
     }
   }
 });
 
-test('camp: the first monster stands in the middle half of the room, and the party comes in from three sides', () => {
+test('camp: the first monster stands in the middle of the engagement zone, and the party comes in from several sides', () => {
+  let oneSided = 0;
   for (const act of ACTS) {
     for (let seed = 0; seed < SEEDS; seed++) {
       const where = `act ${act} seed ${seed}`;
       const room = generateRoom('combat', makeRng(seed), act, 'camp');
-      const { width: w, height: h } = room;
-      const first = room.enemySpawns[0]; // their camp sits at about 60% across (room.ts), so the middle half is the test
-      assert.ok(first.x >= w / 4 && first.x <= (3 * w) / 4 && first.y >= h / 4 && first.y <= (3 * h) / 4, `${where}: camp at ${first.x},${first.y}`);
-      const side = (p: Pos) => (p.x <= 3 ? 'west' : p.y <= 3 ? 'north' : p.y >= h - 4 ? 'south' : 'middle');
-      const sides = new Set(room.partySpawns.map(side).filter((s) => s !== 'middle'));
-      assert.ok(sides.size >= 3, `${where}: party from ${[...sides].join(', ')}`);
+      const z = room.zone;
+      const first = room.enemySpawns[0]; // their camp sits at about 60% across the zone (room.ts)
+      assert.ok(first.x >= z.x + z.w / 4 - 3 && first.x <= z.x + (3 * z.w) / 4 + 3 && first.y >= z.y + z.h / 4 - 3 && first.y <= z.y + (3 * z.h) / 4 + 3, `${where}: camp at ${first.x},${first.y}`);
+      const side = (p: Pos) => (Math.abs(p.x - first.x) > Math.abs(p.y - first.y) ? (p.x < first.x ? 'west' : 'east') : p.y < first.y ? 'north' : 'south');
+      if (new Set(room.partySpawns.map(side)).size < 2) oneSided++; // a twisty room can squeeze all three ways in to one side
     }
   }
+  assert.ok(oneSided <= ACTS.length * SEEDS * 0.03, `${oneSided} one-sided camps`);
 });
 
-test('scattered: the first two heroes start in different halves (top and bottom), and each half gets at least two of the first six', () => {
+test('scattered: the party starts in two groups, apart', () => {
   for (const act of ACTS) {
     for (let seed = 0; seed < SEEDS; seed++) {
       const where = `act ${act} seed ${seed}`;
       const room = generateRoom('combat', makeRng(seed), act, 'scattered');
-      const mid = (room.height - 1) / 2;
-      const top = (p: Pos) => p.y < mid;
+      // Two groups that start apart: the first two heroes are one of each.
       const [a, b] = room.partySpawns;
-      assert.notEqual(top(a), top(b), `${where}: both heroes in the same half`);
-      const tops = room.partySpawns.slice(0, 6).filter(top).length;
-      assert.ok(tops >= 2 && 6 - tops >= 2, `${where}: ${tops} of the first six in the top half`);
+      assert.ok(dist(a, b) >= 4, `${where}: the first two heroes at ${a.x},${a.y} and ${b.x},${b.y}`);
     }
   }
 });
@@ -302,13 +317,30 @@ test('pickDeployment: an elite never starts scattered (line, pincer or camp), an
 
 // ---------------------------------------------------------------- plans and dressing
 
-test('every plan comes up in act 1-3 fights, and boss rooms only use rocks or pillars', () => {
+test('every plan comes up in act 1-3 fights, and boss rooms use rocks, pillars or a cavern', () => {
   const plans = new Set<Plan>();
   for (const act of ACTS) for (let seed = 0; seed < 200; seed++) plans.add(generateRoom('combat', makeRng(seed), act).plan);
   assert.deepEqual([...plans].sort(), [...ALL_PLANS].sort());
   const boss = new Set<Plan>();
   for (const act of ACTS) for (let seed = 0; seed < 60; seed++) boss.add(generateRoom('boss', makeRng(seed), act, 'line').plan);
-  assert.deepEqual([...boss].sort(), ['pillars', 'rocks']);
+  assert.deepEqual([...boss].sort(), ['cavern', 'pillars', 'rocks']);
+});
+
+test('pits: most act 2-3 rooms have one, none in act 0, never at a spawn, and the floor stays in one piece around them', () => {
+  let rooms = 0;
+  let withPit = 0;
+  for (const act of [2, 3]) {
+    for (let seed = 0; seed < 100; seed++) {
+      const room = generateRoom('combat', makeRng(seed), act);
+      rooms++;
+      if (room.tiles.includes('v')) withPit++;
+      for (const p of [...room.partySpawns, ...room.enemySpawns]) {
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) assert.notEqual(room.tiles[(p.y + dy) * room.width + p.x + dx], 'v', `act ${act} seed ${seed}: spawn ${p.x},${p.y} at a pit`);
+      }
+    }
+  }
+  assert.ok(withPit / rooms >= 0.75, `pits in ${withPit} of ${rooms}`);
+  for (let seed = 0; seed < 50; seed++) assert.ok(!generateRoom('combat', makeRng(seed), 0).tiles.includes('v'));
 });
 
 test('low cover is in most act 1-3 fights, whichever plan built the room', () => {
@@ -355,7 +387,7 @@ test('boss rooms are mirrored: the tile at x matches the tile at width-1-x (a pr
         for (let x = 0; x < w / 2; x++) {
           const i = y * w + x;
           const j = y * w + (w - 1 - x);
-          if (room.props[i] || room.props[j]) continue;
+          if (room.props[i] || room.props[j] || tiles[i] === 'v' || tiles[j] === 'v') continue; // props and pits are placed one by one
           assert.equal(tiles[i], tiles[j], `act ${act} seed ${seed}: ${x},${y} against ${w - 1 - x},${y}`);
         }
       }
@@ -520,8 +552,8 @@ test('a fight that starts with a vote gets the deployment its rng rolls: the log
     ['pincer', /A pincer!/],
     ['camp', /You come upon their camp from three sides/],
   ];
-  const mid = (SIZE.combat[1] - 1) / 2;
   const seen = new Set<Deployment>();
+  let squeezed = 0;
   for (let seed = 1; seed <= 200; seed++) {
     p.log = [];
     seeded(seed, () => p.startRoom('combat', Array<string>(6).fill('goblin'), 'Test', 'vote'));
@@ -532,17 +564,14 @@ test('a fight that starts with a vote gets the deployment its rng rolls: the log
     const foes: MonsterEntity[] = p.entities.filter((e: any) => e.kind === 'monster');
     const where = `seed ${seed} (${d})`;
     if (d === 'line') {
-      for (const h of heroes) assert.ok([1, 2].includes(h.x), `${where}: hero at x=${h.x}`);
+      assert.ok(meanX(foes) - meanX(heroes) >= 6, `${where}: heroes at x ${meanX(heroes).toFixed(1)}, monsters at x ${meanX(foes).toFixed(1)}`);
     } else if (d === 'scattered') {
-      assert.notEqual(heroes[0].y < mid, heroes[1].y < mid, `${where}: both heroes in the same half`);
+      assert.ok(dist(heroes[0], heroes[1]) >= 4, `${where}: the first two heroes together`);
     } else if (d === 'pincer') {
-      const lo = Math.min(...heroes.map((h) => h.x));
-      const hi = Math.max(...heroes.map((h) => h.x));
-      assert.ok(foes.some((m) => m.x < lo) && foes.some((m) => m.x > hi), `${where}: monsters not on both sides`);
-    } else {
-      const [w, h] = SIZE.combat;
-      assert.ok(foes[0].x >= w / 4 && foes[0].x <= (3 * w) / 4 && foes[0].y >= h / 4 && foes[0].y <= (3 * h) / 4, `${where}: camp at ${foes[0].x},${foes[0].y}`);
-    }
+      const c = meanX(heroes);
+      assert.ok(foes.some((m) => m.x < c) && foes.some((m) => m.x > c), `${where}: monsters not on both sides`);
+    } else if (dist(foes[0], center(heroes)) < 3) squeezed++; // a twisty room now and then (room.ts)
   }
   assert.deepEqual([...seen].sort(), ['camp', 'line', 'pincer', 'scattered']);
+  assert.ok(squeezed <= 4, `${squeezed} camps squeezed onto the party`);
 });

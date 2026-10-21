@@ -11,10 +11,10 @@
 // Pure: game.ts (runMonster) hands it a snapshot and carries out the plan; the tests call it directly.
 
 import { ALLIES, ENRAGED_DMG, auraOf, hasTrait, isAllyNpc, isFoe, sameSide } from '../shared/elites.ts';
-import { DIRS, canStep, dist, hasLOS } from '../shared/grid.ts';
+import { DIRS, canStep, dist, fallsIn, hasLOS } from '../shared/grid.ts';
 import { gearBonus } from '../shared/items.ts';
 import {
-  BOSS, CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod, monsterSave, type Stat,
+  BOSS, CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod, monsterSave, PIT_FALL, type Stat,
   type Difficulty, type OrderId, type Role,
 } from '../shared/rules.ts';
 import { ROOTED, SKILLS, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, statsOf, type Element, type StatusApply } from '../shared/skills.ts';
@@ -59,6 +59,12 @@ const DANGER: Record<Role, number> = { brute: 0.1, skirmisher: 0.4, archer: 1.5,
 const FRONT = 0.6; // a brute likes standing next to an enemy
 const FLANK = 0.8; // a skirmisher likes setting up flanks
 const SHOVE_HARM = 2.5; // shoving someone into a hazard: what it costs them (the step in, burning, getting out), times this
+
+/** What a fall into a pit costs whoever goes in (game.ts fall): a hero's PIT_FALL of max HP, all of it on Hard; an ally is gone. */
+function pitHarm(t: Entity, difficulty: Difficulty): number {
+  if (t.kind === 'player') return difficulty === 'hard' ? t.hp + 20 : Math.ceil(t.maxHp * PIT_FALL);
+  return t.hp;
+}
 const FRIENDLY_FIRE = 1.2; // harm to its own side counts this much
 const IGNITE_MIN = 3; // hitting the ground instead of a creature has to be worth at least this
 const HEAL_BELOW = 0.75; // supports mend friends under this share of their HP
@@ -578,12 +584,13 @@ function candidates(v: MonsterView): Candidates {
           const val = trickValue(v, HELP, t, meAt);
           if (val > 0) consider(base + weight(t) * val, { kind: 'help', path: walk.path, target: t.id }, { ...about(t), setup: val });
         }
-        // Shove it into the fire instead?
+        // Shove it into the fire instead? Or over the edge of a pit (on Hard that kills a hero).
         if (smart && def.shove && dist(at, t) === 1) {
           const d = dirTo(at, t);
           const land = { x: t.x + d.x, y: t.y + d.y };
-          if (canStep(map, t, d.x, d.y) && !entities.some((e) => e !== t && e.x === land.x && e.y === land.y && !(e.kind === 'player' && e.dead))) {
-            const harm = hazardAt(map, tileOf(land), t);
+          const pit = fallsIn(map, t, d.x, d.y);
+          if (pit || (canStep(map, t, d.x, d.y) && !entities.some((e) => e !== t && e.x === land.x && e.y === land.y && !(e.kind === 'player' && e.dead)))) {
+            const harm = pit ? pitHarm(t, v.difficulty) : hazardAt(map, tileOf(land), t);
             if (harm > 0) {
               const win = contest(def.str - shoveResist(t));
               consider(base + weight(t) * win * (harm * SHOVE_HARM + 1), { kind: 'shove', path: walk.path, target: t.id }, { ...hit, shove: win * harm });

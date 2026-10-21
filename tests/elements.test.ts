@@ -1023,20 +1023,16 @@ function checkDressing(room: RoomLayout, act: number, where: string) {
   assert.ok(room.partySpawns.length >= 12 && room.enemySpawns.length >= 12, `${where}: enough spawn tiles`);
   for (const [k, g] of Object.entries(room.ground)) {
     const i = Number(k);
-    const x = i % width;
     assert.equal(tiles[i], '.', `${where}: a patch on a non-floor tile ${i}`);
     assert.ok(theme.ground.includes(g!.id), `${where}: ${g!.id} does not belong in act ${act}`);
     assert.equal(g!.turns, null, `${where}: room features are permanent`);
-    assert.ok(x >= 3 && x <= width - 4, `${where}: a patch in a spawn column (${x})`);
     assert.ok(!spawns.includes(i), `${where}: a patch on a spawn tile`);
   }
   for (const [k, id] of Object.entries(room.props)) {
     const i = Number(k);
-    const x = i % width;
     assert.equal(tiles[i], '#', `${where}: a prop must stand on a '#' tile`);
     assert.ok(theme.props.includes(id!), `${where}: ${id} does not belong in act ${act}`);
     assert.equal(room.ground[i], undefined, `${where}: oil under a prop`);
-    assert.ok(x >= 3 && x <= width - 4, `${where}: a prop in a spawn column`);
     assert.ok(Math.floor(i / width) >= 1 && Math.floor(i / width) <= height - 2, `${where}: a prop on the border`);
   }
   for (const i of spawns) assert.equal(tiles[i], '.', `${where}: a spawn tile is not floor`);

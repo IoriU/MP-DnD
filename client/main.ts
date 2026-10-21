@@ -96,6 +96,9 @@ window.addEventListener('keydown', (ev) => {
     case 'g':
       toggleGraphics();
       break;
+    case 'f':
+      window.dispatchEvent(new Event('delvers:focus')); // the camera finds your hero (client/scene.ts)
+      break;
     case 'l':
       toggleLevelUp();
       break;

@@ -30,8 +30,21 @@ export function isWall(m: MapLike, x: number, y: number): boolean {
 /** Low cover (crates, rubble, a broken wall): blocks movement but not sight, and gives half cover (shared/tactics.ts). */
 export const LOW_COVER = 'o';
 
-/** Nobody can stand here: a wall, a prop or low cover. */
-export const isBlocked = (m: MapLike, x: number, y: number): boolean => isWall(m, x, y) || m.tiles[y * m.width + x] === LOW_COVER;
+/**
+ * A pit (playtest 1, 2026-10-21): nobody can stand in it, but you can see and shoot across it, and whatever is shoved
+ * in falls (server/game.ts fall).
+ */
+export const PIT = 'v';
+export const isPit = (m: MapLike, x: number, y: number): boolean => x >= 0 && y >= 0 && x < m.width && y < m.height && m.tiles[y * m.width + x] === PIT;
+
+/** Nobody can stand here: a wall, a prop, low cover or a pit. */
+export const isBlocked = (m: MapLike, x: number, y: number): boolean => isWall(m, x, y) || m.tiles[y * m.width + x] === LOW_COVER || isPit(m, x, y);
+
+/** A push from `at` by (dx, dy) would send it into a pit (a wall corner in the way of a diagonal stops it at the edge). */
+export function fallsIn(m: MapLike, at: Pos, dx: number, dy: number): boolean {
+  if (!isPit(m, at.x + dx, at.y + dy)) return false;
+  return !(dx !== 0 && dy !== 0 && (isWall(m, at.x + dx, at.y) || isWall(m, at.x, at.y + dy)));
+}
 
 /** Can you step from `from` by (dx, dy)? Diagonal steps may not squeeze past wall corners. */
 export function canStep(m: MapLike, from: Pos, dx: number, dy: number): boolean {

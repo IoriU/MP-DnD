@@ -4,9 +4,9 @@
 
 import Phaser from 'phaser';
 import { ALLIES, TRAITS, isAllyNpc, isFoe, type AllyDef } from '../shared/elites.ts';
-import { LOW_COVER, dist, hasLOS } from '../shared/grid.ts';
+import { LOW_COVER, PIT, dist, hasLOS } from '../shared/grid.ts';
 import { turnBarHeight } from './turnbar.ts';
-import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, baseType, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
+import { BOSS_SIGNATURES, FULL_COVER, HALF_COVER, PIT_FALL, baseType, diceText, MONSTERS, ORDERS, RESIST_WORD, ROLES, roleOf, type MonsterDef, type Resist } from '../shared/rules.ts';
 import { STATUSES, blockOf, canHitProps, hasStatus, hitsArea, type AimResult, type Element, type SkillStats, type StatusId } from '../shared/skills.ts';
 import {
   CLOUDS, ELECTRIFIED, GROUNDS, HAZARD_DICE, ICE_DC, PROPS, REACTIONS, aimFieldOps, immuneToStatus, moveArea, planFreeWalk, previewField, reactionSummary,
@@ -26,6 +26,9 @@ import {
 import { $, esc, stacksShown, toast } from './util.ts';
 
 const T = 32; // tile size in pixels
+/** How much of a room the camera shows at first (rooms are bigger than this since playtest 1): about an old room. */
+const VIEW_W = 27;
+const VIEW_H = 18;
 const ART = T / SPRITE_PX; // DawnLike sprites are 16x16, drawn at 2x so one fills a tile
 const ART_Y = -2; // creature art sits a little above the tile centre, so its feet stand on the ring
 const WALK_MS = 95; // a hero's walking frame (4 per cycle)
@@ -336,6 +339,7 @@ class DungeonScene extends Phaser.Scene {
     this.cursorG = this.add.graphics().setDepth(25);
 
     this.input.mouse?.disableContextMenu();
+    window.addEventListener('delvers:focus', () => this.focusMe()); // the F key (client/main.ts)
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (!p.rightButtonDown()) return this.onHover(p);
       // Right-drag pans the camera.
@@ -466,10 +470,12 @@ class DungeonScene extends Phaser.Scene {
       this.fitCamera(s, true); // the Sneak-or-Charge card came or went: slide the room into the free space
     }
     const key = turnKey(s);
-    if (key !== this.turnKey) {
+    const turnStarted = key !== this.turnKey;
+    if (turnStarted) {
       this.turnKey = key;
       this.pendingWalk = null;
     }
+    this.follow(s, turnStarted);
     this.syncField(s);
     this.syncTraps(s);
     this.syncEntities(s);
@@ -546,6 +552,10 @@ class DungeonScene extends Phaser.Scene {
           g.lineStyle(1, pal.wallShadow, 1).lineBetween(px + (n > 0.5 ? T / 2 : T / 3), py + 5, px + (n > 0.5 ? T / 2 : T / 3), py + T - 3);
           continue;
         }
+        if (s.tiles[i] === PIT) {
+          this.drawPit(g, s, x, y);
+          continue;
+        }
         g.fillStyle(n < 0.5 ? pal.floorA : pal.floorB).fillRect(px, py, T, T);
         g.lineStyle(1, 0x000000, 0.35).strokeRect(px + 0.5, py + 0.5, T - 1, T - 1);
         if (s.tiles[i] === LOW_COVER) {
@@ -563,6 +573,27 @@ class DungeonScene extends Phaser.Scene {
         if (n > 0.92) g.fillStyle(pal.speck).fillCircle(px + 6 + n * 18, py + 8 + ((n * 97) % 16), 1.5);
       }
     }
+  }
+
+  /** A pit: a black drop with a lit lip where the floor ends, and a shadow under the near edge. */
+  private drawPit(g: Phaser.GameObjects.Graphics, s: GameState, x: number, y: number) {
+    const px = x * T;
+    const py = y * T;
+    const floor = (dx: number, dy: number) => {
+      const nx = x + dx;
+      const ny = y + dy;
+      const t = nx < 0 || ny < 0 || nx >= s.width || ny >= s.height ? '#' : s.tiles[ny * s.width + nx];
+      return t !== PIT && t !== '#';
+    };
+    g.fillStyle(0x050302, 1).fillRect(px, py, T, T);
+    g.fillStyle(0x120c08, 1).fillRect(px + 6, py + 8, T - 12, T - 14);
+    if (floor(0, -1)) {
+      g.fillStyle(0x5a4330, 1).fillRect(px, py, T, 4);
+      g.fillStyle(0x000000, 0.7).fillRect(px, py + 4, T, 7);
+    }
+    if (floor(0, 1)) g.fillStyle(0x6b5038, 1).fillRect(px, py + T - 3, T, 3);
+    if (floor(-1, 0)) g.fillStyle(0x3a2a1c, 1).fillRect(px, py, 3, T);
+    if (floor(1, 0)) g.fillStyle(0x3a2a1c, 1).fillRect(px + T - 3, py, 3, T);
   }
 
   /** Low cover: a crate or a heap of rubble on the floor, with a shadow like a prop's. Blocks walking, not sight (so it isn't wall). */
@@ -597,6 +628,10 @@ class DungeonScene extends Phaser.Scene {
         if (wall(x, y)) {
           const mask = (wall(x, y - 1) ? 1 : 0) | (wall(x + 1, y) ? 2 : 0) | (wall(x, y + 1) ? 4 : 0) | (wall(x - 1, y) ? 8 : 0);
           put('wall', wallFrame(act, mask), x, y, 0);
+          continue;
+        }
+        if (s.tiles[i] === PIT) {
+          this.drawPit(g, s, x, y);
           continue;
         }
         put('floor', floorFrame(act), x, y, 0);
@@ -834,21 +869,72 @@ class DungeonScene extends Phaser.Scene {
     return card ? Math.min(card.offsetHeight + 24, this.cameras.main.height * 0.5) : 0;
   }
 
-  /** Zooms so the whole room fits the canvas (below the approach card, if it's up), and centers it. */
+  /**
+   * Zooms so about an old-size room fits the canvas (below the approach card or the turn bar), and centers on the party:
+   * your hero, or the heroes' middle. A small room fits whole, centered. Bigger rooms are looked around by panning.
+   */
   private fitCamera(s: GameState, animate = false) {
     const cam = this.cameras.main;
     const w = s.width * T;
     const h = s.height * T;
-    const zoom = Phaser.Math.Clamp(Math.min(cam.width / w, Math.max(80, cam.height - this.inset) / h) * 0.94, 0.5, 2.5);
-    const cy = h / 2 - this.inset / (2 * zoom); // shifts the room down by half the inset
+    const vw = Math.min(s.width, VIEW_W) * T;
+    const vh = Math.min(s.height, VIEW_H) * T;
+    const zoom = Phaser.Math.Clamp(Math.min(cam.width / vw, Math.max(80, cam.height - this.inset) / vh) * 0.94, 0.5, 2.5);
+    const big = s.width > VIEW_W || s.height > VIEW_H;
+    const at = big ? this.partyCenter(s) : { x: w / 2, y: h / 2 };
+    const cy = at.y - this.inset / (2 * zoom); // shifts the view down by half the inset
     this.userCam = false;
+    // The camera stays over the room (a couple of tiles of margin), however it pans.
+    const top = this.inset / zoom;
+    cam.setBounds(-2 * T, -2 * T - top, w + 4 * T, h + 4 * T + top);
     if (animate) {
       cam.zoomTo(zoom, 350, 'Sine.easeInOut', true);
-      cam.pan(w / 2, cy, 350, 'Sine.easeInOut', true);
+      cam.pan(at.x, cy, 350, 'Sine.easeInOut', true);
     } else {
       cam.setZoom(zoom);
-      cam.centerOn(w / 2, cy);
+      cam.centerOn(at.x, cy);
     }
+  }
+
+  /** Where the camera looks for the party: your hero, or the middle of the heroes. */
+  private partyCenter(s: GameState): { x: number; y: number } {
+    const m = me();
+    const heroes = s.entities.filter((e) => e.kind === 'player' && !e.dead);
+    const pts = m && !m.dead ? [m] : heroes.length ? heroes : s.entities;
+    if (!pts.length) return { x: (s.width * T) / 2, y: (s.height * T) / 2 };
+    return { x: (pts.reduce((a, e) => a + e.x, 0) / pts.length + 0.5) * T, y: (pts.reduce((a, e) => a + e.y, 0) / pts.length + 0.5) * T };
+  }
+
+  /**
+   * The camera follows the fight in a big room: on your turn it brings your hero into view, and otherwise it pans to
+   * whoever is acting when they're off screen (unless you've been looking around).
+   */
+  private follow(s: GameState, turnStarted: boolean) {
+    if (s.phase !== 'combat' || !s.turn) return;
+    const mine = isMyTurn() ? me() : undefined;
+    const target = mine ?? actingNow(s).find((e) => !(e.kind === 'player' && e.dead));
+    if (!target) return;
+    if (this.userCam && !(mine && turnStarted)) return;
+    const cam = this.cameras.main;
+    const view = cam.worldView;
+    const tx = (target.x + 0.5) * T;
+    const ty = (target.y + 0.5) * T;
+    const mx = view.width * 0.18;
+    const my = view.height * 0.18;
+    const inside = tx > view.x + mx && tx < view.right - mx && ty > view.y + my && ty < view.bottom - my;
+    if (mine && turnStarted) this.userCam = false;
+    if (!inside) cam.pan(tx, ty - this.inset / (2 * cam.zoom), 450, 'Sine.easeInOut', true);
+  }
+
+  /** F: back to your hero (and the camera follows the fight again). */
+  focusMe() {
+    const s = store.state;
+    if (!s?.tiles) return;
+    const m = me();
+    const at = m && !m.dead ? { x: (m.x + 0.5) * T, y: (m.y + 0.5) * T } : this.partyCenter(s);
+    this.userCam = false;
+    const cam = this.cameras.main;
+    cam.pan(at.x, at.y - this.inset / (2 * cam.zoom), 350, 'Sine.easeInOut', true);
   }
 
   private syncEntities(s: GameState) {
@@ -1365,6 +1451,10 @@ class DungeonScene extends Phaser.Scene {
     const c = s.clouds[i];
     if (prop) lines.push(`<b>${PROPS[prop].icon} ${PROPS[prop].name}</b>`, desc(PROPS[prop].desc));
     if (s.tiles[i] === LOW_COVER) lines.push(`<b>${coverLook(i).emoji} Low cover</b>`, desc(`Can't walk through it, but you can shoot over it. Stand next to it: +${HALF_COVER} AC against ranged attacks from its side.`));
+    if (s.tiles[i] === PIT) {
+      const hard = s.run?.difficulty === 'hard';
+      lines.push('<b>🕳️ Pit</b>', desc(`Nobody can walk in, but you can see and shoot across. Shove a monster in and it's gone (elites and bosses are harder to shove and may catch the edge). A hero who falls in ${hard ? 'dies (Hard)' : `loses ${Math.round(PIT_FALL * 100)}% of their max HP and climbs out`}: mind the edge when a brute is near.`));
+    }
     const trap = s.traps?.[i];
     if (trap) {
       const by = s.entities.find((e) => e.id === trap.by)?.name;
@@ -1454,7 +1544,7 @@ class DungeonScene extends Phaser.Scene {
     if (!s?.tiles || !h || !this.inRoom(s, h)) return;
     const prop = s.props[h.y * s.width + h.x];
     const tile = s.tiles[h.y * s.width + h.x];
-    if ((tile === '#' && !prop) || (tile === LOW_COVER && !this.plan)) return; // walls and crates get no cursor, unless a blast can land there
+    if ((tile === '#' && !prop) || ((tile === LOW_COVER || tile === PIT) && !this.plan)) return; // walls, crates and pits get no cursor, unless a blast can land there
     const e = this.entityAt(s, h);
     const plan = this.plan;
     if (plan?.kind === 'walk') {

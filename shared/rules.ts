@@ -200,6 +200,10 @@ export const statRoom = (p: StatHolder, stat: Stat) => STAT_CAP - (CLASSES[p.cla
 /** Save DC for a hero's cantrips and spells (8 + proficiency + casting stat, like 5e). */
 export const saveDc = (c: ClassId, level: number, castMod = CLASSES[c].mods[CLASSES[c].stat]) => 8 + profBonus(level) + castMod;
 export const BREATH_DC = 13;
+/** Pits (playtest 1): a hero shoved in takes this share of their max HP and climbs out (on Hard the fall kills). */
+export const PIT_FALL = 0.3;
+/** An elite or a boss shoved toward a pit catches the edge on a DEX save against this (with advantage). */
+export const PIT_DC = 13;
 
 // ---------------------------------------------------------------- sneaking & surprise
 

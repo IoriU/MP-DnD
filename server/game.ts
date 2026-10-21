@@ -43,6 +43,8 @@ import {
   STEAL_SHARE,
   CONTINUE_MS,
   PICK_WAIT_MS,
+  PIT_DC,
+  PIT_FALL,
   VOTE_MS,
   XP_BUFF,
   XP_CATCH_UP,
@@ -204,7 +206,7 @@ import type {
   TurnView,
 } from '../shared/types.ts';
 import { attackAdvantage, canReact, coverFrom, coverWord, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
-import { LOW_COVER } from '../shared/grid.ts';
+import { LOW_COVER, fallsIn } from '../shared/grid.ts';
 import {
   EXPLOSION,
   FIELD_STATUS_TURNS,
@@ -3302,7 +3304,7 @@ export class Game {
       return;
     }
     this.addLog('hit', `✋ ${m.name} shoves ${t.name} (${roll})!`);
-    this.push(t, m, margin >= 5 ? 2 : 1);
+    this.push(t, m, margin >= 5 ? 2 : 1, undefined, m);
   }
 
   /** A monster aims its element at the ground: fire on the oil around the party, cold or lightning on their water. */
@@ -3618,7 +3620,7 @@ export class Game {
   private contestHit(p: PlayerEntity, f: MonsterEntity, s: SkillStats, name: string): boolean {
     const def = MONSTERS[f.type];
     const mine = rollDie(20);
-    const theirs = rollDie(20);
+    const theirs = f.elite || f.boss ? Math.max(rollDie(20), rollDie(20)) : rollDie(20); // elites and bosses are harder to shove
     const bonus = attackBonus(p, s) + gearBonus(p, 'shove');
     const resist = Math.max(def.str, def.dex);
     const margin = mine + bonus - (theirs + resist);
@@ -3906,16 +3908,23 @@ export class Game {
     }
   }
 
-  /** Knocks a creature `tiles` steps directly away from `from`; walls and creatures stop it. */
-  /** Knocks a creature `tiles` away from `from`. `by`: the hero who pushed it (Crushing Force). */
-  private push(t: Entity, from: Pos, tiles: number, by?: PlayerEntity) {
+  /**
+   * Knocks a creature `tiles` steps directly away from `from`; walls and creatures stop it, and a pit swallows it (fall).
+   * `by`: the hero who pushed it (Crushing Force); `pusher`: whoever did (the kill, if it falls).
+   */
+  private push(t: Entity, from: Pos, tiles: number, by?: PlayerEntity, pusher: Entity | undefined = by) {
     const dx = Math.sign(t.x - from.x);
     const dy = Math.sign(t.y - from.y);
     if (!dx && !dy) return;
     const path: Pos[] = [];
     let at: Pos = { x: t.x, y: t.y };
     let into: Entity | undefined; // the creature it slammed into
+    let pit: Pos | null = null; // the pit it goes over the edge of
     for (let i = 0; i < tiles; i++) {
+      if (fallsIn(this, at, dx, dy)) {
+        pit = { x: at.x + dx, y: at.y + dy };
+        break;
+      }
       if (!canStep(this, at, dx, dy)) break;
       if (this.occupied(at.x + dx, at.y + dy, t.id)) {
         into = this.entities.find((e) => e.x === at.x + dx && e.y === at.y + dy && e !== t);
@@ -3936,14 +3945,64 @@ export class Game {
         if (into && hasBranch(by, 'crushing_force', 'B') && this.entities.includes(into) && isFoe(into)) this.damage(into, hurt, by, 'physical');
       });
     }
-    if (!path.length) return;
-    this.addLog('info', `${t.name} is knocked back ${path.length} tile${path.length > 1 ? 's' : ''}.`);
+    if (path.length) this.addLog('info', `${t.name} is knocked back ${path.length} tile${path.length > 1 ? 's' : ''}.`);
     for (const step of path) {
       t.x = step.x;
       t.y = step.y;
       // Shoved into the fire: every tile it's pushed through counts.
       if (this.standIn(t, 'step') || !this.entities.includes(t)) return;
     }
+    if (pit) this.fall(t, pit, pusher);
+  }
+
+  /**
+   * Shoved over the edge of a pit (playtest 1, 2026-10-21). A monster is gone (whoever pushed it gets the kill); an elite or
+   * a boss gets a DEX save with advantage to catch the edge (and is knocked down). A hero takes PIT_FALL of their max HP
+   * and climbs out at the edge, knocked down and out of movement; on Hard the fall kills them.
+   */
+  private fall(t: Entity, pit: Pos, pusher?: Entity) {
+    if (!this.entities.includes(t)) return;
+    if (t.kind === 'monster') {
+      if (t.elite || t.boss) {
+        const d20 = Math.max(rollDie(20), rollDie(20));
+        const bonus = monsterSave(MONSTERS[t.type], 'dex');
+        if (d20 + bonus >= PIT_DC) {
+          this.addLog('miss', `🕳️ ${t.name} goes over the edge, but catches it (DEX save 🎲${d20}${fmtMod(bonus)}=${d20 + bonus} vs DC ${PIT_DC}) and hauls itself back up.`);
+          this.float(t, 'catches the edge', '#9aa0a6');
+          this.applyStatus(t, { id: 'prone', turns: 1 }, pusher);
+          return;
+        }
+      }
+      this.addLog('crit', `🕳️ ${t.name} falls into the pit!`);
+      this.float(t, '🕳️ falls!', '#ff9df0');
+      t.x = pit.x;
+      t.y = pit.y;
+      t.hp = 0;
+      this.monsterDies(t, pusher);
+      this.checkEnd();
+      this.broadcast();
+      return;
+    }
+    if (t.dead) return;
+    if (this.diff === 'hard') {
+      this.addLog('death', `🕳️ ${t.name} falls into the pit!`);
+      t.hp = 0;
+      this.cancelWalk(t.id);
+      this.die(t);
+      this.checkEnd();
+      this.broadcast();
+      return;
+    }
+    const hurt = Math.ceil(t.maxHp * PIT_FALL);
+    this.addLog('hit', `🕳️ ${t.name} falls into the pit and climbs back out: ${hurt} damage.`);
+    this.cancelWalk(t.id);
+    const a = this.acts(t);
+    if (a) {
+      a.moves = 0; // the climb takes the rest of their movement
+      this.endStretch(t);
+    }
+    this.applyStatus(t, { id: 'prone', turns: 1 }, pusher);
+    this.damage(t, hurt, pusher, 'physical');
   }
 
   /** Adds or refreshes a status. Statuses put on whoever's turn it is don't count that turn. */

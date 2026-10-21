@@ -8,7 +8,7 @@
 // are previewed on a copy of the field (explosions, electrified water, fire spreading over oil), area skills count the
 // friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
-import { DIRS, canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
+import { DIRS, canStep, dist, fallsIn, reachable, type MapLike } from '../shared/grid.ts';
 import { AP_GAIN, AP_MAX, ATTACK_AP, BOSS, CLASSES, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, sneakDice, statMod, statRoom, stealthBonus, type Stat } from '../shared/rules.ts';
 import { attackAdvantage, canReact, coverFrom, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
@@ -634,10 +634,15 @@ function pushPath(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): Pos[] {
   return path;
 }
 
-/** What a knockback is worth: where it ends up, and every hazard it's shoved through (fire, poison, electrified water). */
+/**
+ * What a knockback is worth: where it ends up, and every hazard it's shoved through (fire, poison, electrified water). Over
+ * the edge of a pit, the monster is gone (an elite or a boss usually catches the edge).
+ */
 function pushValue(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): number {
   const path = pushPath(sim, m, from, tiles);
   const to = path[path.length - 1] ?? m;
+  const [dx, dy] = [Math.sign(m.x - from.x), Math.sign(m.y - from.y)];
+  if (path.length < tiles && (dx || dy) && fallsIn(sim.fx.field, to, dx, dy)) return (m.elite || m.boss ? 0.35 : 1) * (1.2 * m.hp + 10);
   let harm = 0;
   if (sim.fx.walk) for (const p of path) harm += hazardAt(sim.fx.field, p.y * sim.fx.field.width + p.x, m);
   return pushGain(sim, m, to) + 0.8 * Math.min(harm, m.hp);
