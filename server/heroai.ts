@@ -8,8 +8,8 @@
 // are previewed on a copy of the field (explosions, electrified water, fire spreading over oil), area skills count the
 // friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
-import { DIRS, canStep, dist, fallsIn, reachable, type MapLike } from '../shared/grid.ts';
-import { AP_GAIN, AP_MAX, ATTACK_AP, BOSS, CLASSES, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, sneakDice, statMod, statRoom, stealthBonus, type Stat } from '../shared/rules.ts';
+import { DIRS, PIT, canStep, dist, fallsIn, flyView, reachable, type MapLike } from '../shared/grid.ts';
+import { AP_GAIN, AP_MAX, ATTACK_AP, BOSS, CLASSES, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, flies, sneakDice, statMod, statRoom, stealthBonus, type Stat } from '../shared/rules.ts';
 import { attackAdvantage, canReact, coverFrom, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
   CLEANSED,
@@ -130,7 +130,7 @@ const without = <T extends Entity>(e: T, id: StatusId): T => (hasStatus(e, id) ?
 const skipsTurn = (e: Entity) => SKIP_TURN.some((id) => hasStatus(e, id));
 const isOffensive = (s: SkillStats) => s.target === 'enemy' || s.target === 'area' || s.target === 'around';
 /** Grease, Create Water: no damage, they only leave something on the ground (and may have no foe in them). */
-const isSetup = (s: SkillStats) => (!!s.surface && s.surface.at !== 'self' && !s.dmg) || !!s.trap || (!!s.raise && !s.raise.ring); // ...or a snare, or raised cover
+const isSetup = (s: SkillStats) => (!!s.surface && s.surface.at !== 'self' && !s.dmg) || !!s.trap || (!!s.raise && !s.raise.ring) || !!s.pit; // ...or a snare, raised cover or a pit
 
 // ---------------------------------------------------------------- numbers about monsters
 
@@ -259,8 +259,8 @@ function slotPrice(v: HeroView): number {
 }
 
 /**
- * Candidate centers for area skills: every open tile on or next to a monster, and friends standing in fire, poison or
- * oil (Create Water puts it out or washes it away).
+ * Candidate centers for area skills: every open tile on or next to a monster, friends standing in fire, poison or
+ * oil (Create Water puts it out or washes it away), and pits at a friend's feet (Raise Cover fills them in).
  */
 function areaSpots(v: HeroView): Pos[] {
   const seen = new Set<number>();
@@ -275,6 +275,8 @@ function areaSpots(v: HeroView): Pos[] {
   for (const h of v.heroes) {
     const g = v.map.ground[h.y * v.map.width + h.x]?.id;
     if (standing(h) && (g === 'fire' || g === 'poison' || g === 'oil')) add(h.x, h.y);
+    // A pit at a friend's feet: Raise Cover can fill it in.
+    if (standing(h)) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (v.map.tiles[(h.y + dy) * v.map.width + h.x + dx] === PIT) add(h.x + dx, h.y + dy);
   }
   return out;
 }
@@ -626,8 +628,9 @@ function pushPath(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): Pos[] {
   const path: Pos[] = [];
   if (!dx && !dy) return path;
   let at: Pos = { x: m.x, y: m.y };
+  const field = flies(m) ? flyView(sim.fx.field) : sim.fx.field; // a flyer is pushed over a pit, not into it
   for (let i = 0; i < tiles; i++) {
-    if (!canStep(sim.fx.field, at, dx, dy) || occupiedIn(sim, at.x + dx, at.y + dy, m.id)) break;
+    if (!canStep(field, at, dx, dy) || occupiedIn(sim, at.x + dx, at.y + dy, m.id)) break;
     at = { x: at.x + dx, y: at.y + dy };
     path.push(at);
   }
@@ -639,10 +642,11 @@ function pushPath(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): Pos[] {
  * the edge of a pit, the monster is gone (an elite or a boss usually catches the edge).
  */
 function pushValue(sim: Sim, m: MonsterEntity, from: Pos, tiles: number): number {
+  tiles += passiveOf(sim.me, 'undertow')?.value ?? 0; // Undertow: your pushes carry further
   const path = pushPath(sim, m, from, tiles);
   const to = path[path.length - 1] ?? m;
   const [dx, dy] = [Math.sign(m.x - from.x), Math.sign(m.y - from.y)];
-  if (path.length < tiles && (dx || dy) && fallsIn(sim.fx.field, to, dx, dy)) return (m.elite || m.boss ? 0.35 : 1) * (1.2 * m.hp + 10);
+  if (!flies(m) && path.length < tiles && (dx || dy) && fallsIn(sim.fx.field, to, dx, dy)) return (m.elite || m.boss ? 0.35 : 1) * (1.2 * m.hp + 10);
   let harm = 0;
   if (sim.fx.walk) for (const p of path) harm += hazardAt(sim.fx.field, p.y * sim.fx.field.width + p.x, m);
   return pushGain(sim, m, to) + 0.8 * Math.min(harm, m.hp);
@@ -935,6 +939,25 @@ function engineValue(sim: Sim, s: SkillStats, res: AimResult): number {
     else v += sim.heroes.some((h) => standing(h) && dist(h, res.center) <= 1) ? 0.8 * shooters : 0;
   }
   if (s.rubble) v += 0.3 * s.rubble;
+  if (s.raise && !s.raise.ring) {
+    // Filling in a pit at a friend's feet while a brute could shove them over the edge.
+    const f = sim.fx.field;
+    const pitNear = (h: Pos) => [-1, 0, 1].some((dy) => [-1, 0, 1].some((dx) => f.tiles[(h.y + dy) * f.width + h.x + dx] === PIT && dist({ x: h.x + dx, y: h.y + dy }, res.center) <= 1));
+    const shovers = sim.monsters.some((m) => MONSTERS[m.type]?.shove);
+    if (shovers && sim.heroes.some((h) => standing(h) && pitNear(h))) v += 2.5;
+  }
+  if (s.pit) {
+    // A pit is worth the monsters at its edge that a push (yours or a friend's) could send in; Gravity Well drags them.
+    const f = sim.fx.field;
+    const c = res.center;
+    const empty = f.tiles[c.y * f.width + c.x] === '.' && !sim.ctx.entities.some((e) => e.x === c.x && e.y === c.y && !(e.kind === 'player' && e.dead));
+    if (empty) {
+      const reach = Math.max(1, Math.ceil(s.pit.tiles / 2));
+      const edge = sim.monsters.filter((m) => !flies(m) && dist(m, c) <= reach);
+      const gravity = hasBranch(me, 'undertow', 'B');
+      for (const m of edge) v += (m.elite || m.boss ? 0.35 : 1) * (m.hp + 8) * (gravity && dist(m, c) === 1 ? 0.55 : 0.25);
+    }
+  }
   if (s.finale) {
     const verses = stacksOf(me, 'verse');
     for (const f of res.friends) if (standing(f)) v += Math.min(s.finale.heal * verses, f.maxHp - f.hp) * healWeight(f) + blockWorth(sim, f, s.finale.block * verses);

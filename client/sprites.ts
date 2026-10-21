@@ -40,6 +40,7 @@ export const SHEETS = {
   demon: { file: 'Characters/Demon', cols: 8, frames: 2 },
   misc: { file: 'Characters/Misc', cols: 8, frames: 2 },
   elemental: { file: 'Characters/Elemental', cols: 8, frames: 2 },
+  avian: { file: 'Characters/Avian', cols: 8, frames: 2 }, // bats and gargoyles (the flyers)
   warrior: { file: 'Commissions/Warrior', cols: 4, frames: 1, walk: true },
   rogue: { file: 'Commissions/Rogue', cols: 4, frames: 1, walk: true },
   mage: { file: 'Commissions/Mage', cols: 4, frames: 1, walk: true },
@@ -203,6 +204,7 @@ export const WALK_ROW = { down: 0, left: 1, right: 2, up: 3 } as const;
 export const MONSTER_SPRITES: Record<string, Sprite> = {
   // Act 1: Goblin Warrens
   rat: s('rodent', 9),
+  bat: s('avian', 88),
   kobold: s('player', 112),
   goblin: s('misc', 8),
   archer: s('misc', 10),
@@ -225,6 +227,7 @@ export const MONSTER_SPRITES: Record<string, Sprite> = {
   orc: s('player', 96),
   cultist: s('humanoid', 19),
   imp: s('demon', 26),
+  gargoyle: s('avian', 96),
   ogre: s('misc', 25),
   priest: s('player', 64),
   warchief: s('player', 102),

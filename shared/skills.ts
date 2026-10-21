@@ -222,6 +222,7 @@ export interface SkillStats {
   unleash?: number; // spends your Arcane Charges: the next spell adds a d(this) per Charge on each target (Unleash)
   raise?: { cover: 'low' | 'wall'; tiles: number; turns?: number; ring?: boolean }; // cover or a wall rises across the spot (around the target with `ring`)
   rubble?: number; // leaves low cover on this many empty tiles of the area (Shatter Ground)
+  pit?: { tiles: number; turns: number | null }; // the floor opens across the spot (empty floor only), for `turns` rounds (null: the whole fight)
   finale?: { heal: number; block: number }; // per Verse spent, on every friend affected (Finale)
   oncePerTurn?: boolean; // usable once per turn (Brace)
   resetCooldowns?: boolean; // every other cantrip is ready again
@@ -1347,14 +1348,14 @@ const SKILL_DEFS = {
   // Wizard: Geomancer (terrain)
   raise_cover: {
     kind: 'cantrip', pool: 'wizard',
-    base: { name: 'Raise Cover', icon: '🪨', ap: 1, target: 'area', range: 5, radius: 0, cooldown: 2, raise: { cover: 'low', tiles: 2 }, note: 'Rubble rises across the spot, on empty floor: you can shoot over it, nobody can walk through it.' },
+    base: { name: 'Raise Cover', icon: '🪨', ap: 1, target: 'area', range: 5, radius: 0, cooldown: 2, raise: { cover: 'low', tiles: 2 }, note: 'Rubble rises across the spot, on empty floor: you can shoot over it, nobody can walk through it, and it stops a push. On a pit, the rubble fills it in: floor again.' },
     t2: { raise: { cover: 'low', tiles: 3 } },
     a: { name: 'Earthen Rampart', raise: { cover: 'low', tiles: 5 } },
     b: { name: 'Quick Rampart', ap: 0, cooldown: 3 },
   },
   wall_of_stone: {
     kind: 'spell', pool: 'wizard',
-    base: { name: 'Wall of Stone', icon: '⛰️', ap: 2, target: 'area', range: 6, radius: 0, slots: 1, raise: { cover: 'wall', tiles: 3, turns: 3 }, note: 'A wall rises across the spot, on empty floor, for 3 rounds: it blocks movement and sight.' },
+    base: { name: 'Wall of Stone', icon: '⛰️', ap: 2, target: 'area', range: 6, radius: 0, slots: 1, raise: { cover: 'wall', tiles: 3, turns: 3 }, note: 'A wall rises across the spot, on empty floor or a pit, for 3 rounds: it blocks movement and sight, and a pit under it is filled for good.' },
     t2: { raise: { cover: 'wall', tiles: 5, turns: 3 } },
     a: { name: 'Bastion Wall', raise: { cover: 'wall', tiles: 5, turns: 5 } },
     b: { name: 'Prison of Stone', target: 'enemy', range: 6, raise: { cover: 'wall', tiles: 8, turns: 2, ring: true }, note: 'Walls rise all around an enemy for 2 rounds: it can only fight what stands next to it.' },
@@ -1373,6 +1374,25 @@ const SKILL_DEFS = {
     a: { name: 'Seismic Wave', radius: 2 },
     b: { name: 'Rumble', push: 2 },
   },
+  earth_ram: {
+    kind: 'cantrip', pool: 'wizard',
+    base: { name: 'Earth Ram', icon: '🐏', ap: 2, target: 'enemy', range: 6, cooldown: 1, roll: 'save', save: 'str', dmg: d(1, 8), push: 2, note: 'A fist of stone slams it 2 tiles away from you: into a wall it stops, over the edge of a pit it falls.' },
+    t2: { dmg: d(2, 8) },
+    a: { name: 'Battering Ram', push: 3 },
+    b: { name: 'Upheaval', onHit: [st('prone', 1)] },
+  },
+  open_pit: {
+    kind: 'spell', pool: 'wizard',
+    base: { name: 'Open Pit', icon: '🕳️', ap: 2, target: 'area', range: 6, radius: 0, slots: 1, pit: { tiles: 1, turns: 3 }, note: 'The floor opens on the spot for 3 rounds (empty floor only, never under anyone). Push a monster in and it is gone.' },
+    t2: { pit: { tiles: 2, turns: 3 }, note: 'The floor opens across the spot, 2 tiles, for 3 rounds (empty floor only, never under anyone). Push a monster in and it is gone.' },
+    a: { name: 'Chasm', pit: { tiles: 4, turns: 3 }, note: 'A chasm opens across the spot, 4 tiles, for 3 rounds (empty floor only, never under anyone).' },
+    b: { name: 'Bottomless Pit', pit: { tiles: 2, turns: null }, note: 'A 2-tile pit opens across the spot and stays for the whole fight (empty floor only, and never where it would cut the room in two).' },
+  },
+  undertow: passive('wizard', '🌀', 'Undertow',
+    { value: 1, note: 'Every push of yours carries 1 tile further.' },
+    { value: 1, note: 'Every push of yours carries 1 tile further, and pits you open stay 2 rounds longer.' },
+    { name: 'Riptide', value: 2, note: 'Every push of yours carries 2 tiles further, and pits you open stay 2 rounds longer.' },
+    { name: 'Gravity Well', value: 1, note: 'Pushes carry 1 tile further and your pits stay 2 rounds longer. A pit you open drags in the enemies next to it (STR save; elites and bosses may catch the edge).' }),
   crushing_force: passive('wizard', '🧱', 'Crushing Force',
     { value: 1, note: 'Anything you push into a wall, cover or a creature takes 1d6 for each tile it could not move.' },
     { value: 2, note: 'Anything you push into a wall, cover or a creature takes 2d6 for each tile it could not move.' },

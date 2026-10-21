@@ -931,6 +931,12 @@ Your list after the first playtest (2026-10-21), and what we decided:
 - [x] **📖 Shorter tutorial** (your call): How to play opens on a six-line quick start (vote, your turn, hover anything, spoils and stat points, shared turns and Help Up, keys), with every rule folded under "All the rules" and a link to the codex. In the game, a 💡 tip card shows up the first time something new happens: the map, your first turn, a shared turn, a status, a pit, a downed friend, an event check, spoils, a stat point (client/tips.ts; once per browser, "No more tips" turns them off, "Show the tips again" in How to play brings them back).
 - [x] **🎲 Turn order on screen:** the turn order as a bar across the top of the battlefield, always visible (portraits with HP bars and initiative, whoever acts now lit, an "R2" line where the next round starts), and a short dice tumble for the initiative roll when a fight starts (client/turnbar.ts). The battlefield is fitted below it; the sidebar keeps the hunted note.
 
+- [x] **🪨 Geomancer: the pit engine, and 🪽 flying enemies** (your ask, 2026-10-21):
+  - New cards: 🕳️ Open Pit (spell: a pit on empty floor, never under anyone, for 3 rounds; II: 2 tiles; Chasm: 4 tiles; Bottomless Pit: the whole fight, never cutting the room in two), 🐏 Earth Ram (cantrip: STR save or slammed 2 tiles away; Battering Ram 3; Upheaval also knocks it down), 🌀 Undertow (rare passive: pushes carry 1 tile further, pits stay 2 rounds longer; Riptide 2 tiles; Gravity Well: a new pit drags the enemies at its edge in, STR save). Raise Cover fills a pit in (floor again); a Wall of Stone on a pit fills it for good. The engine: Raise Cover, Tremor, Earth Ram · Open Pit, Shatter Ground, Wall of Stone · Crushing Force, Undertow · Earthshaper.
+  - Flyers (MonsterDef.fly): a new 🦇 Giant Bat (acts 1 and 2, fast skirmisher; Hard: Screech dazes) and 🗿 Gargoyle (act 3 brute, immune to poison; Hard: Stone Dive knocks you down), plus the Magma Imp, the Fire Drake and the Dread Wyrm. They cross pits (the monster AI plans on a map where pits are floor), never step in the ground, can't be pushed into a pit, and fall when knocked down, stunned or frozen over one. They hover above a shadow. Encounters: Bat Roost (act 1), Gargoyle Perch (act 3).
+  - Bots open pits next to monsters and push them in, fill pits at a friend's feet when a brute is near. 48 Normal runs: 43 pits opened, 92 pit kills, 3 flyers knocked out of the air, 83% wins, 0 anomalies.
+  - Tests: `tests/geomancer.test.ts` (9).
+
 ---
 
 ## Dropped / parked

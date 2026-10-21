@@ -66,8 +66,8 @@ export const ENGINES: Record<EngineId, EngineDef> = {
     cards: { common: ['ray_of_frost', 'shocking_grasp', 'grease', 'elemental_affinity', 'drench'], uncommon: ['frost_nova', 'flash_freeze', 'conductor', 'shatter_point'], rare: ['catalyst'], epic: ['convergence'] },
   },
   geomancer: {
-    classId: 'wizard', name: 'Geomancer', icon: '🪨', desc: 'Terrain: raise cover and walls, break the floor, and crush whatever you push into them.',
-    cards: { common: ['raise_cover', 'tremor'], uncommon: ['shatter_ground', 'wall_of_stone'], rare: ['crushing_force'], epic: ['earthshaper'] },
+    classId: 'wizard', name: 'Geomancer', icon: '🪨', desc: 'Pits and stone: open pits, push enemies in, and raise or fill the ground to keep friends from going over.',
+    cards: { common: ['raise_cover', 'tremor', 'earth_ram'], uncommon: ['open_pit', 'shatter_ground', 'wall_of_stone'], rare: ['crushing_force', 'undertow'], epic: ['earthshaper'] },
   },
   // ---------------------------------------------- Cleric: healing, shielding allies, buffs
   life: {

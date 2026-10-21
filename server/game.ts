@@ -68,6 +68,7 @@ import {
   scaledHp,
   tune,
   sneakDice,
+  flies,
   monsterSave,
   statMod,
   type Stat,
@@ -207,7 +208,7 @@ import type {
   TurnView,
 } from '../shared/types.ts';
 import { attackAdvantage, canReact, coverFrom, coverWord, dirTo, netAdvantage, turnsToFace } from '../shared/tactics.ts';
-import { LOW_COVER, fallsIn, reachable } from '../shared/grid.ts';
+import { LOW_COVER, PIT, fallsIn, flyView, isPit, reachable } from '../shared/grid.ts';
 import {
   EXPLOSION,
   FIELD_STATUS_TURNS,
@@ -349,6 +350,7 @@ export class Game {
   private heroTurns = new Map<string, number>(); // hero id -> the turn their auto-play is playing
   private event: (EventDef & Pick<EventView, 'chosen' | 'lines'>) | null = null;
   private onContinue: (() => void) | null = null; // where an outcome screen's Continue leads
+  private pits = new Map<number, number | null>(); // pits a Geomancer opened: tile -> rounds left (null: the whole fight)
   private pickAt = new Map<string, number>(); // playerId -> when auto-play makes the pick for a person who has it on
   private pickTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private restAutoAt: number | null = null; // when auto-play chooses at the rest site for the people who have it on
@@ -1934,6 +1936,7 @@ export class Game {
     this.slain = 0;
     this.traps.clear();
     this.raised.clear();
+    this.pits.clear();
     this.eliteKiller = null;
     for (const p of this.heroes()) this.prepareForFight(p);
     const fighters: Entity[] = [...this.heroes().filter((p) => !p.dead), ...this.allies(), ...this.monsters()];
@@ -2552,6 +2555,7 @@ export class Game {
     this.journalFightEnd(true);
     this.traps.clear();
     this.raised.clear();
+    this.pits.clear();
     const run = this.run!;
     // Song of Rest: the best Bard's song adds its share on top.
     const song = Math.max(0, ...this.heroes().map((h) => passiveOf(h, 'song_of_rest')?.value ?? 0)) / 100;
@@ -3486,6 +3490,7 @@ export class Game {
     if (own.id === 'quick_shot' && inCombat) this.splitShot(p, s, name, color, res.main);
     if (s.trap && inCombat) this.setTraps(p, s, res.center);
     if (s.raise && inCombat) this.raiseGround(p, s, res);
+    if (s.pit && inCombat) this.openPit(p, s, res);
     if (s.rubble && inCombat) this.rubble(res.center, s.radius ?? 1, s.rubble);
     const caught = (res.caught ?? []).filter((h) => this.up(h));
     if (caught.length) {
@@ -3831,15 +3836,24 @@ export class Game {
     }
     const open = (q: Pos) => {
       const i = q.y * this.width + q.x;
-      return q.x > 0 && q.y > 0 && q.x < this.width - 1 && q.y < this.height - 1 && this.tiles[i] === '.' && !this.occupied(q.x, q.y) && !this.traps.has(i);
+      return q.x > 0 && q.y > 0 && q.x < this.width - 1 && q.y < this.height - 1 && (this.tiles[i] === '.' || this.tiles[i] === PIT) && !this.occupied(q.x, q.y) && !this.traps.has(i);
     };
     const shaper = passiveOf(p, 'earthshaper');
     const turns = (r.turns ?? 0) * (shaper ? 2 : 1);
     const up: Pos[] = [];
+    let filled = 0;
     for (const q of spots.slice(0, r.ring ? 8 : r.tiles)) {
       if (!open(q)) continue;
       const i = q.y * this.width + q.x;
-      if (r.cover !== 'wall' && this.splitsRoom(i)) continue; // a wall of stone crumbles; rubble stays
+      if (this.tiles[i] === PIT) {
+        // Rubble fills a pit in (floor again); a wall stands in it, and leaves floor when it crumbles.
+        this.pits.delete(i);
+        filled++;
+        if (r.cover !== 'wall') {
+          this.setTile(i, '.');
+          continue;
+        }
+      } else if (r.cover !== 'wall' && this.splitsRoom(i)) continue; // a wall of stone crumbles; rubble stays
       this.setTile(i, r.cover === 'wall' ? '#' : LOW_COVER);
       if (r.cover === 'wall') {
         delete this.ground[i];
@@ -3847,8 +3861,9 @@ export class Game {
       }
       up.push(q);
     }
+    if (filled) this.addLog('info', `🪨 ${filled === 1 ? 'A pit is' : `${filled} pit tiles are`} filled in.`);
     if (!up.length) {
-      this.addLog('miss', `${s.icon} The ground won't rise there: no empty floor.`);
+      if (!filled) this.addLog('miss', `${s.icon} The ground won't rise there: no empty floor.`);
       return;
     }
     this.addLog('info', r.cover === 'wall' ? `⛰️ A wall of stone rises (${up.length} tiles, ${turns} rounds).` : `🪨 Rubble rises: ${up.length} tiles of low cover.`);
@@ -3878,6 +3893,51 @@ export class Game {
     if (picked.length) this.addLog('info', `⛏️ The broken floor leaves rubble on ${picked.length} tiles.`);
   }
 
+  /**
+   * Open Pit (Geomancer): the floor opens across the aimed spot, on empty floor only (never under anyone or a snare; a
+   * puddle there drains away), for a few rounds. Undertow keeps it open longer, and Gravity Well drags the enemies next
+   * to it in (STR save). A pit for the whole fight never cuts the room in two.
+   */
+  private openPit(p: PlayerEntity, s: SkillStats, res: AimResult) {
+    const pit = s.pit!;
+    const c = res.center;
+    const d = dirTo(p, c);
+    const across = d.x || d.y ? { x: -d.y, y: d.x } : { x: 0, y: 1 };
+    const spots: Pos[] = [c];
+    for (let k = 1; spots.length < pit.tiles; k++) spots.push({ x: c.x + across.x * k, y: c.y + across.y * k }, { x: c.x - across.x * k, y: c.y - across.y * k });
+    const undertow = passiveOf(p, 'undertow');
+    const turns = pit.turns === null ? null : pit.turns + (undertow && undertow.tier >= 2 ? 2 : 0);
+    const opened: Pos[] = [];
+    for (const q of spots.slice(0, pit.tiles)) {
+      const i = q.y * this.width + q.x;
+      if (q.x <= 0 || q.y <= 0 || q.x >= this.width - 1 || q.y >= this.height - 1 || this.tiles[i] !== '.' || this.occupied(q.x, q.y) || this.traps.has(i)) continue;
+      if (turns === null && this.splitsRoom(i)) continue; // for good, it must not cut the room in two
+      this.setTile(i, PIT);
+      delete this.ground[i];
+      this.pits.set(i, turns);
+      opened.push(q);
+    }
+    if (!opened.length) {
+      this.addLog('miss', `${s.icon} The floor won't open there: it needs empty floor, with nobody on it.`);
+      return;
+    }
+    this.addLog('info', `🕳️ The floor opens: ${opened.length === 1 ? 'a pit' : `a ${opened.length}-tile pit`}${turns === null ? ' for the rest of the fight' : ` for ${turns} rounds`}.`);
+    if (hasBranch(p, 'undertow', 'B')) {
+      // Gravity Well: the enemies at the edge slide in unless they brace themselves.
+      for (const m of this.monsters().filter((m) => !m.ally && !flies(m) && opened.some((q) => dist(q, m) === 1))) {
+        const { total, text } = this.creatureSave(m, 'str');
+        const dc = heroDc(p);
+        if (total >= dc) {
+          this.addLog('miss', `${m.name} braces at the edge (STR save ${text} vs DC ${dc}).`);
+          continue;
+        }
+        const q = opened.find((o) => dist(o, m) === 1)!;
+        this.addLog('hit', `🌀 The pit drags at ${m.name} (STR save ${text} vs DC ${dc})!`);
+        this.fall(m, q, p);
+      }
+    }
+  }
+
   /** End of a round: raised walls crumble when their time is up. */
   private tickRaised() {
     for (const [i, left] of [...this.raised]) {
@@ -3887,6 +3947,16 @@ export class Game {
       }
       this.raised.delete(i);
       if (this.tiles[i] === '#' && !this.props[i]) this.setTile(i, '.');
+    }
+    // A Geomancer's pits close when their time is up (a flyer above one is fine: floor again).
+    for (const [i, left] of [...this.pits]) {
+      if (left === null) continue;
+      if (left > 1) {
+        this.pits.set(i, left - 1);
+        continue;
+      }
+      this.pits.delete(i);
+      if (this.tiles[i] === PIT) this.setTile(i, '.');
     }
   }
 
@@ -3938,16 +4008,19 @@ export class Game {
     const dx = Math.sign(t.x - from.x);
     const dy = Math.sign(t.y - from.y);
     if (!dx && !dy) return;
+    if (by) tiles += passiveOf(by, 'undertow')?.value ?? 0; // Undertow: your pushes carry further
+    const flyer = flies(t);
+    const field = flyer ? flyView(this) : this; // a flyer is pushed over a pit, not into it
     const path: Pos[] = [];
     let at: Pos = { x: t.x, y: t.y };
     let into: Entity | undefined; // the creature it slammed into
     let pit: Pos | null = null; // the pit it goes over the edge of
     for (let i = 0; i < tiles; i++) {
-      if (fallsIn(this, at, dx, dy)) {
+      if (!flyer && fallsIn(this, at, dx, dy)) {
         pit = { x: at.x + dx, y: at.y + dy };
         break;
       }
-      if (!canStep(this, at, dx, dy)) break;
+      if (!canStep(field, at, dx, dy)) break;
       if (this.occupied(at.x + dx, at.y + dy, t.id)) {
         into = this.entities.find((e) => e.x === at.x + dx && e.y === at.y + dy && e !== t);
         break;
@@ -4075,6 +4148,11 @@ export class Game {
     const def = STATUSES[a.id];
     // Only new statuses pop up: wading through a puddle shouldn't say "Wet" on every step.
     if (this.phase === 'combat' && t !== by && !have) this.float(t, `${def.icon} ${def.name}`, def.good ? '#7ddc6f' : '#ffb04d');
+    // A flyer knocked down, stunned or frozen while it hovers over a pit drops into it.
+    if ((a.id === 'prone' || a.id === 'stunned' || a.id === 'frozen') && flies(t) && isPit(this, t.x, t.y) && this.phase === 'combat') {
+      this.addLog('crit', `🪽 ${t.name} can't stay up over the pit!`);
+      this.fall(t, { x: t.x, y: t.y }, by);
+    }
   }
 
   // ------------------------------------------------------------ dice & damage
@@ -4835,7 +4913,8 @@ export class Game {
       this.addLog('hit', `⚡ ${e.name} is shocked by the electrified ${g?.shock ? 'water' : 'steam'}: ${dmg} lightning.`);
       this.damage(e, dmg, source(by), 'lightning', true, true);
     };
-    if (g) {
+    if (g && !flies(e)) {
+      // (a flyer never steps in the ground: fire, lava, poison, water and ice are below it)
       if ((g.id === 'fire' || g.id === 'lava') && !immuneToStatus(e, 'burning')) {
         const dmg = rollDice(HAZARD_DICE[g.id]!);
         const where = g.id === 'lava' ? 'the lava' : 'the flames';

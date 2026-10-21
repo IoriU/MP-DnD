@@ -40,6 +40,19 @@ export const isPit = (m: MapLike, x: number, y: number): boolean => x >= 0 && y 
 /** Nobody can stand here: a wall, a prop, low cover or a pit. */
 export const isBlocked = (m: MapLike, x: number, y: number): boolean => isWall(m, x, y) || m.tiles[y * m.width + x] === LOW_COVER || isPit(m, x, y);
 
+const flyTiles = new Map<string, string>();
+/** The map as a flyer sees it (MonsterDef.fly): pits are just floor. */
+export function flyView<T extends MapLike>(m: T): T {
+  if (!m.tiles.includes(PIT)) return m;
+  let tiles = flyTiles.get(m.tiles);
+  if (!tiles) {
+    if (flyTiles.size > 32) flyTiles.clear();
+    tiles = m.tiles.replaceAll(PIT, '.');
+    flyTiles.set(m.tiles, tiles);
+  }
+  return { ...m, tiles };
+}
+
 /** A push from `at` by (dx, dy) would send it into a pit (a wall corner in the way of a diagonal stops it at the edge). */
 export function fallsIn(m: MapLike, at: Pos, dx: number, dy: number): boolean {
   if (!isPit(m, at.x + dx, at.y + dy)) return false;

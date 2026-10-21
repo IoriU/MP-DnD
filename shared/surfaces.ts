@@ -10,7 +10,7 @@
 import { traitResist } from './elites.ts';
 import { DIRS, canStep, dist, findPath, reachable, type MapLike } from './grid.ts';
 import { gearResist } from './items.ts';
-import { MONSTERS, type Dice, type Resist } from './rules.ts';
+import { MONSTERS, flies, type Dice, type Resist } from './rules.ts';
 import { hasBranch, hasStatus, type AimResult, type Element, type SkillStats, type StatusId } from './skills.ts';
 import type { Entity, Pos } from './types.ts';
 
@@ -461,7 +461,7 @@ function shrugsOff(e: Entity | undefined, harm: 'fire' | 'poison'): boolean {
  * Pathfinding and the AI use it; `who` adds immunities (a fire drake doesn't mind fire).
  */
 export function hazardAt(f: FieldLike, i: number, who?: Entity): number {
-  const g = f.ground[i];
+  const g = flies(who) ? undefined : f.ground[i]; // a flyer never steps in the ground
   const c = f.clouds[i];
   let harm = 0;
   if (g?.id === 'fire' && !shrugsOff(who, 'fire')) harm += 5;

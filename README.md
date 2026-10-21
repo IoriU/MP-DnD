@@ -120,6 +120,8 @@ New here? Just start: a 💡 tip shows up the first time something new happens (
 - **Between rooms:** HP carries over. Drink potions, or heal a friend by picking a heal and clicking their party card.
 - **Rooms:** bigger than the screen and shaped: caverns, chambers joined by corridors, pillared halls, ruins, a wall with gaps (elite and boss rooms are bigger still). A fight starts in about a screen's worth of it, so you meet the monsters as soon as before, and the rest is room to flank and fall back.
 - **🕳️ Pits:** nobody can walk into one, but you can see and shoot across. Shove a monster in and it's gone (you get the kill); elites and bosses are harder to shove and may catch the edge. A hero who falls in loses 30% of their max HP and climbs out; on Hard the fall kills. Brutes and kobolds shove too.
+- **🪨 The Geomancer** (a Wizard engine) is built around pits: 🕳️ **Open Pit** opens one on empty floor (never under anyone) for 3 rounds, 🐏 **Earth Ram** and 〰️ **Tremor** push enemies in, 🪨 **Raise Cover** fills a pit in (and cover or a ⛰️ wall at the edge stops a friend being shoved over), and 🌀 **Undertow** makes every push carry further (Gravity Well: a new pit drags the enemies at its edge in).
+- **🪽 Flyers** (Giant Bats, Gargoyles, Magma Imps, the Fire Drake and the Dread Wyrm) cross pits and never step in the ground (fire, oil, water). They can't be pushed into a pit, but one knocked down, stunned or frozen while it hovers over a pit falls in.
 - **Camera:** it follows the fight: on your turn it brings your hero into view, and it pans to whoever acts when they're off screen. Right-drag to look around, the wheel zooms toward the mouse, **F** jumps back to your hero.
 - **Graphics:** pixel art by default; press **G** to switch to the classic emoji look (it's remembered).
 - **💪 Stats:** the six D&D stats, shown on every hero card (hover one to read what it does). STR: melee hit and damage. DEX: bows and daggers, initiative, sneaking, and AC in light armor. CON: max HP (every point raised is +1 HP per level). INT: Wizard spells, and every 2 points raised +1 max slot for any class. WIS: Cleric and Ranger spells and heals. CHA: Bard and Paladin spells and heals, and talking your way through events. Every stat also has its saves and event checks (an event says who would roll and the chance). Raise them with a point every other level (any stat, up to +5), stat boons in the spoils, and gear (which can go past +5).
@@ -146,7 +148,7 @@ Every class has **three build engines**: ways to build a hero out of the cards y
 |---|---|---|---|
 | 🛡️ Fighter | ⚔️ **Weapon Master**: crits | 🛡️ **Guardian**: Block and thorns | 🤺 **Duelist**: counters |
 | 🗡️ Rogue | 🗡️ **Assassin**: poison stacks | 💨 **Skirmisher**: many small hits | 🎭 **Shadow**: one huge backstab |
-| 🧙 Wizard | ☄️ **Evoker**: Arcane Charge | ❄️ **Elementalist**: elemental combos | 🪨 **Geomancer**: terrain |
+| 🧙 Wizard | ☄️ **Evoker**: Arcane Charge | ❄️ **Elementalist**: elemental combos | 🪨 **Geomancer**: pits and stone |
 | ✨ Cleric | 💖 **Life**: overhealing | ⚖️ **Order**: buffs from range | ☀️ **Light**: Radiance |
 | 🪓 Barbarian | 🩸 **Berserker**: low HP, high damage | 🦏 **Juggernaut**: lifesteal tank | 🌋 **Wrecker**: knockdowns |
 | 🏹 Ranger | 🪤 **Trapper**: traps and nets | 🎯 **Sharpshooter**: Focus, one huge shot | 🏹 **Hunter**: marks, many targets |

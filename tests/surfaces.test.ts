@@ -708,7 +708,8 @@ test('hazardAt: fire does not worry a fire-immune creature; poison does not worr
   assert.equal(hazardAt(f, at(f, 2, 2), attuned), 0, 'Attunement: fire on the ground does not hurt');
   assert.ok(hazardAt(f, at(f, 2, 2), plain) > 0);
   assert.ok(hazardAt(f, at(f, 2, 2), zombie) > 0, 'a zombie fears fire');
-  assert.ok(hazardAt(f, at(f, 4, 2), drake) > 0, 'the drake does mind poison');
+  assert.ok(hazardAt(f, at(f, 5, 2), drake) > 0, 'the drake does mind poison gas (it flies over the poison on the ground)');
+  assert.equal(hazardAt(f, at(f, 4, 2), drake), 0, 'a flyer never steps in the ground');
   assert.equal(hazardAt(f, at(f, 4, 2), skeleton), 0);
   assert.equal(hazardAt(f, at(f, 5, 2), zombie), 0, 'and poison gas');
   assert.ok(hazardAt(f, at(f, 4, 2), plain) > 0);

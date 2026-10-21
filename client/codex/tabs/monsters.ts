@@ -36,6 +36,7 @@ const SAVE: Record<Stat, string> = { str: 'STR', dex: 'DEX', con: 'CON', int: 'I
 function tricks(m: MonsterDef): string[] {
   const out: string[] = [];
   if (m.leader) out.push(chip('📯 Leader', 'warn', 'Gives its side orders (Elites & allies tab)'));
+  if (m.fly) out.push(chip('🪽 Flies', 'warn', "Crosses pits and never steps in the ground; can't be pushed into a pit, but knocked down over one it falls"));
   if (m.block) out.push(chip(`🧱 Block ${m.block}`, 'good', 'A shield: this much Block at the start of each of its turns'));
   const t = m.trick;
   if (t) {

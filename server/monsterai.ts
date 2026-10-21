@@ -11,10 +11,10 @@
 // Pure: game.ts (runMonster) hands it a snapshot and carries out the plan; the tests call it directly.
 
 import { ALLIES, ENRAGED_DMG, auraOf, hasTrait, isAllyNpc, isFoe, sameSide } from '../shared/elites.ts';
-import { DIRS, canStep, dist, fallsIn, hasLOS } from '../shared/grid.ts';
+import { DIRS, canStep, dist, fallsIn, flyView, hasLOS } from '../shared/grid.ts';
 import { gearBonus } from '../shared/items.ts';
 import {
-  BOSS, CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod, monsterSave, PIT_FALL, type Stat,
+  BOSS, CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod, monsterSave, PIT_FALL, flies, type Stat,
   type Difficulty, type OrderId, type Role,
 } from '../shared/rules.ts';
 import { ROOTED, SKILLS, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, statsOf, type Element, type StatusApply } from '../shared/skills.ts';
@@ -426,7 +426,9 @@ export function planMonster(v: MonsterView): MonsterPlan {
 }
 
 /** Everything a monster could do this turn, scored by the scripted AI. */
-function candidates(v: MonsterView): Candidates {
+function candidates(view: MonsterView): Candidates {
+  // A flyer plans on a map where pits are floor (it crosses them, and hovers over them).
+  const v = flies(view.me) ? { ...view, map: flyView(view.map) } : view;
   const { me, map, entities } = v;
   const def = MONSTERS[me.type];
   const role = roleOf(def);
@@ -588,8 +590,8 @@ function candidates(v: MonsterView): Candidates {
         if (smart && def.shove && dist(at, t) === 1) {
           const d = dirTo(at, t);
           const land = { x: t.x + d.x, y: t.y + d.y };
-          const pit = fallsIn(map, t, d.x, d.y);
-          if (pit || (canStep(map, t, d.x, d.y) && !entities.some((e) => e !== t && e.x === land.x && e.y === land.y && !(e.kind === 'player' && e.dead)))) {
+          const pit = fallsIn(view.map, t, d.x, d.y); // the real ground: the hero walks, even if the shover flies
+          if (pit || (canStep(view.map, t, d.x, d.y) && !entities.some((e) => e !== t && e.x === land.x && e.y === land.y && !(e.kind === 'player' && e.dead)))) {
             const harm = pit ? pitHarm(t, v.difficulty) : hazardAt(map, tileOf(land), t);
             if (harm > 0) {
               const win = contest(def.str - shoveResist(t));

@@ -115,6 +115,7 @@ interface Token {
   dir: number; // a hero's walk row
   frame: number; // the art frame showing now
   phase: number; // offsets idle animations so creatures don't blink in step
+  fly: boolean; // a flyer: its art hovers above a shadow
 }
 
 /** A flame sprite on a burning tile. */
@@ -158,6 +159,7 @@ function roleLines(def: MonsterDef, mon?: MonsterEntity): string[] {
   const lines = [`<span class="tip-role"><b>${role.icon} ${esc(role.name)}:</b> ${esc(role.desc)}</span>`];
   if (def.hardMove) lines.push(`<span class="tip-role">💀 On Hard: ${esc(def.hardMove)}</span>`);
   if (def.shove) lines.push('<span class="tip-role">✋ Shoves heroes into hazards</span>');
+  if (def.fly) lines.push("<span class=\"tip-role\">🪽 Flies: crosses pits and never steps in the ground (fire, oil, water). Can't be pushed into a pit, but knocked down, stunned or frozen over one, it falls.</span>");
   if (def.support) {
     const { heal, buff } = def.support;
     const st = STATUSES[buff.id];
@@ -1021,6 +1023,7 @@ class DungeonScene extends Phaser.Scene {
     } else {
       const f = Math.floor(time / IDLE_MS + t.phase * 2) % 2;
       if (f !== t.frame) art.setTexture(sheetKeys(spec.sheet)[(t.frame = f)], spec.frame);
+      if (t.fly) art.y = ART_Y - 7 - Math.round(2 * Math.sin(time / 320 + t.phase * 6.283)); // hovering
     }
   }
 
@@ -1055,10 +1058,14 @@ class DungeonScene extends Phaser.Scene {
     const tags = this.add.text(0, 0, '', { fontFamily: EMOJI_FONT, fontSize: '9px', resolution: 2 }).setOrigin(0.5, 0);
     const traitBg = this.add.graphics();
     const traits = this.add.text(0, 0, '', { fontFamily: EMOJI_FONT, fontSize: '9px', resolution: 2 }).setOrigin(0.5, 0);
-    const c = this.add.container(0, 0, [ring, face, glyph, ...(art ? [art] : []), bar, tagBg, tags, traitBg, traits]).setDepth(e.kind === 'player' ? 11 : 10);
+    const fly = e.kind === 'monster' && !!MONSTERS[e.type]?.fly;
+    const shadow = this.add.graphics();
+    if (fly) shadow.fillStyle(0x000000, 0.35).fillEllipse(0, 10, 18, 6); // it hovers: its shadow on the floor (or the pit) below
+    const c = this.add.container(0, 0, [ring, face, shadow, glyph, ...(art ? [art] : []), bar, tagBg, tags, traitBg, traits]).setDepth(e.kind === 'player' ? 11 : 10);
+    if (fly) glyph.y -= 6;
     return {
       c, ring, face, glyph, art, spec, bar, tags, tagBg, traits, traitBg, key: '', kind: e.kind, hp: e.hp, tint: null, flash: null, walking: false,
-      dir: WALK_ROW.down, frame: -1, phase: (hash32(strHash(e.id)) % 1000) / 1000,
+      dir: WALK_ROW.down, frame: -1, phase: (hash32(strHash(e.id)) % 1000) / 1000, fly,
     };
   }
 
@@ -1453,7 +1460,7 @@ class DungeonScene extends Phaser.Scene {
     if (s.tiles[i] === LOW_COVER) lines.push(`<b>${coverLook(i).emoji} Low cover</b>`, desc(`Can't walk through it, but you can shoot over it. Stand next to it: +${HALF_COVER} AC against ranged attacks from its side.`));
     if (s.tiles[i] === PIT) {
       const hard = s.run?.difficulty === 'hard';
-      lines.push('<b>🕳️ Pit</b>', desc(`Nobody can walk in, but you can see and shoot across. Shove a monster in and it's gone (elites and bosses are harder to shove and may catch the edge). A hero who falls in ${hard ? 'dies (Hard)' : `loses ${Math.round(PIT_FALL * 100)}% of their max HP and climbs out`}: mind the edge when a brute is near.`));
+      lines.push('<b>🕳️ Pit</b>', desc(`Nobody can walk in, but you can see and shoot across, and flyers cross it. Shove a monster in and it's gone (elites and bosses are harder to shove and may catch the edge; a flyer only falls if it's knocked down over one). A hero who falls in ${hard ? 'dies (Hard)' : `loses ${Math.round(PIT_FALL * 100)}% of their max HP and climbs out`}: mind the edge when a brute is near. Raise Cover fills a pit in.`));
     }
     const trap = s.traps?.[i];
     if (trap) {

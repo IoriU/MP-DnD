@@ -4,7 +4,7 @@
 import { gearBonus, gearStat } from './items.ts';
 import type { Element, SkillId, StatusApply } from './skills.ts';
 import type { CloudId, GroundId } from './surfaces.ts';
-import type { BoonId, ClassId, NodeType } from './types.ts';
+import type { BoonId, ClassId, Entity, NodeType } from './types.ts';
 
 export const MAX_PLAYERS = 6;
 export const MIN_PARTY = 3; // every run starts with at least this many heroes: bots take the empty seats
@@ -307,6 +307,7 @@ export interface MonsterDef {
   leader?: boolean; // gives its side orders (ORDERS)
   block?: number; // 🧱 Block at the start of each of its turns: a shield
   raise?: string; // Raise Dead: once a fight, after a friend has fallen, this monster stands up next to it
+  fly?: boolean; // flies (playtest 1): crosses pits, never steps in the ground (fire, oil, water...), can't be pushed into a pit; knocked down, stunned or frozen over one, it falls
   hardMove?: string; // a Hard version's extra move, in a few words (HARD_MOVES)
 }
 
@@ -366,12 +367,16 @@ const m = (
   name, glyph, hp, ac, atk, dmg, threat, speed: 6, range: 1, attacks: 1, dex: 1, str: 1, wis: 0, verb: 'hits', xp: threat * 10, ...extra,
 });
 
+/** A flying monster (MonsterDef.fly): crosses pits, never steps in the ground, can't be pushed into a pit. */
+export const flies = (e: Entity | undefined): boolean => e?.kind === 'monster' && !!MONSTERS[e.type]?.fly;
+
 /** A monster's save. Monsters only have STR, DEX and WIS: CON goes on STR, INT and CHA on WIS. */
 export const monsterSave = (def: MonsterDef, save: Stat) => def[save === 'con' ? 'str' : save === 'int' || save === 'cha' ? 'wis' : save];
 
 export const MONSTERS: Record<string, MonsterDef> = {
   // Act 1: Goblin Warrens
   rat: m('Giant Rat', '🐀', 7, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 2, role: 'coward', verb: 'bites' }),
+  bat: m('Giant Bat', '🦇', 6, 13, 4, { n: 1, d: 4, bonus: 2 }, 1, { dex: 3, speed: 8, fly: true, role: 'skirmisher', verb: 'bites' }),
   kobold: m('Kobold', '🦎', 5, 12, 4, { n: 1, d: 4, bonus: 2 }, 1, {
     dex: 2, role: 'coward', verb: 'stabs',
     trick: { name: 'Net', icon: '🪢', verb: 'throws a net at', range: 3, status: [{ id: 'netted', turns: 2 }], cooldown: 99 },
@@ -426,9 +431,10 @@ export const MONSTERS: Record<string, MonsterDef> = {
     trick: { name: 'Dragon Brand', icon: '🎯', verb: 'brands', range: 6, save: 'wis', dc: 13, status: [{ id: 'marked', turns: 2 }], cooldown: 3 },
   }),
   imp: m('Magma Imp', '😈', 16, 13, 5, { n: 1, d: 6, bonus: 2 }, 4, {
-    range: 4, dex: 3, element: 'fire', resist: { fire: 'absorb', cold: 'weak' }, verb: 'spits magma at',
+    range: 4, dex: 3, element: 'fire', fly: true, resist: { fire: 'absorb', cold: 'weak' }, verb: 'spits magma at',
     death: { ground: 'fire', radius: 1, text: 'collapses into a pool of fire' },
   }),
+  gargoyle: m('Gargoyle', '🗿', 28, 15, 6, { n: 1, d: 8, bonus: 3 }, 6, { str: 3, dex: 1, fly: true, resist: { poison: 'immune' }, verb: 'claws' }),
   ogre: m('Ogre', '🧌', 45, 11, 6, { n: 2, d: 8, bonus: 4 }, 8, {
     dex: -1, str: 4, wis: -2, shove: true, verb: 'smashes',
     rider: { status: { id: 'prone', turns: 1 }, save: 'str', dc: 13, text: 'knocks {target} flat' },
@@ -438,9 +444,9 @@ export const MONSTERS: Record<string, MonsterDef> = {
     support: { heal: { n: 2, d: 8, bonus: 2 }, buff: { id: 'blessed', turns: 2 } },
   }),
   warchief: m('Orc Warchief', '🪓', 55, 16, 7, { n: 1, d: 12, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, shove: true, leader: true, verb: 'cleaves' }),
-  drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, resist: { fire: 'immune' }, verb: 'rends' }),
+  drake: m('Fire Drake', '🦖', 60, 15, 7, { n: 2, d: 6, bonus: 4 }, 16, { attacks: 2, str: 4, wis: 1, breath: true, fly: true, resist: { fire: 'immune' }, verb: 'rends' }),
   wyrm: m('Dread Wyrm', '🐉', 110, 17, 8, { n: 2, d: 8, bonus: 4 }, 0, {
-    attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, shove: true, leader: true, resist: { fire: 'resist' }, signature: 'wrath', verb: 'rends',
+    attacks: 2, dex: 0, str: 5, wis: 3, xp: 500, breath: true, fly: true, shove: true, leader: true, resist: { fire: 'resist' }, signature: 'wrath', verb: 'rends',
   }),
   // NPC allies (shared/elites.ts): they fight for the party; act 1 numbers, they grow with the act
   sellsword: m('Sellsword', '💂', 24, 15, 5, { n: 1, d: 8, bonus: 3 }, 0, { str: 3, xp: 0, shove: true, block: 2, verb: 'cuts' }),
@@ -460,6 +466,8 @@ export const MONSTERS: Record<string, MonsterDef> = {
 export const HARD_MOVES: Record<string, { move: string; add: Partial<MonsterDef> }> = {
   // Act 1: Goblin Warrens
   rat: { move: '🦠 Filthy bites: they Poison', add: { rider: { status: { id: 'poisoned', turns: 2, power: 1 }, text: 'infects {target}' } } },
+  bat: { move: '📢 Screech: Dazes a hero (WIS save)', add: { trick: { name: 'Screech', icon: '📢', verb: 'screeches at', range: 3, save: 'wis', dc: 12, status: [{ id: 'dazed', turns: 1 }], cooldown: 3 } } },
+  gargoyle: { move: '🪨 Stone Dive: its hits can knock you down (STR save)', add: { rider: { status: { id: 'prone', turns: 1 }, save: 'str', dc: 13, text: 'dives into {target}' } } },
   kobold: { move: '✋ Shoves heroes into fire, oil and lava', add: { shove: true } },
   goblin: { move: '🦵 Hamstring: its hits can Daze (DEX save)', add: { rider: { status: { id: 'dazed', turns: 1 }, save: 'dex', dc: 12, text: 'hamstrings {target}' } } },
   archer: {
@@ -534,9 +542,10 @@ export interface ActDef {
 export const ACTS: ActDef[] = [
   {
     name: 'Goblin Warrens', glyph: '👺',
-    pool: ['rat', 'kobold', 'goblin', 'archer', 'firebomber', 'shaman'],
+    pool: ['rat', 'kobold', 'goblin', 'archer', 'firebomber', 'shaman', 'bat'],
     encounters: [
       { name: 'Rat Nest', monsters: ['rat', 'rat', 'rat', 'kobold'] },
+      { name: 'Bat Roost', monsters: ['bat', 'bat', 'bat', 'goblin'] },
       { name: 'Goblin Patrol', monsters: ['goblin', 'goblin', 'archer'] },
       { name: 'Kobold Tunnel Crew', monsters: ['kobold', 'kobold', 'goblin'] },
       { name: 'Firebomb Squad', monsters: ['firebomber', 'goblin', 'kobold'], minRow: 2 },
@@ -553,7 +562,7 @@ export const ACTS: ActDef[] = [
   },
   {
     name: 'Forgotten Crypt', glyph: '💀',
-    pool: ['skeleton', 'zombie', 'bloated', 'wolf', 'spider', 'necromancer'],
+    pool: ['skeleton', 'zombie', 'bloated', 'wolf', 'spider', 'necromancer', 'bat'],
     encounters: [
       { name: 'Restless Dead', monsters: ['skeleton', 'zombie', 'zombie', 'bloated'] },
       { name: 'Plague Pit', monsters: ['bloated', 'bloated', 'zombie'], minRow: 2 },
@@ -572,11 +581,12 @@ export const ACTS: ActDef[] = [
   },
   {
     name: "Dragon's Lair", glyph: '🐉',
-    pool: ['orc', 'cultist', 'imp', 'kobold', 'ogre', 'priest'],
+    pool: ['orc', 'cultist', 'imp', 'kobold', 'ogre', 'priest', 'gargoyle'],
     encounters: [
       { name: 'Orc Raiders', monsters: ['orc', 'orc', 'kobold'] },
       { name: 'Cult Ritual', monsters: ['cultist', 'cultist', 'priest', 'imp', 'kobold'] },
       { name: 'Imp Swarm', monsters: ['imp', 'imp', 'kobold'], minRow: 2 },
+      { name: 'Gargoyle Perch', monsters: ['gargoyle', 'gargoyle', 'cultist'], minRow: 3 },
       { name: 'Kobold Swarm', monsters: ['kobold', 'kobold', 'kobold', 'cultist'] },
       { name: 'Ogre Brutes', monsters: ['ogre', 'kobold', 'kobold'], minRow: 4 },
       { name: "Dragon's Guard", monsters: ['orc', 'cultist', 'imp', 'ogre', 'kobold', 'priest'], minRow: 6 },
