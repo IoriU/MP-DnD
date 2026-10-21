@@ -3,7 +3,10 @@
 
 import { GEAR_IDS, ITEMS, ITEM_IDS, bagRoom, gearBonus, gearDef, isItemId, nextPity, rarityOdds, rarityPool, rollRarity, type ItemId } from '../shared/items.ts';
 import { CARD_RARITIES, type CardRarity, type EngineId } from '../shared/engines.ts';
-import { BOON_HP, CLASSES, INJURY_PCT, LEVEL_CAP, MAX_BONUS_AC, MAX_INJURIES, XP_ASSIST, XP_KILL, XP_SHARED, maxHpFor, maxSlotsFor, xpToNext } from '../shared/rules.ts';
+import {
+  BOON_HP, CLASSES, INJURY_PCT, LEVEL_CAP, MAX_BONUS_AC, MAX_INJURIES, STATS, STAT_CAP, STAT_INFO, XP_ASSIST, XP_KILL, XP_SHARED,
+  armorFor, fmtMod, maxHpFor, maxSlotsFor, statGain, statMod, statRoom, xpToNext, type Stat,
+} from '../shared/rules.ts';
 import {
   COUNTED_KINDS,
   SKILLS,
@@ -36,14 +39,14 @@ export function recalcHero(p: PlayerEntity) {
   const c = CLASSES[p.classId];
   const drained = p.statuses.find((s) => s.id === 'drained')?.power ?? 0; // a Wight's touch, until the fight ends
   const injured = 1 - INJURY_PCT * Math.min(p.injuries ?? 0, MAX_INJURIES); // 🩹 deaths since the last rest
-  const maxHp = Math.max(1, Math.round((maxHpFor(p.classId, p.level) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0) + gearBonus(p, 'hp')) * injured) - drained);
+  const maxHp = Math.max(1, Math.round((maxHpFor(p.classId, p.level, statGain(p, 'con')) + p.bonusHp + (passiveOf(p, 'tough')?.value ?? 0) + gearBonus(p, 'hp')) * injured) - drained);
   const hpGain = maxHp - p.maxHp;
   p.maxHp = maxHp;
   if (hpGain > 0 && !p.downed && !p.dead) p.hp += hpGain;
   p.hp = Math.min(p.hp, p.maxHp);
-  p.ac = c.ac + p.bonusAc + (hasBranch(p, 'battle_hardened', 'B') ? 1 : 0) + gearBonus(p, 'ac');
+  p.ac = armorFor(p.classId, statGain(p, 'dex')) + p.bonusAc + (hasBranch(p, 'battle_hardened', 'B') ? 1 : 0) + gearBonus(p, 'ac');
   p.speed = Math.max(1, c.speed + (passiveOf(p, 'slippery')?.value ?? 0) + (hasBranch(p, 'alert', 'A') ? 1 : 0) + gearBonus(p, 'speed'));
-  const maxSlots = maxSlotsFor(p.classId, p.level) + p.bonusSlots + gearBonus(p, 'slots');
+  const maxSlots = maxSlotsFor(p.classId, p.level, statGain(p, 'int')) + p.bonusSlots + gearBonus(p, 'slots');
   const slotGain = maxSlots - p.maxSlots;
   p.maxSlots = maxSlots;
   p.slots = Math.max(0, Math.min(maxSlots, p.slots + Math.max(0, slotGain)));
@@ -74,6 +77,7 @@ export function applyLevelUps(p: PlayerEntity): number {
     p.xp -= xpToNext(p.level);
     p.level++;
     gained++;
+    if (p.level % 2 === 0) p.levelUps++; // a stat point every other level, put in any stat
   }
   if (p.level >= LEVEL_CAP) p.xp = 0;
   if (gained) recalcHero(p);
@@ -132,6 +136,8 @@ function candidates(p: PlayerEntity, pool: 'class' | 'common', act = 1): Weighte
     const boons: BoonId[] = ['hp', 'potions', 'slot'];
     if (p.bonusAc < MAX_BONUS_AC) boons.push('ac');
     for (const boon of boons) out.push({ card: { kind: 'boon', boon }, key: `boon:${boon}`, w: 0.75 });
+    // Stat boons: a stat point like the one every other level, for a stat that can still go up.
+    for (const stat of STATS) if (statRoom(p, stat) > 0) out.push({ card: { kind: 'boon', boon: stat }, key: `boon:${stat}`, w: 0.35 });
   }
   return out;
 }
@@ -236,19 +242,25 @@ export function dealOffer(p: PlayerEntity, r: Rng, act: number) {
   } else if ((p.rewardPicks ?? 0) > 0) {
     p.offer = makeRewardOffer(p, r, act);
     p.offerKind = 'reward';
-  } else if (p.levelUps > 0) {
-    p.offer = makeOffer(p, r);
+  } else if (p.levelUps > 0 && statOffer(p).length) {
+    p.offer = statOffer(p);
     p.offerKind = 'level';
   } else {
+    if (p.levelUps > 0) p.levelUps = 0; // every stat at +5 already: nothing to raise
     p.offer = null;
     delete p.offerKind;
   }
 }
 
+/** A stat point (every other level): one card for each stat that can still go up. */
+export const statOffer = (p: PlayerEntity): OfferCard[] => STATS.filter((stat) => statRoom(p, stat) > 0).map((stat) => ({ kind: 'stat', stat }));
+
 /** Cards that still make sense after a save is loaded (skills and items can be renamed or removed between versions). */
 export const validCard = (c: OfferCard) =>
   c.kind === 'boon'
     ? true
+    : c.kind === 'stat'
+      ? STATS.includes(c.stat)
     : c.kind === 'gear'
       ? isItemId(c.item) && !!gearDef(c.item)
       : c.kind === 'item'
@@ -300,6 +312,14 @@ export function upgrade(p: PlayerEntity, id: SkillId, tier: 2 | 3, branch: unkno
   return { ok: true, text: `upgrades ${SKILLS[id].base.name} to tier II` };
 }
 
+/** +1 to a stat (a stat point or a stat boon), up to +5. */
+export function raiseStat(p: PlayerEntity, stat: Stat): PickResult {
+  if (statRoom(p, stat) <= 0) return { ok: false, error: `${STAT_INFO[stat].name} is as high as levels and boons take it (+${STAT_CAP}).` };
+  p.statUps = { ...p.statUps, [stat]: (p.statUps?.[stat] ?? 0) + 1 };
+  recalcHero(p);
+  return { ok: true, text: `raises ${STAT_INFO[stat].name} to ${fmtMod(statMod(p, stat))}` };
+}
+
 function boon(p: PlayerEntity, id: BoonId): PickResult {
   switch (id) {
     case 'hp':
@@ -315,6 +335,8 @@ function boon(p: PlayerEntity, id: BoonId): PickResult {
     case 'slot':
       p.bonusSlots++;
       return { ok: true, text: `gains a ${CLASSES[p.classId].names.slots} slot` };
+    default:
+      return raiseStat(p, id);
   }
 }
 
@@ -348,7 +370,9 @@ export function applyPick(p: PlayerEntity, req: PickRequest, r: Rng, act = 1): P
           ? takeGear(p, card.item)
           : card.kind === 'subclass'
             ? chooseSubclass(p, card.sub)
-            : boon(p, card.boon);
+            : card.kind === 'stat'
+              ? raiseStat(p, card.stat)
+              : boon(p, card.boon);
   if (!res.ok) return res;
   if (kind === 'elite') p.elitePicks--;
   else if (kind === 'reward') p.rewardPicks = (p.rewardPicks ?? 1) - 1;

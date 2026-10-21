@@ -14,7 +14,7 @@ import { ALLIES, ENRAGED_DMG, auraOf, hasTrait, isAllyNpc, isFoe, sameSide } fro
 import { DIRS, canStep, dist, hasLOS } from '../shared/grid.ts';
 import { gearBonus } from '../shared/items.ts';
 import {
-  BOSS, CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod,
+  BOSS, CHARGE_MOVES, COWARD_HP, COWARD_TURNS, DIFFICULTIES, FULL_COVER, HELP, MONSTERS, ORDER_RANGE, canHelp, packsFor, roleOf, statMod, monsterSave, type Stat,
   type Difficulty, type OrderId, type Role,
 } from '../shared/rules.ts';
 import { ROOTED, SKILLS, SKIP_TURN, SLOWED, avgDice, blockOf, hasStatus, passiveOf, statsOf, type Element, type StatusApply } from '../shared/skills.ts';
@@ -126,11 +126,11 @@ const blasts = (e: Entity) =>
 const threatOf = (e: Entity) => (e.kind === 'player' ? 3 + 1.2 * e.level : attacksOf(e) * dmgOf(e) * 0.6);
 
 /** Chance a creature fails a save against this DC (d20 + its bonus, like game.ts creatureSave). */
-export function saveFails(e: Entity, save: 'dex' | 'str' | 'wis', dc: number): number {
+export function saveFails(e: Entity, save: Stat, dc: number): number {
   const bonus =
     e.kind === 'player'
-      ? statMod(e.classId, save) + (passiveOf(e, 'steady')?.value ?? 0) + (hasStatus(e, 'blessed') ? 2 : 0) + gearBonus(e, 'saves')
-      : MONSTERS[e.type][save];
+      ? statMod(e, save) + (passiveOf(e, 'steady')?.value ?? 0) + (hasStatus(e, 'blessed') ? 2 : 0) + gearBonus(e, 'saves')
+      : monsterSave(MONSTERS[e.type], save);
   return clamp((dc - bonus - 1) / 20, 0.05, 0.95);
 }
 
@@ -156,7 +156,7 @@ function contest(diff: number): number {
 
 /** What a creature adds to resist a shove: the better of STR and DEX. */
 export const shoveResist = (e: Entity) =>
-  e.kind === 'player' ? Math.max(statMod(e.classId, 'str'), statMod(e.classId, 'dex')) : Math.max(MONSTERS[e.type].str, MONSTERS[e.type].dex);
+  e.kind === 'player' ? Math.max(statMod(e, 'str'), statMod(e, 'dex')) : Math.max(MONSTERS[e.type].str, MONSTERS[e.type].dex);
 
 // ---------------------------------------------------------------- sides
 

@@ -9,7 +9,7 @@
 // friends caught in them, and elements count resistances and the statuses they leave (Chilled, Frozen, Shocked, Stunned).
 
 import { DIRS, canStep, dist, reachable, type MapLike } from '../shared/grid.ts';
-import { AP_GAIN, AP_MAX, ATTACK_AP, BOSS, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, saveDc, sneakDice, statMod, stealthBonus } from '../shared/rules.ts';
+import { AP_GAIN, AP_MAX, ATTACK_AP, BOSS, CLASSES, FULL_COVER, HELP_UP_HP, MAX_BONUS_AC, MONSTERS, sneakDice, statMod, statRoom, stealthBonus, type Stat } from '../shared/rules.ts';
 import { attackAdvantage, canReact, coverFrom, dirTo, isFlanking, netAdvantage, turnsToFace } from '../shared/tactics.ts';
 import {
   CLEANSED,
@@ -32,6 +32,7 @@ import {
   hasBranch,
   hasStatus,
   healBonus,
+  heroDc,
   hitsOf,
   hotbar,
   hpCostOf,
@@ -479,7 +480,7 @@ function strike(sim: Sim, id: SkillId, s: SkillStats, m: MonsterEntity, main: bo
     let p = 1;
     if (s.roll === 'save') {
       const mod = (MONSTERS[m.type]?.[s.save ?? 'dex'] ?? 0) + ((s.save ?? 'dex') === 'dex' ? coverFrom(sim.ctx.map, origin, m) : 0);
-      p = clamp((saveDc(me.classId, me.level) - 1 - mod) / 20, 0, 1); // fails on d20 + mod < DC
+      p = clamp((heroDc(me) - 1 - mod) / 20, 0, 1); // fails on d20 + mod < DC
     }
     for (let i = 0; i < hits; i++) {
       ps.push(p);
@@ -1297,8 +1298,8 @@ function deathValue(sim: Sim, id: SkillId, s: SkillStats, res: AimResult, m: Mon
 }
 
 /** A friend's save against your spell (game.ts heroSave): their stat, Steady and Bless. */
-const heroSaveMod = (h: PlayerEntity, save: 'dex' | 'str' | 'wis') =>
-  statMod(h.classId, save) + (passiveOf(h, 'steady')?.value ?? 0) + (hasStatus(h, 'blessed') ? 2 : 0);
+const heroSaveMod = (h: PlayerEntity, save: Stat) =>
+  statMod(h, save) + (passiveOf(h, 'steady')?.value ?? 0) + (hasStatus(h, 'blessed') ? 2 : 0);
 
 /** Friendly fire on an NPC ally: priced a little under a hero's HP (it only stays a few fights anyway). */
 function allyNpcHit(s: SkillStats, a: Entity): number {
@@ -1337,7 +1338,7 @@ function friendlyHit(sim: Sim, id: SkillId, s: SkillStats, h: PlayerEntity, scal
   const hits = s.roll ? hitsOf(me, s) : 1;
   let p = 1; // chance each hit lands (or the save fails)
   if (s.roll === 'attack') p = d20(attackBonus(me, s) + (hasStatus(me, 'blessed') ? 2 : 0) - (hasStatus(me, 'dazed') ? 2 : 0), acOf(h));
-  else if (s.roll === 'save') p = clamp((saveDc(me.classId, me.level) - 1 - heroSaveMod(h, s.save ?? 'dex')) / 20, 0, 1);
+  else if (s.roll === 'save') p = clamp((heroDc(me) - 1 - heroSaveMod(h, s.save ?? 'dex')) / 20, 0, 1);
   let cost = 0;
   if (s.dmg) {
     const k = Math.max(0, factorOf(h, s.element)) * scale;
@@ -1736,6 +1737,21 @@ const leanIn = (p: PlayerEntity, id: SkillId) => {
 };
 const ownedOfKind = (p: PlayerEntity, kind: SkillKind) => p.skills.filter((s) => SKILLS[s.id].kind === kind && !isSignature(p, s.id)); // the signature can't be forgotten
 
+/**
+ * Which stat an auto hero raises: its casting stat (spells, DCs, heals), then its weapon's stat, then CON (HP), then DEX
+ * in light armor (AC), then WIS (saves), and anything else last.
+ */
+function statWant(p: PlayerEntity, stat: Stat): number {
+  if (statRoom(p, stat) <= 0) return -Infinity;
+  const c = CLASSES[p.classId];
+  const weapon = p.skills.map((o) => SKILLS[o.id]).find((d) => d.kind === 'basic')?.base.stat;
+  if (stat === c.stat) return 9;
+  if (stat === weapon) return 8;
+  if (stat === 'con') return 7;
+  if (stat === 'dex' && c.armor === 'light') return 6;
+  return stat === 'wis' ? 4 : 2;
+}
+
 /** How much an auto hero wants a level-up card. */
 function cardValue(p: PlayerEntity, c: OfferCard): number {
   switch (c.kind) {
@@ -1755,6 +1771,8 @@ function cardValue(p: PlayerEntity, c: OfferCard): number {
       return 3;
     case 'subclass':
       return 10; // the only cards in that offer: either, at random (so bot runs play both)
+    case 'stat':
+      return statWant(p, c.stat);
     case 'gear':
     case 'item': {
       // Elite and victory spoils: gear when it beats what's worn (or there's room to carry it for a friend), a

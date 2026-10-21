@@ -1,7 +1,7 @@
 // Game rules: dice, classes, abilities and monsters. A simplified take on D&D 5e.
 // Tweak numbers here to rebalance the game; both server and client read from this file.
 
-import { gearBonus } from './items.ts';
+import { gearBonus, gearStat } from './items.ts';
 import type { Element, SkillId, StatusApply } from './skills.ts';
 import type { CloudId, GroundId } from './surfaces.ts';
 import type { BoonId, ClassId, NodeType } from './types.ts';
@@ -56,7 +56,22 @@ export function diceText(d: Dice): string {
 
 // ---------------------------------------------------------------- classes
 
-export type Stat = 'str' | 'dex' | 'int' | 'wis';
+export type Stat = 'str' | 'dex' | 'con' | 'int' | 'wis' | 'cha';
+export const STATS: Stat[] = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+/**
+ * The six D&D stats, as modifiers (-1 to +5). Playtest 1 (2026-10-21): heroes see them on their sheet and raise them, a
+ * point every other level (any stat they like), with boons and gear. CON, DEX and INT pay out from the points added
+ * above the class's start (statGain), so every class starts as before.
+ */
+export const STAT_INFO: Record<Stat, { name: string; icon: string; does: string }> = {
+  str: { name: 'Strength', icon: '💪', does: 'Melee weapons: to hit and damage. Shoves, STR saves and checks.' },
+  dex: { name: 'Dexterity', icon: '🏹', does: 'Bows, daggers and finesse weapons: to hit and damage. Initiative, sneaking, AC in light armor, DEX saves and checks.' },
+  con: { name: 'Constitution', icon: '❤️', does: 'Max HP: every point you add is +1 HP per level. CON saves (poison) and checks.' },
+  int: { name: 'Intelligence', icon: '📘', does: 'Wizard spells: to hit and save DC. Every 2 points you add: +1 max slot (any class). INT saves and checks.' },
+  wis: { name: 'Wisdom', icon: '🙏', does: 'Cleric and Ranger spells and heals: to hit, save DC and healing. WIS saves (fear, hexes) and checks.' },
+  cha: { name: 'Charisma', icon: '🎭', does: 'Bard and Paladin spells and heals: to hit, save DC and healing. Talking your way through events (CHA checks).' },
+};
+export const STAT_CAP = 5; // levels and boons raise a stat to +5 at most (gear can add past it)
 
 /** What a class brings to a party. Bots fill the missing ones first (server/game.ts addBot). */
 export type PartyRole = 'front' | 'healer' | 'ranged';
@@ -68,8 +83,9 @@ export interface ClassDef {
   hpPerLevel: number;
   ac: number;
   speed: number;
-  mods: Record<Stat, number>; // attacks, saves, initiative (dex), event checks
+  mods: Record<Stat, number>; // where the class starts its stats: attacks, saves, initiative (dex), event checks
   stat: Stat; // casting/technique stat: cantrip and spell attacks, save DCs, heals
+  armor: 'light' | 'heavy'; // light armor adds the DEX you raise to AC; heavy armor doesn't
   slots: number; // slots at level 1 (every class has some, under its own name)
   start: SkillId[]; // starting skills, in hotbar order
   names: { cantrip: string; spell: string; slots: string }; // class flavor for the shared mechanics
@@ -79,28 +95,28 @@ export interface ClassDef {
 
 export const CLASSES: Record<ClassId, ClassDef> = {
   fighter: {
-    name: 'Fighter', glyph: '🛡️', hp: 12, hpPerLevel: 8, ac: 16, speed: 6, mods: { str: 3, dex: 1, int: 0, wis: 1 }, stat: 'str', slots: 1,
+    name: 'Fighter', glyph: '🛡️', hp: 12, hpPerLevel: 8, ac: 16, speed: 6, mods: { str: 3, dex: 1, con: 2, int: 0, wis: 1, cha: 0 }, stat: 'str', armor: 'heavy', slots: 1,
     start: ['longsword', 'shield_bash', 'second_wind'],
     names: { cantrip: 'Techniques', spell: 'Maneuvers', slots: 'Grit' },
     blurb: 'Tough front-liner in heavy armor. Bashes, taunts and shrugs off hits.',
     roles: ['front'],
   },
   rogue: {
-    name: 'Rogue', glyph: '🗡️', hp: 9, hpPerLevel: 6, ac: 14, speed: 6, mods: { str: 0, dex: 3, int: 1, wis: 1 }, stat: 'dex', slots: 1,
+    name: 'Rogue', glyph: '🗡️', hp: 9, hpPerLevel: 6, ac: 14, speed: 6, mods: { str: 0, dex: 3, con: 1, int: 1, wis: 1, cha: 1 }, stat: 'dex', armor: 'light', slots: 1,
     start: ['rapier', 'shortbow', 'cunning_dash', 'shadow_step'],
     names: { cantrip: 'Tricks', spell: 'Exploits', slots: 'Cunning' },
     blurb: 'Sneak Attack when a friend is next to the target (or with advantage). Fast, slippery, steals kills.',
     roles: ['ranged'],
   },
   wizard: {
-    name: 'Wizard', glyph: '🧙', hp: 7, hpPerLevel: 5, ac: 12, speed: 6, mods: { str: -1, dex: 2, int: 3, wis: 1 }, stat: 'int', slots: 2,
+    name: 'Wizard', glyph: '🧙', hp: 7, hpPerLevel: 5, ac: 12, speed: 6, mods: { str: -1, dex: 2, con: 1, int: 3, wis: 1, cha: 0 }, stat: 'int', armor: 'light', slots: 2,
     start: ['dagger', 'fire_bolt', 'magic_missile'],
     names: { cantrip: 'Cantrips', spell: 'Spells', slots: 'Spell slots' },
     blurb: 'Fragile, but deadly from range. Fire, frost and lightning, plus Magic Missile that never misses.',
     roles: ['ranged'],
   },
   cleric: {
-    name: 'Cleric', glyph: '✨', hp: 10, hpPerLevel: 7, ac: 16, speed: 6, mods: { str: 2, dex: 0, int: 0, wis: 3 }, stat: 'wis', slots: 2,
+    name: 'Cleric', glyph: '✨', hp: 10, hpPerLevel: 7, ac: 16, speed: 6, mods: { str: 2, dex: 0, con: 1, int: 0, wis: 3, cha: 1 }, stat: 'wis', armor: 'heavy', slots: 2,
     start: ['mace', 'sacred_flame', 'healing_word'],
     names: { cantrip: 'Cantrips', spell: 'Prayers', slots: 'Spell slots' },
     blurb: 'The healer. Healing Word gets downed friends back up from range; Bless makes everyone hit harder.',
@@ -108,28 +124,28 @@ export const CLASSES: Record<ClassId, ClassDef> = {
   },
   // Phase 12
   barbarian: {
-    name: 'Barbarian', glyph: '🪓', hp: 14, hpPerLevel: 9, ac: 14, speed: 7, mods: { str: 3, dex: 2, int: -1, wis: 0 }, stat: 'str', slots: 1,
+    name: 'Barbarian', glyph: '🪓', hp: 14, hpPerLevel: 9, ac: 14, speed: 7, mods: { str: 3, dex: 2, con: 3, int: -1, wis: 0, cha: 0 }, stat: 'str', armor: 'light', slots: 1,
     start: ['greataxe', 'rage', 'brutal_strike'],
     names: { cantrip: 'Instincts', spell: 'Furies', slots: 'Fury' },
     blurb: 'Huge HP and a temper. Rage halves the damage you take and adds to every swing; Reckless Attack trades your guard for advantage.',
     roles: ['front'],
   },
   ranger: {
-    name: 'Ranger', glyph: '🏹', hp: 10, hpPerLevel: 7, ac: 14, speed: 6, mods: { str: 1, dex: 3, int: 0, wis: 2 }, stat: 'dex', slots: 2,
+    name: 'Ranger', glyph: '🏹', hp: 10, hpPerLevel: 7, ac: 14, speed: 6, mods: { str: 1, dex: 3, con: 1, int: 0, wis: 2, cha: 0 }, stat: 'wis', armor: 'light', slots: 2,
     start: ['longbow', 'shortsword', 'hunters_mark', 'lightning_arrow'],
     names: { cantrip: 'Field Craft', spell: 'Hunter Spells', slots: 'Focus' },
     blurb: "A hunter with a long reach. Marks prey for the whole party, nets runners in place, and patches friends up with herbs.",
     roles: ['ranged'],
   },
   paladin: {
-    name: 'Paladin', glyph: '⚜️', hp: 12, hpPerLevel: 8, ac: 17, speed: 5, mods: { str: 3, dex: -1, int: 0, wis: 2 }, stat: 'wis', slots: 2,
+    name: 'Paladin', glyph: '⚜️', hp: 12, hpPerLevel: 8, ac: 17, speed: 5, mods: { str: 3, dex: -1, con: 2, int: 0, wis: 1, cha: 2 }, stat: 'cha', armor: 'heavy', slots: 2,
     start: ['warhammer', 'lay_on_hands', 'divine_smite'],
     names: { cantrip: 'Oaths', spell: 'Miracles', slots: 'Devotion' },
     blurb: 'Heavy armor and holy fire. Divine Smite hits hard, Lay on Hands heals with a touch, and Compelled Duel drags monsters off your friends.',
     roles: ['front', 'healer'],
   },
   bard: {
-    name: 'Bard', glyph: '🎻', hp: 8, hpPerLevel: 6, ac: 13, speed: 6, mods: { str: 0, dex: 2, int: 3, wis: 1 }, stat: 'int', slots: 2,
+    name: 'Bard', glyph: '🎻', hp: 8, hpPerLevel: 6, ac: 13, speed: 6, mods: { str: 0, dex: 2, con: 1, int: 1, wis: 1, cha: 3 }, stat: 'cha', armor: 'light', slots: 2,
     start: ['hand_crossbow', 'vicious_mockery', 'inspiration', 'healing_ballad'],
     names: { cantrip: 'Tunes', spell: 'Ballads', slots: 'Verses' },
     blurb: "The party's voice. Insults that sting, songs that inspire, a ballad that heals everyone. Fragile: stay behind the front line.",
@@ -166,13 +182,23 @@ export const AP_MAX = 5; // AP left over carries into the next turn, but a turn 
 export const ATTACK_AP = 2; // what a basic attack (and most spells) costs
 
 export const profBonus = (level: number) => 2 + Math.floor((level - 1) / 4);
-export const maxHpFor = (c: ClassId, level: number) => CLASSES[c].hp + (level - 1) * CLASSES[c].hpPerLevel;
-/** Slots before boons: the class base, +1 every other level. */
-export const maxSlotsFor = (c: ClassId, level: number) => CLASSES[c].slots + Math.floor((level - 1) / 2);
+/** Max HP before boons and gear: the class's, plus every point of CON added (`conGain`) is +1 HP per level. */
+export const maxHpFor = (c: ClassId, level: number, conGain = 0) => CLASSES[c].hp + (level - 1) * CLASSES[c].hpPerLevel + conGain * level;
+/** Slots before boons: the class base, +1 every other level, +1 for every 2 points of INT added. */
+export const maxSlotsFor = (c: ClassId, level: number, intGain = 0) => CLASSES[c].slots + Math.floor((level - 1) / 2) + Math.floor(Math.max(0, intGain) / 2);
+/** AC before boons and gear: light armor adds the DEX raised (`dexGain`), heavy armor doesn't. */
+export const armorFor = (c: ClassId, dexGain = 0) => CLASSES[c].ac + (CLASSES[c].armor === 'light' ? dexGain : 0);
 export const sneakDice = (level: number) => Math.ceil(level / 2);
-export const statMod = (c: ClassId, stat: Stat) => CLASSES[c].mods[stat];
+/** Anything with stats: a hero (the class's start, the points raised, gear) or just a class. */
+export type StatHolder = { classId: ClassId; statUps?: Partial<Record<Stat, number>> } & Parameters<typeof gearBonus>[0];
+/** A hero's stat modifier: where the class starts it, plus the points raised (levels, boons), plus gear. */
+export const statMod = (p: StatHolder, stat: Stat) => CLASSES[p.classId].mods[stat] + (p.statUps?.[stat] ?? 0) + gearStat(p, stat);
+/** How far a stat is above where the class starts it: CON, DEX and INT pay out from these points. */
+export const statGain = (p: StatHolder, stat: Stat) => statMod(p, stat) - CLASSES[p.classId].mods[stat];
+/** How far levels and boons can still raise a stat (gear doesn't count against the cap). */
+export const statRoom = (p: StatHolder, stat: Stat) => STAT_CAP - (CLASSES[p.classId].mods[stat] + (p.statUps?.[stat] ?? 0));
 /** Save DC for a hero's cantrips and spells (8 + proficiency + casting stat, like 5e). */
-export const saveDc = (c: ClassId, level: number) => 8 + profBonus(level) + CLASSES[c].mods[CLASSES[c].stat];
+export const saveDc = (c: ClassId, level: number, castMod = CLASSES[c].mods[CLASSES[c].stat]) => 8 + profBonus(level) + castMod;
 export const BREATH_DC = 13;
 
 // ---------------------------------------------------------------- sneaking & surprise
@@ -180,8 +206,8 @@ export const BREATH_DC = 13;
 export const STEALTH_DC_BASE = 12; // + the sharpest monster's WIS
 export const AMBUSH_CHANCE = 0.1; // a regular fight (past the first rows) turns out to be an ambush
 /** A hero's Stealth: DEX, Rogues add their proficiency, plus equipment (Elven Cloak) and relics (Owl Totem). */
-export const stealthBonus = (p: { classId: ClassId; level: number } & Parameters<typeof gearBonus>[0]) =>
-  CLASSES[p.classId].mods.dex + (p.classId === 'rogue' ? profBonus(p.level) : 0) + gearBonus(p, 'stealth');
+export const stealthBonus = (p: StatHolder & { level: number }) =>
+  statMod(p, 'dex') + (p.classId === 'rogue' ? profBonus(p.level) : 0) + gearBonus(p, 'stealth');
 /** Group Stealth DC to sneak up on these monsters (by MONSTERS key). */
 export const stealthDc = (types: string[]) => STEALTH_DC_BASE + Math.max(0, ...types.map((t) => MONSTERS[t]?.wis ?? 0));
 
@@ -213,6 +239,13 @@ export const BOONS: Record<BoonId, { name: string; icon: string; desc: string }>
   ac: { name: 'Better Armor', icon: '🛡️', desc: '+1 AC (twice at most).' },
   potions: { name: 'Potion Belt', icon: '🧪', desc: '+2 healing potions.' },
   slot: { name: 'Deep Reserves', icon: '🔮', desc: '+1 max slot (Spell slots, Grit or Cunning).' },
+  // A stat point, like the one every other level (up to +5).
+  str: { name: "Bull's Strength", icon: '💪', desc: '+1 STR (up to +5).' },
+  dex: { name: "Cat's Grace", icon: '🐈', desc: '+1 DEX (up to +5).' },
+  con: { name: "Bear's Endurance", icon: '🐻', desc: '+1 CON (up to +5): +1 max HP per level.' },
+  int: { name: "Fox's Cunning", icon: '🦊', desc: '+1 INT (up to +5).' },
+  wis: { name: "Owl's Wisdom", icon: '🦉', desc: '+1 WIS (up to +5).' },
+  cha: { name: "Eagle's Splendor", icon: '🦅', desc: '+1 CHA (up to +5).' },
 };
 export const BOON_HP = 5;
 export const MAX_BONUS_AC = 2;
@@ -283,7 +316,7 @@ export interface MonsterTrick {
   icon: string;
   verb: string; // "throws a net at"
   range: number;
-  save?: 'dex' | 'str' | 'wis';
+  save?: Stat; // the hero's save (a monster ally uses monsterSave)
   dc?: number;
   status: StatusApply[];
   cooldown: number; // 99: once a fight
@@ -292,7 +325,7 @@ export interface MonsterTrick {
 /** What a monster's attacks do on a hit: the target saves against `dc` or gets the status (without a save, always). */
 export interface MonsterRider {
   status: StatusApply;
-  save?: 'dex' | 'str' | 'wis';
+  save?: Stat;
   dc?: number;
   text: string; // "knocks {target} down"
 }
@@ -329,7 +362,8 @@ const m = (
   name, glyph, hp, ac, atk, dmg, threat, speed: 6, range: 1, attacks: 1, dex: 1, str: 1, wis: 0, verb: 'hits', xp: threat * 10, ...extra,
 });
 
-export const monsterSave = (def: MonsterDef, save: 'dex' | 'str' | 'wis') => def[save];
+/** A monster's save. Monsters only have STR, DEX and WIS: CON goes on STR, INT and CHA on WIS. */
+export const monsterSave = (def: MonsterDef, save: Stat) => def[save === 'con' ? 'str' : save === 'int' || save === 'cha' ? 'wis' : save];
 
 export const MONSTERS: Record<string, MonsterDef> = {
   // Act 1: Goblin Warrens
@@ -440,8 +474,8 @@ export const HARD_MOVES: Record<string, { move: string; add: Partial<MonsterDef>
   },
   zombie: { move: '✊ Grab: its hits hold a hero in place (STR save)', add: { rider: { status: { id: 'netted', turns: 1 }, save: 'str', dc: 12, text: 'grabs hold of {target}' } } },
   bloated: {
-    move: '🤮 Vomit: Poisons a hero up to 3 tiles away (DEX save)',
-    add: { trick: { name: 'Vomit', icon: '🤮', verb: 'vomits on', range: 3, save: 'dex', dc: 12, status: [{ id: 'poisoned', turns: 2, power: 1 }], cooldown: 3 } },
+    move: '🤮 Vomit: Poisons a hero up to 3 tiles away (CON save)',
+    add: { trick: { name: 'Vomit', icon: '🤮', verb: 'vomits on', range: 3, save: 'con', dc: 12, status: [{ id: 'poisoned', turns: 2, power: 1 }], cooldown: 3 } },
   },
   wolf: { move: '🐺 Howls orders to the pack', add: { leader: true } },
   spider: { move: '🕷️ Venom: its bites Poison', add: { rider: { status: { id: 'poisoned', turns: 2, power: 1 }, text: 'poisons {target}' } } },

@@ -3,7 +3,7 @@
 // Like skills, content is data. Equipment stats are summed by `gearBonus` (the server's recalcHero and a few hooks
 // read them); consumables are 'item' skills in shared/skills.ts, used like the potion; relics are hooks keyed by id.
 
-import type { Dice, Resist } from './rules.ts';
+import type { Dice, Resist, Stat } from './rules.ts';
 import { SKILLS, statsOf, type Element, type StatusApply } from './skills.ts';
 import type { PlayerEntity } from './types.ts';
 
@@ -44,6 +44,7 @@ export interface GearStats {
   charges?: number; // Arcane Charges you start every fight with
   verses?: number; // Verses you start every fight with
   radiance?: number; // your radiant hits add this much Radiance
+  stats?: Partial<Record<Stat, number>>; // +STR, +CON... on top of the hero's own
 }
 
 export interface GearDef {
@@ -105,6 +106,15 @@ const ITEM_DEFS = {
   charged_orb: gear('weapon', 'Charged Orb', '🔮', 'epic', { power: 1, charges: 2 }, 'For spellcasters: it hums with stored power.'),
   lute_of_echoes: gear('trinket', 'Lute of Echoes', '🪕', 'rare', { verses: 2 }),
   sunstone: gear('trinket', 'Sunstone', '🌞', 'uncommon', { radiance: 1 }),
+  // A stat each (playtest 1, 2026-10-21): gear can lift a stat past the +5 that levels and boons stop at.
+  giant_belt: gear('trinket', 'Belt of Giant Strength', '🥋', 'uncommon', { stats: { str: 1 } }),
+  thief_gloves: gear('trinket', 'Gloves of Thievery', '🧤', 'uncommon', { stats: { dex: 1 }, stealth: 1 }),
+  fortitude_stone: gear('trinket', 'Ioun Stone of Fortitude', '💎', 'uncommon', { stats: { con: 1 } }),
+  intellect_headband: gear('trinket', 'Headband of Intellect', '🎓', 'uncommon', { stats: { int: 1 } }),
+  wisdom_periapt: gear('trinket', 'Periapt of Wisdom', '📿', 'uncommon', { stats: { wis: 1 } }),
+  splendor_circlet: gear('trinket', 'Circlet of Splendor', '👑', 'uncommon', { stats: { cha: 1 } }),
+  champion_torc: gear('trinket', "Champion's Torc", '🏅', 'rare', { stats: { str: 1, con: 1 } }),
+  sage_ring: gear('trinket', "Sage's Ring", '🔷', 'rare', { stats: { int: 1, wis: 1 } }),
   vorpal_blade: gear('weapon', 'Vorpal Blade', '⚔️', 'legendary', { crit: 2, dmg: 2 }, 'So sharp it finds the gaps in anything.'),
   ancient_aegis: gear('armor', 'Aegis of the Ancients', '🛡️', 'legendary', { ac: 2, block: 4 }),
   // ---------------------------------------------- consumables (their skills are in shared/skills.ts)
@@ -319,6 +329,9 @@ type NumKey =
   | 'ac' | 'hp' | 'speed' | 'init' | 'saves' | 'slots' | 'stealth' | 'hit' | 'dmg' | 'power' | 'heal' | 'shove' | 'lucky' | 'block'
   | 'crit' | 'thorns' | 'lifesteal' | 'poison' | 'charges' | 'verses' | 'radiance';
 
+/** What a hero's equipment adds to one of their stats. */
+export const gearStat = (p: Geared, stat: Stat): number => statBlocks(p).reduce((s, st) => s + (st.stats?.[stat] ?? 0), 0);
+
 /** The sum of one number over a hero's equipment and the party's relics and blessings. */
 export const gearBonus = (p: Geared, key: NumKey): number => statBlocks(p).reduce((s, st) => s + (st[key] ?? 0), 0);
 
@@ -354,6 +367,7 @@ const fmt = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
 /** Rules text for equipment, generated from its stats. */
 export function describeStats(st: GearStats): string {
   const parts: string[] = [];
+  for (const [stat, n] of Object.entries(st.stats ?? {})) if (n) parts.push(`${fmt(n)} ${stat.toUpperCase()}`);
   if (st.ac) parts.push(`${fmt(st.ac)} AC`);
   if (st.hp) parts.push(`${fmt(st.hp)} max HP`);
   if (st.speed) parts.push(`${fmt(st.speed)} movement`);

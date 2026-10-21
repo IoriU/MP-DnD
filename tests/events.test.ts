@@ -10,7 +10,7 @@ import { MONSTERS } from '../shared/rules.ts';
 const SEEDS = 40;
 const ACT_NUMS = [1, 2, 3];
 const PARTY_SIZES = [1, 2, 4, 6];
-const STATS: EventStat[] = ['str', 'dex', 'int', 'wis'];
+const STATS: EventStat[] = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
 interface Check extends CheckResult {
   stat: EventStat;

@@ -2,7 +2,7 @@
 
 import { CARD_RARITIES } from '../../../shared/engines.ts';
 import { RARITY_COLOR } from '../../../shared/items.ts';
-import { CLASSES, CLASS_IDS, MAX_CANTRIPS, MAX_SPELLS, maxHpFor, maxSlotsFor, passiveSlots, saveDc, type Stat } from '../../../shared/rules.ts';
+import { CLASSES, CLASS_IDS, MAX_CANTRIPS, MAX_SPELLS, STATS, maxHpFor, maxSlotsFor, passiveSlots, saveDc } from '../../../shared/rules.ts';
 import { SKILLS, type SkillId } from '../../../shared/skills.ts';
 import { CLASS_SPRITES } from '../../sprites.ts';
 import { enginesIn, looseCards, poolCounts } from '../checks.ts';
@@ -10,7 +10,6 @@ import { DATA } from '../model.ts';
 import { srcTag } from '../sources.ts';
 import { chip, esc, icon, link, q, type TabDef } from '../ui.ts';
 
-const STATS: Stat[] = ['str', 'dex', 'int', 'wis'];
 const sign = (n: number) => (n >= 0 ? `+${n}` : String(n));
 const LEVELS = [1, 4, 8, 12];
 
@@ -56,7 +55,7 @@ function card(id: (typeof CLASS_IDS)[number]): string {
     <p class="blurb">${esc(c.blurb)}</p>
     <div class="statline"><span><small>HP</small><b>${c.hp}</b><i>+${c.hpPerLevel}/level</i></span><span><small>AC</small><b>${c.ac}</b></span><span><small>Speed</small><b>${c.speed}</b></span><span><small>${esc(c.names.slots)}</small><b>${c.slots}</b><i>+1 every 2 levels</i></span></div>
     <div class="mods">${mods}</div>
-    <p class="muted note">Casting stat: <b>${c.stat.toUpperCase()}</b> (cantrip and spell attacks, save DCs, heals). Mods also set attacks, saves, initiative (DEX) and event checks.</p>
+    <p class="muted note">Casting stat: <b>${c.stat.toUpperCase()}</b> (cantrip and spell attacks, save DCs, heals). ${c.armor === 'light' ? 'Light' : 'Heavy'} armor${c.armor === 'light' ? ': DEX raised adds to AC' : ': no AC from DEX'}. Stats also set attacks, saves, initiative (DEX), max HP (CON), slots (INT) and event checks; a point every other level raises any of them.</p>
     <h3>Flavor names</h3>
     <p>Cantrips are <b>${esc(c.names.cantrip)}</b>, spells are <b>${esc(c.names.spell)}</b>, slots are <b>${esc(c.names.slots)}</b>.</p>
     <h3>Starting skills</h3>

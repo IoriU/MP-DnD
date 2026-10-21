@@ -1,6 +1,6 @@
 // Monsters: a sortable table of every stat block, with where each one appears (acts, encounters, elites, bosses, allies, events).
 
-import { ACTS, BOSS_SIGNATURES, BREATH_DC, HARD_MOVES, HELP, MONSTERS, RESIST_WORD, ROLES, canHelp, diceText, roleOf, type MonsterDef } from '../../../shared/rules.ts';
+import { ACTS, BOSS_SIGNATURES, BREATH_DC, HARD_MOVES, HELP, MONSTERS, RESIST_WORD, ROLES, canHelp, diceText, roleOf, type MonsterDef, type Stat } from '../../../shared/rules.ts';
 import { STATUSES } from '../../../shared/skills.ts';
 import { MONSTER_SPRITES } from '../../sprites.ts';
 import { usageActs, type Usage } from '../data.ts';
@@ -30,7 +30,7 @@ function specials(id: string, m: MonsterDef): string[] {
   return out;
 }
 
-const SAVE = { dex: 'DEX', str: 'STR', wis: 'WIS' };
+const SAVE: Record<Stat, string> = { str: 'STR', dex: 'DEX', con: 'CON', int: 'INT', wis: 'WIS', cha: 'CHA' };
 
 /** Phase 12 abilities: its trick, what its hits do (rider), leader orders, and the help action every melee monster has. */
 function tricks(m: MonsterDef): string[] {

@@ -8,7 +8,7 @@
 import './levelup.css';
 import { ENGINES, type CardRarity } from '../shared/engines.ts';
 import { RARITY_COLOR, SLOT_NAME, bagRoom, describeStats, gearDef, isItemId } from '../shared/items.ts';
-import { BOONS, CLASSES, PICK_WAIT_MS } from '../shared/rules.ts';
+import { BOONS, CLASSES, PICK_WAIT_MS, STAT_INFO, fmtMod, statGain, statMod, type Stat } from '../shared/rules.ts';
 import {
   SKILLS, TIER_LABEL, cardRarity, countKind, describeSkill, engineCount, engineOf, isSignature, itemInfo, limitFor, ownedSkill, skillTitle, skillsOfKind, statsAt,
   type SkillId, type SkillKind,
@@ -75,7 +75,25 @@ function metaHtml(m: PlayerEntity, id: SkillId): string {
   }</div>`;
 }
 
+/** A stat point: the stat now and after, what this point changes right away, and what the stat does. */
+function statCard(m: PlayerEntity, stat: Stat): CardView {
+  const info = STAT_INFO[stat];
+  const c = CLASSES[m.classId];
+  const now = statMod(m, stat);
+  const after = statGain(m, stat) + 1; // points above the class's start, with this one
+  const gets: string[] = [];
+  if (stat === c.stat) gets.push(`⭐ Your casting stat: ${c.names.cantrip} and ${c.names.spell} hit more often, are harder to resist and heal more`);
+  if (stat === 'con') gets.push(`❤️ +${m.level} max HP now, and +1 more every level`);
+  if (stat === 'dex') gets.push(c.armor === 'light' ? '🛡️ +1 AC (light armor), +1 initiative' : '+1 initiative (heavy armor: no AC from DEX)');
+  if (stat === 'int') gets.push(after % 2 === 0 ? `🔮 +1 max ${c.names.slots}` : `🔮 One more INT point after this one: +1 max ${c.names.slots}`);
+  return {
+    icon: info.icon, title: `${info.name} ${fmtMod(now)} → ${fmtMod(now + 1)}`, badge: 'Stat point', kind: 'stat',
+    body: `${gets.map((g) => `<div class="lu-gets">${esc(g)}</div>`).join('')}${desc(info.does)}`,
+  };
+}
+
 function cardView(m: PlayerEntity, c: OfferCard): CardView {
+  if (c.kind === 'stat') return statCard(m, c.stat);
   if (c.kind === 'boon') {
     const b = BOONS[c.boon];
     return { icon: b.icon, title: b.name, badge: 'Boon', kind: 'boon', body: desc(b.desc) };
@@ -186,7 +204,7 @@ function panelHtml(m: PlayerEntity, isOpen: boolean): string {
     forgetCard !== null ? forgetHtml(m, forgetCard) : offer.map((c, i) => cardHtml(m, c, i)).join('');
   return `<div class="lu-panel${elite ? ' elite' : ''}" role="dialog" aria-label="${elite ? 'Elite spoils' : reward ? 'Victory spoils' : 'Level up'}">
     <div class="lu-top">
-      <b>${elite ? '💀 Elite spoils' : reward ? '🏆 Victory spoils: pick one' : path ? '⬆️ Choose your path' : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : reward ? '' : 'pick 1 of ' + offer.length}</span></b>
+      <b>${elite ? '💀 Elite spoils' : reward ? '🏆 Victory spoils: pick one' : path ? '⬆️ Choose your path' : offer.some((c) => c.kind === 'stat') ? '⬆️ Level up: raise a stat' : '⬆️ Level up!'} <span class="muted">${n > 1 ? `${n} picks waiting` : reward ? '' : 'pick 1 of ' + offer.length}</span></b>
       <button type="button" class="lu-min" data-lu="toggle" title="Collapse (L)" aria-label="Collapse">–</button>
     </div>
     ${auto ? '<div class="lu-auto" title="Auto-play is on: it fights for you, but your picks wait for you. Press P to turn it off.">🤖 Auto-play picks for you in <b data-autopick></b> unless you pick first.</div>' : ''}
@@ -236,7 +254,7 @@ export function renderLevelUp(s: GameState) {
   if (m && manual(s)) {
     const auto = s.players.find((p) => p.id === store.playerId)?.auto ? ` Auto-play picks for you in ${PICK_WAIT_MS / 1000}s otherwise.` : '';
     if (lastElite >= 0 && m.elitePicks > lastElite) toast(`💀 Elite spoils! Pick a reward in the corner (L).${auto}`);
-    else if (lastUps >= 0 && m.levelUps > lastUps) toast(`⬆️ Level up! Pick a card in the corner (L).${auto}`);
+    else if (lastUps >= 0 && m.levelUps > lastUps) toast(`⬆️ Level up! Raise a stat in the corner (L).${auto}`);
     else if (lastReward >= 0 && (m.rewardPicks ?? 0) > lastReward) toast(`🏆 Victory! Pick your spoils in the corner (L).${auto}`);
   }
   lastUps = m ? m.levelUps : -1;

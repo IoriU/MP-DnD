@@ -222,10 +222,10 @@ test('an event check says who would roll it and the chance, before the party vot
   p.event = getEvent('toll_bridge', 1);
   p.phase = 'event';
   const hint = p.snapshot().event.choices.find((c: { id: string }) => c.id === 'bluff').hint as string;
-  const best = Math.max(CLASSES.fighter.mods.wis, CLASSES.wizard.mods.wis);
-  const who = CLASSES.fighter.mods.wis >= CLASSES.wizard.mods.wis ? 'Ann' : 'Bob'; // a tie goes to the first in the party
+  const best = Math.max(CLASSES.fighter.mods.cha, CLASSES.wizard.mods.cha);
+  const who = CLASSES.fighter.mods.cha >= CLASSES.wizard.mods.cha ? 'Ann' : 'Bob'; // a tie goes to the first in the party
   const chance = Math.max(0, Math.min(20, 21 - 13 + best)) * 5;
-  assert.equal(hint, `WIS check, DC 13: ${who} rolls (${best >= 0 ? '+' : ''}${best}), ${chance}%`);
+  assert.equal(hint, `CHA check, DC 13: ${who} rolls (${best >= 0 ? '+' : ''}${best}), ${chance}%`);
   assert.equal(p.snapshot().event.choices.find((c: { id: string }) => c.id === 'pay').hint, 'Costs 20 gold. A blessing until the end of the act', 'other hints are left alone');
 });
 

@@ -113,6 +113,7 @@ button.lu-card:focus-visible,
 .lu-card.k-spell { --k: #b58cff; }
 .lu-card.k-passive { --k: #7ddc6f; }
 .lu-card.k-boon { --k: var(--accent); }
+.lu-card.k-stat { --k: #f0883e; }
 .lu-card.k-subclass { --k: #ff9a5a; }
 .lu-card.k-gear { --k: #58a6ff; } /* the card itself sets --k to its rarity color */
 .lu-card.forget { --k: var(--bad); }
@@ -182,3 +183,6 @@ button.lu-card.r-epic:hover { background: linear-gradient(135deg, #38205a, #2a20
 @media (prefers-reduced-motion: reduce) {
   .lu-tab { animation: none; }
 }
+
+/* A stat card's "what this point does right now" lines. */
+.lu-gets { font-size: 12px; font-weight: 600; color: var(--good); margin: 2px 0; }

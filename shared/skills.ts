@@ -1762,18 +1762,18 @@ export const atEdge = (s: SkillStats, center: Pos, e: Pos) => !!s.falloff && s.t
 // ---------------------------------------------------------------- numbers for a hero
 
 export const statFor = (p: Pick<PlayerEntity, 'classId'>, s: SkillStats): Stat => s.stat ?? CLASSES[p.classId].stat;
-type Hero = Pick<PlayerEntity, 'classId' | 'level'> & Partial<Pick<PlayerEntity, 'gear' | 'relics' | 'maxHp'>>;
+type Hero = Pick<PlayerEntity, 'classId' | 'level'> & Partial<Pick<PlayerEntity, 'gear' | 'relics' | 'maxHp' | 'statUps'>>;
 
 /** Attack bonus with a skill: proficiency + its stat, plus equipment (an Arcane Focus helps skills on your casting stat). */
 export const attackBonus = (p: Hero, s: SkillStats) =>
-  profBonus(p.level) + statMod(p.classId, statFor(p, s)) + gearBonus(p, 'hit') + (s.stat ? 0 : gearBonus(p, 'power'));
+  profBonus(p.level) + statMod(p, statFor(p, s)) + gearBonus(p, 'hit') + (s.stat ? 0 : gearBonus(p, 'power'));
 /** Save DC of a hero's cantrips, spells and bombs: 8 + proficiency + casting stat, plus equipment. */
-export const heroDc = (p: Hero) => saveDc(p.classId, p.level) + gearBonus(p, 'power');
+export const heroDc = (p: Hero) => saveDc(p.classId, p.level, statMod(p, CLASSES[p.classId].stat)) + gearBonus(p, 'power');
 /** Flat damage bonus with a skill (its stat modifier, if `mod`). */
-export const damageMod = (p: Pick<PlayerEntity, 'classId'>, s: SkillStats) => (s.mod ? statMod(p.classId, statFor(p, s)) : 0);
+export const damageMod = (p: Pick<PlayerEntity, 'classId'>, s: SkillStats) => (s.mod ? statMod(p, statFor(p, s)) : 0);
 /** Flat bonus on a heal. */
 export const healBonus = (p: Hero, s: SkillStats) =>
-  (s.heal?.bonus ?? 0) + (s.healMod ? statMod(p.classId, CLASSES[p.classId].stat) : 0) + (s.healLevel ? p.level : 0) + gearBonus(p, 'heal');
+  (s.heal?.bonus ?? 0) + (s.healMod ? statMod(p, CLASSES[p.classId].stat) : 0) + (s.healLevel ? p.level : 0) + gearBonus(p, 'heal');
 /** Attacks (or darts) per target. */
 export const hitsOf = (p: Pick<PlayerEntity, 'level'>, s: SkillStats) => (s.hits ?? 1) + (s.extraAttack && p.level >= 5 ? 1 : 0);
 
@@ -1785,7 +1785,7 @@ export { avgDice };
 const ELEMENT_WORD: Record<Element, string> = {
   physical: '', fire: ' fire', cold: ' cold', lightning: ' lightning', poison: ' poison', radiant: ' radiant', force: ' force',
 };
-const STAT_WORD: Record<Stat, string> = { str: 'STR', dex: 'DEX', int: 'INT', wis: 'WIS' };
+const STAT_WORD: Record<Stat, string> = { str: 'STR', dex: 'DEX', con: 'CON', int: 'INT', wis: 'WIS', cha: 'CHA' };
 
 const fmtBonus = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
 

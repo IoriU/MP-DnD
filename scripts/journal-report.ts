@@ -42,6 +42,8 @@ function cardLabel(c: OfferCard): string {
     }
     case 'boon':
       return `boon: ${BOONS[c.boon]?.name ?? c.boon}`;
+    case 'stat':
+      return `+1 ${c.stat.toUpperCase()}`;
     case 'gear':
     case 'item':
       return `${itemInfo(c.item).name} (${itemInfo(c.item).rarity})`;

@@ -96,17 +96,18 @@ test('picking a victory card uses up a victory pick; the item goes in the bag; b
   assert.equal(picksLeft(p), 0);
 });
 
-test('levels give stats, not picks: no level-up pick is owed at level 2 or 3 (the subclass pick is gone)', () => {
+test('every other level is a stat point (no skill or subclass pick): one at level 2, none more at level 3', () => {
   const p = hero('ranger');
   p.xp = xpToNext(1);
   assert.equal(applyLevelUps(p), 1);
-  assert.equal(p.levelUps, 0, 'level 2: nothing to pick');
+  assert.equal(p.levelUps, 1, 'level 2: a stat point');
   p.xp = xpToNext(2);
   assert.equal(applyLevelUps(p), 1);
   assert.equal(p.level, 3);
-  assert.equal(p.levelUps, 0, 'level 3: nothing to pick either');
+  assert.equal(p.levelUps, 1, 'level 3: no new one');
   dealOffer(p, makeRng(1), 1);
-  assert.equal(p.offer, null, 'so no offer is dealt');
+  assert.equal(p.offerKind, 'level');
+  assert.ok(p.offer?.every((c) => c.kind === 'stat'), 'the offer is stat cards');
 });
 
 test('elite spoils come first, then the victory picks', () => {

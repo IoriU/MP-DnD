@@ -32,7 +32,7 @@ test('levelling: XP carries over, HP and slots grow, the level cap holds', () =>
   assert.equal(applyLevelUps(w), 2);
   assert.equal(w.level, 3);
   assert.equal(w.xp, 5);
-  assert.equal(w.levelUps, 0, 'levels give stats, no pick (builds are engines now)');
+  assert.equal(w.levelUps, 1, 'level 2 brought a stat point (level 3 none)');
   assert.equal(w.maxHp, maxHpFor('wizard', 3));
   assert.equal(w.hp, w.maxHp, 'level-ups add the new max HP');
   assert.equal(w.maxSlots, CLASSES.wizard.slots + 1);
@@ -49,7 +49,7 @@ test('offers are three different cards the hero can take', () => {
       const p = hero(c, 1 + (i % LEVEL_CAP));
       const cards = makeOffer(p, r);
       assert.equal(cards.length, 3, `${c}: 3 cards`);
-      const keys = cards.map((k) => (k.kind === 'boon' ? `boon:${k.boon}` : k.kind === 'gear' || k.kind === 'item' ? k.item : k.kind === 'subclass' ? k.sub : k.skill));
+      const keys = cards.map((k) => (k.kind === 'boon' ? `boon:${k.boon}` : k.kind === 'stat' ? k.stat : k.kind === 'gear' || k.kind === 'item' ? k.item : k.kind === 'subclass' ? k.sub : k.skill));
       assert.equal(new Set(keys).size, 3, `${c}: no duplicates (${keys})`);
       for (const k of cards) if (k.kind === 'upgrade') assert.equal(nextTier(p, k.skill), k.tier);
     }

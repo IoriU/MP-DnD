@@ -4,10 +4,10 @@
 import type { BlessingId, ItemId, Rarity, RelicId } from '../shared/items.ts';
 import type { AllyId } from '../shared/elites.ts';
 import { ACTS } from '../shared/rules.ts';
-import type { Dice } from '../shared/rules.ts';
+import type { Dice, Stat } from '../shared/rules.ts';
 import type { Rng } from './rng.ts';
 
-export type EventStat = 'str' | 'dex' | 'int' | 'wis';
+export type EventStat = Stat; // all six (CHA to talk your way through, CON to stomach it: 2026-10-21)
 
 export type EventEffect =
   | { kind: 'heal'; pct: number } // every living hero heals pct (0-1) of max HP
@@ -178,9 +178,9 @@ const TEMPLATES: EventTemplate[] = [
       {
         id: 'interrogate',
         label: 'Interrogate him',
-        hint: 'WIS check, DC 12',
+        hint: 'CHA check, DC 12',
         resolve: (ctx) => {
-          const r = ctx.check('wis', 12);
+          const r = ctx.check('cha', 12);
           if (r.ok) {
             const g = loot(ctx, 25, 40);
             return { text: told(r, `${r.heroName} sees through every one of Snik's lies until he sobs and points at a loose brick hiding ${g} gold.`), effects: [{ kind: 'gold', amount: g }] };
@@ -273,17 +273,19 @@ const TEMPLATES: EventTemplate[] = [
         {
           id: 'green',
           label: 'Drink the green vial',
-          hint: 'It is bubbling. A lot.',
-          resolve: (ctx) =>
-            ctx.rng.chance(0.5)
+          hint: 'CON check, DC 12. It is bubbling. A lot.',
+          resolve: (ctx) => {
+            const r = ctx.check('con', 12);
+            return r.ok
               ? {
-                  text: 'Every wound knits shut with a fizzy pop! The gnome looks almost as surprised as you are.',
+                  text: told(r, `${r.heroName} drinks first and keeps it down. Every wound in the party knits shut with a fizzy pop! The gnome looks almost as surprised as you are.`),
                   effects: [{ kind: 'heal', pct: 1 }],
                 }
               : {
-                  text: 'Everyone turns a lovely shade of green, then becomes violently unwell. "Fascinating!" says the gnome, taking notes.',
+                  text: told(r, 'Everyone turns a lovely shade of green, then becomes violently unwell. "Fascinating!" says the gnome, taking notes.'),
                   effects: [{ kind: 'damage', dice: dice(1, 8), who: 'all' }],
-                },
+                };
+          },
         },
         {
           id: 'buy',
@@ -595,9 +597,9 @@ const TEMPLATES: EventTemplate[] = [
       {
         id: 'haggle',
         label: 'Haggle for a finished piece',
-        hint: 'WIS check, DC 14',
+        hint: 'CHA check, DC 14',
         resolve: (ctx) => {
-          const r = ctx.check('wis', 14);
+          const r = ctx.check('cha', 14);
           return r.ok
             ? { text: told(r, `${r.heroName} haggles like a dwarf at a gem sale. The tailor sighs and hands over something fine from the rack.`), effects: [{ kind: 'item', gear: true, rarity: 'uncommon' }] }
             : { text: told(r, `The tailor smiles, measures ${r.heroName} for a suit, and takes a sample while they are distracted.`), effects: [{ kind: 'injury', who: 'checker' }] };
@@ -690,9 +692,9 @@ const TEMPLATES: EventTemplate[] = [
         {
           id: 'bluff',
           label: 'Claim to be the toll inspectors',
-          hint: 'WIS check, DC 13',
+          hint: 'CHA check, DC 13',
           resolve: (ctx) => {
-            const r = ctx.check('wis', 13);
+            const r = ctx.check('cha', 13);
             if (r.ok) {
               const g = loot(ctx, 25, 40);
               return { text: told(r, `${r.heroName} tuts at their paperwork until the goblins pay a ${g} gold fine and apologize.`), effects: [{ kind: 'gold', amount: g }] };
@@ -723,11 +725,13 @@ const TEMPLATES: EventTemplate[] = [
       {
         id: 'eat',
         label: 'Eat the stew',
-        hint: 'Delicious? Probably.',
-        resolve: (ctx) =>
-          ctx.rng.chance(0.6)
-            ? { text: 'It is, against all odds, delicious. Everyone feels warm, full and a little tougher.', effects: [{ kind: 'heal', pct: 0.3 }, { kind: 'maxHp', amount: 2 }] }
-            : { text: 'The thing in the pot waves goodbye on its way down. It does not stay down.', effects: [{ kind: 'damage', dice: dice(1, 8), who: 'all' }] },
+        hint: 'CON check, DC 11. Delicious? Probably.',
+        resolve: (ctx) => {
+          const r = ctx.check('con', 11);
+          return r.ok
+            ? { text: told(r, 'It is, against all odds, delicious. Everyone feels warm, full and a little tougher.'), effects: [{ kind: 'heal', pct: 0.3 }, { kind: 'maxHp', amount: 2 }] }
+            : { text: told(r, 'The thing in the pot waves goodbye on its way down. It does not stay down.'), effects: [{ kind: 'damage', dice: dice(1, 8), who: 'all' }] };
+        },
       },
       {
         id: 'recipe',
@@ -789,9 +793,9 @@ const TEMPLATES: EventTemplate[] = [
       {
         id: 'play',
         label: 'Play the music',
-        hint: 'WIS check, DC 14',
+        hint: 'CHA check, DC 14',
         resolve: (ctx) => {
-          const r = ctx.check('wis', 14);
+          const r = ctx.check('cha', 14);
           if (r.ok) {
             return {
               text: told(r, `${r.heroName} plays a hymn so mournful that the crypt sighs and the restless dead settle down to listen. A warm calm follows you out.`),
@@ -844,9 +848,9 @@ const TEMPLATES: EventTemplate[] = [
       {
         id: 'scare',
         label: 'Scare them off',
-        hint: 'WIS check, DC 12',
+        hint: 'CHA check, DC 12',
         resolve: (ctx) => {
-          const r = ctx.check('wis', 12);
+          const r = ctx.check('cha', 12);
           return r.ok
             ? { text: told(r, `${r.heroName} does a very convincing ghost voice. The robbers drop everything and run.`), effects: [{ kind: 'item', gear: true, rarity: 'common' }, { kind: 'potions', amount: 1 }] }
             : { text: told(r, `${r.heroName}'s ghost voice needs work. The robbers throw grave dirt in your faces and leave laughing.`), effects: [{ kind: 'damage', dice: dice(1, 4), who: 'checker' }] };
@@ -1009,9 +1013,9 @@ const TEMPLATES: EventTemplate[] = [
         {
           id: 'ask',
           label: 'Ask about the lair',
-          hint: 'WIS check, DC 13',
+          hint: 'CHA check, DC 13',
           resolve: (ctx) => {
-            const r = ctx.check('wis', 13);
+            const r = ctx.check('cha', 13);
             return r.ok
               ? { text: told(r, `${r.heroName} listens patiently. The orc knows every trap, every shortcut and the guards' nap schedule.`), effects: [{ kind: 'blessing' }] }
               : { text: told(r, 'The orc starts explaining, yawns, and falls asleep mid-sentence. Fair enough.'), effects: [] };

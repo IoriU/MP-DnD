@@ -119,17 +119,12 @@ const turn = (ap: number): TurnView => ({ order: [], init: {}, index: 0, round: 
 
 // ---------------------------------------------------------------- picking a subclass
 
-test('no subclass pick any more: a level-3 fighter\'s level-up pick is skill cards, never a subclass', () => {
+test('no subclass pick any more: a level-3 fighter\'s level-up pick is a stat point, never a subclass', () => {
   const f = progHero('fighter', 3);
   f.levelUps = 1;
   dealOffer(f, makeRng(1), 1);
   assert.equal(f.offerKind, 'level');
-  assert.ok(f.offer && f.offer.length === 3, 'three cards');
-  assert.deepEqual(
-    f.offer?.map((c) => c.kind).filter((k) => k === 'subclass'),
-    [],
-    'no subclass card',
-  );
+  assert.deepEqual(f.offer?.map((c) => c.kind), ['stat', 'stat', 'stat', 'stat', 'stat', 'stat'], 'a card for each stat, no subclass card');
 });
 
 test('a save from before engines: a hero with a subclass keeps its signature, which takes no slot and cannot be forgotten', () => {

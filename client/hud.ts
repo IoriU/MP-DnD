@@ -3,6 +3,7 @@
 import { isAllyNpc, isFoe, TRAITS } from '../shared/elites.ts';
 import { BAG_SIZE, type ItemId } from '../shared/items.ts';
 import { AP_GAIN, AP_MAX, BOSS_SIGNATURES, CLASSES, DIFFICULTIES, INJURY_PCT, LEVEL_CAP, MONSTERS, xpToNext } from '../shared/rules.ts';
+import { statsRow } from './stats.ts';
 import {
   apOf, blockOf, canHitProps, describeSkill, hasStatus, hitsArea, hotbar, isSignature, limitFor, countKind, ownedSkill, skillsOfKind, skillTitle, slotCost, statsOf,
   SKILLS, STATUSES, TIER_LABEL, type SkillId,
@@ -401,6 +402,7 @@ function partyCard(s: GameState, p: PlayerEntity, isCurrent: boolean, targetable
       <div class="pc-name"><b>${esc(p.name)}</b> <span class="muted">${classLabel(p)} Lv ${p.level}</span>${autoTag(info)}${status}${focus ? '<span class="tag bad" title="Hunted: the monsters are ganging up on this hero">🎯 hunted</span>' : ''}${ups}</div>
       <div class="hpbar"><div style="width:${hpPct}%;background:${hpColor}"></div>${p.tempHp > 0 ? `<i class="tmp" style="width:${tempPct}%"></i>` : ''}<span>${p.hp} / ${p.maxHp}${p.tempHp > 0 ? ` <em>+${p.tempHp} 🛡</em>` : ''}${blockOf(p) > 0 ? ` <em title="Block: soaks damage first, until the start of the turn of whoever gave it">+${blockOf(p)} 🧱</em>` : ''}${p.injuries ? ` <em title="Injured: died ${p.injuries === 1 ? 'once' : `${p.injuries} times`} since the last rest, -${Math.round(INJURY_PCT * 100 * p.injuries)}% max HP until the next rest site">🩹${p.injuries > 1 ? `×${p.injuries}` : ''}</em>` : ''}</span></div>
       <div class="xpbar${max ? ' max' : ''}" title="${max ? 'Max level' : `${p.xp} of ${need} XP to level ${p.level + 1}`}"><div style="width:${xpPct}%"></div><span>${max ? 'MAX' : `XP ${p.xp} / ${need}`}</span></div>
+      <div class="pc-abil">${statsRow(p.classId, p)}</div>
       <div class="pc-stats">${gearIconsHtml(p) ? `<span class="pc-gear">${gearIconsHtml(p)}</span>` : ''}<span title="Armor class">🛡️ ${p.ac}</span><span title="Potions">🧪 ${p.potions}</span><span title="Kills">💀 ${p.kills}</span><span title="Kill steals: killing blows on monsters someone else did most of the damage to">🗡️ ${p.steals}</span>${
         p.maxSlots ? `<span class="pips" title="${esc(`${c.names.slots}: ${p.slots} of ${p.maxSlots}`)}"><b>${c.names.slots}</b>${pips}</span>` : ''
       }</div>

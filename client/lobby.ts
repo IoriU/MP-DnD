@@ -5,6 +5,7 @@ import type { ClassId, GameState, PlayerInfo, ResumeView } from '../shared/types
 import { join, leave, send } from './net.ts';
 import { ago, initSaves } from './saves.ts';
 import { classIcon } from './sprites.ts';
+import { statsRow } from './stats.ts';
 import { store } from './store.ts';
 import { $, esc, loadPref, savePref, toast } from './util.ts';
 
@@ -17,6 +18,7 @@ function classCards(selected: ClassId): string {
       <span class="cc-glyph">${classIcon(id, 48)}</span>
       <span class="cc-name">${c.name}</span>
       <span class="cc-stats"><span>❤️ ${c.hp} HP</span><i>·</i><span>🛡️ AC ${c.ac}</span></span>
+      ${statsRow(id)}
       <span class="cc-blurb">${c.blurb}</span>
     </button>`;
   }).join('');

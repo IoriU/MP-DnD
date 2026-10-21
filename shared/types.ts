@@ -4,7 +4,7 @@ import type { SkillId, StatusId } from './skills.ts';
 import type { BlessingId, ItemId, RelicId, Slot } from './items.ts';
 import type { AllyId, TraitId } from './elites.ts';
 import type { CloudMap, GroundMap, PropMap } from './surfaces.ts';
-import type { Difficulty, MonsterAi } from './rules.ts';
+import type { Difficulty, MonsterAi, Stat } from './rules.ts';
 import type { SubclassId } from './subclasses.ts';
 
 export type ClassId = 'fighter' | 'rogue' | 'wizard' | 'cleric' | 'barbarian' | 'ranger' | 'paladin' | 'bard';
@@ -58,11 +58,12 @@ export type OfferCard =
   | { kind: 'learn'; skill: SkillId }
   | { kind: 'upgrade'; skill: SkillId; tier: 2 | 3 } // tier 3: the player also picks branch A or B
   | { kind: 'boon'; boon: BoonId }
+  | { kind: 'stat'; stat: Stat } // a stat point (every other level): +1 to the stat
   | { kind: 'gear'; item: ItemId } // elite spoils: a piece of equipment for your bag
   | { kind: 'subclass'; sub: SubclassId } // at SUBCLASS_LEVEL: pick one of your class's two subclasses
   | { kind: 'item'; item: ItemId }; // victory spoils: gear or a consumable for your bag
 
-export type BoonId = 'hp' | 'ac' | 'potions' | 'slot';
+export type BoonId = 'hp' | 'ac' | 'potions' | 'slot' | Stat; // a stat boon is a stat point
 
 /** How a hero spends a rest site. */
 export type RestPick = { kind: 'long' } | { kind: 'train'; skill: SkillId; branch?: 'A' | 'B' };
@@ -76,7 +77,8 @@ export interface PlayerEntity extends EntityBase {
   level: number;
   xp: number; // progress toward the next level
   skills: OwnedSkill[]; // basic attacks, cantrips, spells and passives, in hotbar order
-  levelUps: number; // level-up picks still to make: since rewards come after every win (2026-10-19), only the subclass pick
+  levelUps: number; // stat points to spend (one every other level; old saves: a subclass pick), picked like the spoils
+  statUps?: Partial<Record<Stat, number>>; // points added to each stat (levels and boons), on top of the class's start
   elitePicks: number; // elite-spoils picks still to make (one per hero for every elite beaten)
   rewardPicks?: number; // victory picks still to make (one per hero for every fight won): two skill cards and an item card
   injuries?: number; // deaths since the last rest: -INJURY_PCT max HP each (shared/rules.ts)

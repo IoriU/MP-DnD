@@ -65,7 +65,9 @@ import {
   scaledHp,
   tune,
   sneakDice,
+  monsterSave,
   statMod,
+  type Stat,
   stealthBonus,
   stealthDc,
   type Dice,
@@ -704,7 +706,7 @@ export class Game {
   private newcomer(info: PlayerInfo, level: number): PlayerEntity {
     const e = this.makePlayer(info, level);
     e.rewardPicks = level - 1;
-    e.levelUps = 0;
+    e.levelUps = Math.floor(level / 2); // the stat points of the even levels they skipped
     dealOffer(e, rng, this.run?.act ?? 1);
     return e;
   }
@@ -736,6 +738,10 @@ export class Game {
       dead: false,
       saves: { ok: 0, fail: 0 },
     };
+    if (!saved.statUps) {
+      p.statUps = {};
+      p.levelUps = (saved.levelUps ?? 0) + Math.floor(saved.level / 2); // saved before stat points (2026-10-21)
+    }
     // Cards for skills or items that no longer exist are dealt again.
     if (p.offer && !p.offer.every(validCard)) p.offer = null;
     if (p.offer && !p.offerKind) p.offerKind = 'level'; // saved before elite spoils existed
@@ -1357,7 +1363,7 @@ export class Game {
       if (!gained) continue;
       names.push(p.name);
       if (!p.offer) dealOffer(p, rng, this.run?.act ?? 1);
-      this.addLog('level', `⬆️ ${p.name} reaches level ${p.level}!${p.levelUps && !p.subclass ? ' Time to choose a subclass.' : ''}`);
+      this.addLog('level', `⬆️ ${p.name} reaches level ${p.level}!${p.level % 2 === 0 ? ' A stat point to spend.' : ''}`);
       this.callout(p, 'level', {}, 'after');
     }
     this.scheduleAutoPicks();
@@ -1491,17 +1497,17 @@ export class Game {
   private checkRoller(stat: EventStat): PlayerEntity | undefined {
     return this.heroes()
       .filter((p) => !p.dead)
-      .sort((a, b) => CLASSES[b.classId].mods[stat] - CLASSES[a.classId].mods[stat])[0];
+      .sort((a, b) => statMod(b, stat) - statMod(a, stat))[0];
   }
 
   /** "WIS check, DC 13" gets who would roll it and the chance: "WIS check, DC 13: bunted rolls (+1), 45%". */
   private checkOdds(hint: string | undefined): string | undefined {
-    const m = hint && /\b(STR|DEX|INT|WIS) check, DC (\d+)/.exec(hint);
+    const m = hint && /\b(STR|DEX|CON|INT|WIS|CHA) check, DC (\d+)/.exec(hint);
     if (!hint || !m) return hint;
     const stat = m[1].toLowerCase() as EventStat;
     const hero = this.checkRoller(stat);
     if (!hero) return hint;
-    const mod = CLASSES[hero.classId].mods[stat];
+    const mod = statMod(hero, stat);
     const chance = Math.max(0, Math.min(20, 21 - Number(m[2]) + mod)) * 5; // a d20 + mod against the DC
     return hint.replace(m[0], `${m[0]}: ${hero.name} rolls (${fmtMod(mod)}), ${chance}%`);
   }
@@ -1509,7 +1515,7 @@ export class Game {
   /** d20 + the best modifier in the party for that stat. */
   private eventCheck(stat: EventStat, dc: number): CheckResult {
     const hero = this.checkRoller(stat);
-    const mod = hero ? CLASSES[hero.classId].mods[stat] : 0;
+    const mod = hero ? statMod(hero, stat) : 0;
     const roll = rollDie(20);
     const ok = roll + mod >= dc;
     this.lastChecker = hero?.id ?? null;
@@ -1891,7 +1897,7 @@ export class Game {
 
   private initBonus(e: Entity): number {
     if (e.kind === 'monster') return MONSTERS[e.type].dex + (hasTrait(e, 'swift') ? 5 : 0);
-    return CLASSES[e.classId].mods.dex + (passiveOf(e, 'alert')?.value ?? 0) + gearBonus(e, 'init');
+    return statMod(e, 'dex') + (passiveOf(e, 'alert')?.value ?? 0) + gearBonus(e, 'init');
   }
 
   /** Fresh start for every fight: cooldowns ready, no leftover statuses, once-per-fight effects back. */
@@ -3328,18 +3334,18 @@ export class Game {
   }
 
   /** Any creature's saving throw: heroes add their passives and gear, monsters and NPC allies use their stat block. */
-  private creatureSave(e: Entity, stat: 'dex' | 'str' | 'wis'): { total: number; text: string } {
+  private creatureSave(e: Entity, stat: Stat): { total: number; text: string } {
     if (e.kind === 'player') return this.heroSave(e, stat);
     const d20 = rollDie(20);
-    const bonus = MONSTERS[e.type][stat];
+    const bonus = monsterSave(MONSTERS[e.type], stat);
     return { total: d20 + bonus, text: `🎲${d20}${fmtMod(bonus)}=${d20 + bonus}` };
   }
 
   /** A hero's saving throw: d20 + stat + Steady + Bless; Fortune rerolls a natural 1. */
-  private heroSave(p: PlayerEntity, stat: 'dex' | 'str' | 'wis'): { total: number; text: string } {
+  private heroSave(p: PlayerEntity, stat: Stat): { total: number; text: string } {
     let d20 = rollDie(20);
     if (d20 === 1 && this.useLucky(p, true)) d20 = rollDie(20);
-    const bonus = statMod(p.classId, stat) + (passiveOf(p, 'steady')?.value ?? 0) + (hasStatus(p, 'blessed') ? 2 : 0) + gearBonus(p, 'saves') + this.auraBonus(p);
+    const bonus = statMod(p, stat) + (passiveOf(p, 'steady')?.value ?? 0) + (hasStatus(p, 'blessed') ? 2 : 0) + gearBonus(p, 'saves') + this.auraBonus(p);
     return { total: d20 + bonus, text: `🎲${d20}${fmtMod(bonus)}=${d20 + bonus}` };
   }
 
@@ -3761,7 +3767,7 @@ export class Game {
   /** Earthbreaker: knocking a monster Prone hurts it (World Breaker: those next to it too; Tectonic Rage: more Rage). */
   private earthbreaker(p: PlayerEntity, t: MonsterEntity) {
     const e = passiveOf(p, 'earthbreaker')!;
-    const hurt = this.weaponRoll(p) + (e.tier >= 2 ? statMod(p.classId, 'str') : 0);
+    const hurt = this.weaponRoll(p) + (e.tier >= 2 ? statMod(p, 'str') : 0);
     this.later(this.turnToken, 0, () => {
       if (!this.entities.includes(t)) return;
       this.addLog('hit', `🌋 ${t.name} hits the ground hard: ${hurt}.`);
@@ -4206,7 +4212,7 @@ export class Game {
     if (!juggler || n % juggler.value !== 0) return;
     const near = this.monsters().filter((m) => dist(m, p) <= 5 && hasLOS(this, p, m)).sort((x, y) => dist(x, p) - dist(y, p))[0];
     if (!near) return;
-    const knife = rollDice({ n: juggler.tier >= 2 ? 2 : 1, d: 4 }) + statMod(p.classId, 'dex');
+    const knife = rollDice({ n: juggler.tier >= 2 ? 2 : 1, d: 4 }) + statMod(p, 'dex');
     this.shot(p, near, '#c9d1d9');
     this.addLog('hit', `🔪 ${p.name} flicks a knife at ${near.name}: ${knife}.`);
     this.damage(near, knife, p, 'physical');
@@ -4530,7 +4536,7 @@ export class Game {
         .filter((h) => this.standing(h) && dist(h, p) <= 6 && h.hp < h.maxHp)
         .sort((x, y) => x.hp / x.maxHp - y.hp / y.maxHp)[0];
       if (hurt) {
-        const healed = this.healBy(p, hurt, rollDice({ n: 1, d: 4 }) + statMod(p.classId, 'wis'));
+        const healed = this.healBy(p, hurt, rollDice({ n: 1, d: 4 }) + statMod(p, 'wis'));
         this.addLog('heal', `⚜️ Holy light from ${p.name}'s strike mends ${hurt === p ? 'themself' : hurt.name}: +${healed} HP.`);
       }
     }
